@@ -36,4 +36,7 @@ Keep two categories separate:
 - Judgement calls awaiting human review.
 - Claims that lack the evidence level required to treat them as established.
 
-At session close, update the session index, changelog when appropriate, gotchas, compatibility ledger when needed, TODO/DONE, regenerated status, and then run `dev/DocCheck.ps1`.
+At session close, update the session index; update the changelog for every release and for
+significant established session changes under `Unreleased`; update gotchas, the
+compatibility ledger when needed, TODO/DONE, and regenerated status; then run
+`dev/DocCheck.ps1`.

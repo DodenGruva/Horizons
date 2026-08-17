@@ -69,6 +69,9 @@ public class VintageHorizonsModSystem : ModSystem
     public override void StartClientSide(ICoreClientAPI api)
     {
         capi = api;
+        allocationTelemetryEnabled =
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1"
+            || Environment.GetEnvironmentVariable("VINTAGEHORIZONS_AUTOUNPAUSE") == "1";
 
         try
         {
@@ -115,14 +118,17 @@ public class VintageHorizonsModSystem : ModSystem
             (int)LodWorld.MinDetailDistance, (int)LodWorld.MaxDetailDistance);
 
         pipeline = new LodPipeline(capi, Mod.Logger, DescribePalette, block => (byte)tints.SlotFor(block));
+        pipeline.TrackPhaseAllocations = allocationTelemetryEnabled;
 
         // Repairs a cache written while a block lookup was poisoned, which saved sections
         // with no palette colour at all and drew them as black ground. Client-side only:
         // it needs the texture atlas, and a server stores 0 on purpose.
         pipeline.RepairUncoloredPalette = section => LodPaletteRepair.Fill(section, AtlasColorOf);
+        pipeline.RecolorForeignSection = RecolorForeignSection;
         renderer = new LodTerrainRenderer(capi, pipeline.World, pipeline.Worker, tints)
         {
             AutoUnpause = Environment.GetEnvironmentVariable("VINTAGEHORIZONS_AUTOUNPAUSE") == "1",
+            TrackPhaseAllocations = allocationTelemetryEnabled,
             FarViewDistanceCap = config.FarViewDistanceCap,
         };
 
@@ -243,22 +249,22 @@ public class VintageHorizonsModSystem : ModSystem
     {
         if (!pipeline.Active) return;
 
-        long tickStart = LodPhaseCost.Start();
+        LodPhaseStart tickStart = LodPhaseCost.Start(allocationTelemetryEnabled);
         ReportFillIn();
 
-        long phaseStart = LodPhaseCost.Start();
+        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
         PumpServerAssist();
         assistTickCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
         PumpLocalOffers();
         localOfferTickCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
         pipeline.Tick();
         pipelineTickCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
         var pos = capi.World.Player.Entity.Pos;
         if (pipeline.MaybeEvictAround(pos.X, pos.Z))
         {
@@ -277,12 +283,20 @@ public class VintageHorizonsModSystem : ModSystem
     /// </summary>
     void PumpServerAssist()
     {
+        // Structural decode finishes in pipeline.Tick. Release the network transport's
+        // retained in-flight slot only after that owning-thread publication decision.
+        while (pipeline.TryTakeForeignInstallCompletion(out LodForeignInstallCompletion done))
+        {
+            if (done.Source == LodForeignSource.ServerAssist)
+                assist?.CompleteInstall(done.Key, done.Installed);
+        }
+
         if (assist == null || !assist.Available) return;
 
         int before = pipeline.RemoteOnly.Count;
-        assist.Pump(
-            (key, blob) => blob.Length > 0
-                && pipeline.InstallForeignBlob(key, blob, RecolorForeignSection),
+        assist.PumpAsync(
+            (key, blob) => pipeline.QueueForeignBlob(
+                key, blob, LodForeignSource.ServerAssist) == LodForeignQueueOutcome.Queued,
             // Manifest keys become quadtree-visible here rather than in the packet
             // handler: HasDataSet belongs to this thread. Pump publishes each chunk's
             // newly accepted keys once, so the complete retained manifest is never
@@ -396,6 +410,10 @@ public class VintageHorizonsModSystem : ModSystem
         int itemLimit = Math.Min(wanted.Length, LocalOffersPerTick);
         for (int i = 0; i < itemLimit && installBudget.TryStart(0); i++)
         {
+            // Keep sibling-cache work within its own bounded decoder allowance. Server
+            // assist has a separate reservation, so local adoption cannot crowd it out.
+            if (!pipeline.CanQueueForeignBlob(LodForeignSource.LocalOffer)) break;
+
             long key = wanted[i];
 
             byte[]? blob = localOffers.Blob(key);
@@ -411,16 +429,18 @@ public class VintageHorizonsModSystem : ModSystem
                 continue;
             }
 
-            if (pipeline.InstallForeignBlob(key, blob, RecolorForeignSection))
+            LodForeignQueueOutcome queued = pipeline.QueueForeignBlob(
+                key, blob, LodForeignSource.LocalOffer);
+            if (queued == LodForeignQueueOutcome.Queued)
             {
-                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Installed);
+                pipeline.MarkLocalOfferAccepted(key);
             }
-            else
+            else if (queued == LodForeignQueueOutcome.Unavailable)
             {
-                // Parse failure or a local-win race is an explicit terminal outcome.
-                // MarkUnavailable clears both wanted and LoadsInFlight itself.
+                // Local data already won before submission, or persistence is gone.
                 pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Unavailable);
             }
+            else break;
         }
 
         localOfferItemsProcessed += installBudget.Items;
@@ -428,9 +448,9 @@ public class VintageHorizonsModSystem : ModSystem
     }
 
     /// <summary>
-    /// Sections installed from the local sweep per tick. Higher than the network's in-flight
-    /// cap because there is no round trip to hide, but still bounded: each install
-    /// decompresses a blob and recolours a palette on the main thread.
+    /// Compressed sibling-cache blobs transferred to the decoder per tick. The worker
+    /// performs inflation and structural parsing; owning-thread publication has its own
+    /// elapsed-time and decoded-byte budget in LodPipeline.
     /// </summary>
     const int LocalOffersPerTick = 4;
     int localOfferItemsProcessed;
@@ -687,7 +707,7 @@ public class VintageHorizonsModSystem : ModSystem
         // - the only kind where someone can say "this looks wrong" - was the one case with
         // no ongoing numbers to explain it. Its own switch now, so watching and driving are
         // independent.
-        if (renderer.AutoUnpause || Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1")
+        if (allocationTelemetryEnabled)
         {
             capi.Event.RegisterGameTickListener(_ => LogStats("Stats"), 15000);
         }
@@ -748,6 +768,7 @@ public class VintageHorizonsModSystem : ModSystem
     }
 
     bool loggedFirstCaptureError, loggedFirstMeshError, loggedFirstMipError, loggedFirstSaveError;
+    bool allocationTelemetryEnabled;
     int gen0AtLastReport, gen1AtLastReport, gen2AtLastReport;
     LodPhaseCost totalTickCost, assistTickCost, localOfferTickCost, pipelineTickCost,
         residentEvictTickCost;
@@ -908,9 +929,11 @@ public class VintageHorizonsModSystem : ModSystem
                 totalTickCost.Over25Ms, totalTickCost.Over50Ms, totalTickCost.Over100Ms);
 
             Mod.Logger.Notification(
-                "  pipeline p95/p99/max us: load install {0:0}/{1:0}/{2:0} | capture schedule {3:0}/{4:0}/{5:0} | "
-                + "capture apply {6:0}/{7:0}/{8:0} | mip apply {9:0}/{10:0}/{11:0} | "
-                + "mip schedule {12:0}/{13:0}/{14:0} | save snapshot {15:0}/{16:0}/{17:0}",
+                "  pipeline p95/p99/max us: foreign install {0:0}/{1:0}/{2:0} | load install {3:0}/{4:0}/{5:0} | "
+                + "capture schedule {6:0}/{7:0}/{8:0} | capture apply {9:0}/{10:0}/{11:0} | "
+                + "mip apply {12:0}/{13:0}/{14:0} | mip schedule {15:0}/{16:0}/{17:0} | "
+                + "save snapshot {18:0}/{19:0}/{20:0}",
+                pipeline.ForeignInstallCost.P95Us, pipeline.ForeignInstallCost.P99Us, pipeline.ForeignInstallCost.MaxUs,
                 pipeline.LoadInstallCost.P95Us, pipeline.LoadInstallCost.P99Us, pipeline.LoadInstallCost.MaxUs,
                 pipeline.CaptureScheduleCost.P95Us, pipeline.CaptureScheduleCost.P99Us, pipeline.CaptureScheduleCost.MaxUs,
                 pipeline.CaptureApplyCost.P95Us, pipeline.CaptureApplyCost.P99Us, pipeline.CaptureApplyCost.MaxUs,
@@ -919,18 +942,24 @@ public class VintageHorizonsModSystem : ModSystem
                 pipeline.SaveSnapshotCost.P95Us, pipeline.SaveSnapshotCost.P99Us, pipeline.SaveSnapshotCost.MaxUs);
 
             Mod.Logger.Notification(
-                "  install budgets: assist {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
-                + "local {5} items/{6:0.00} MiB | background {7} items/{8:0.00} MiB, "
-                + "{9} queued/{10:0.00} MiB, oldest {11}ms",
+                "  install budgets: assist input {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
+                + "local input {5} items/{6:0.00} MiB | foreign publish {7} items/{8:0.00} MiB, "
+                + "{9} queued/{10:0.00} MiB, oldest {11}ms | background {12} items/{13:0.00} MiB, "
+                + "{14} queued/{15:0.00} MiB, oldest {16}ms",
                 assist?.ArrivalItemsProcessed ?? 0,
                 (assist?.ArrivalBytesProcessed ?? 0) / (1024.0 * 1024.0),
                 assist?.PendingArrivals ?? 0,
                 (assist?.PendingArrivalBytes ?? 0) / (1024.0 * 1024.0),
                 assist?.OldestArrivalAgeMs ?? 0,
                 localOfferItemsProcessed, localOfferBytesProcessed / (1024.0 * 1024.0),
+                pipeline.ForeignInstallItems, pipeline.ForeignInstallBytes / (1024.0 * 1024.0),
+                pipeline.PendingForeignResults, pipeline.PendingForeignResultBytes / (1024.0 * 1024.0),
+                pipeline.OldestForeignResultAgeMs,
                 pipeline.LoadInstallItems, pipeline.LoadInstallBytes / (1024.0 * 1024.0),
                 pipeline.PendingLoadResults, pipeline.PendingLoadResultBytes / (1024.0 * 1024.0),
                 pipeline.OldestLoadResultAgeMs);
+
+            if (allocationTelemetryEnabled) LogAllocationStats();
         }
 
         if (storageThread?.FirstSaveError != null && !loggedFirstSaveError)
@@ -949,6 +978,47 @@ public class VintageHorizonsModSystem : ModSystem
         pipelineTickCost.Reset();
         residentEvictTickCost.Reset();
         renderer?.ResetPhaseCosts();
+    }
+
+    void LogAllocationStats()
+    {
+        static double MiB(long bytes) => bytes / (1024.0 * 1024.0);
+        static double KiB(long bytes) => bytes / 1024.0;
+
+        Mod.Logger.Notification(
+            "  tick allocation interval MiB/max KiB: total {0:0.00}/{1:0.0} | assist {2:0.00}/{3:0.0} | "
+            + "local {4:0.00}/{5:0.0} | pipeline {6:0.00}/{7:0.0} | evict {8:0.00}/{9:0.0}",
+            MiB(totalTickCost.AllocatedBytes), KiB(totalTickCost.MaxAllocatedBytes),
+            MiB(assistTickCost.AllocatedBytes), KiB(assistTickCost.MaxAllocatedBytes),
+            MiB(localOfferTickCost.AllocatedBytes), KiB(localOfferTickCost.MaxAllocatedBytes),
+            MiB(pipelineTickCost.AllocatedBytes), KiB(pipelineTickCost.MaxAllocatedBytes),
+            MiB(residentEvictTickCost.AllocatedBytes), KiB(residentEvictTickCost.MaxAllocatedBytes));
+
+        Mod.Logger.Notification(
+            "  pipeline allocation interval MiB/max KiB: foreign {0:0.00}/{1:0.0} | load {2:0.00}/{3:0.0} | "
+            + "capture schedule {4:0.00}/{5:0.0} | capture apply {6:0.00}/{7:0.0} | "
+            + "mip apply {8:0.00}/{9:0.0} | mip schedule {10:0.00}/{11:0.0} | save {12:0.00}/{13:0.0}",
+            MiB(pipeline.ForeignInstallCost.AllocatedBytes), KiB(pipeline.ForeignInstallCost.MaxAllocatedBytes),
+            MiB(pipeline.LoadInstallCost.AllocatedBytes), KiB(pipeline.LoadInstallCost.MaxAllocatedBytes),
+            MiB(pipeline.CaptureScheduleCost.AllocatedBytes), KiB(pipeline.CaptureScheduleCost.MaxAllocatedBytes),
+            MiB(pipeline.CaptureApplyCost.AllocatedBytes), KiB(pipeline.CaptureApplyCost.MaxAllocatedBytes),
+            MiB(pipeline.MipApplyCost.AllocatedBytes), KiB(pipeline.MipApplyCost.MaxAllocatedBytes),
+            MiB(pipeline.MipScheduleCost.AllocatedBytes), KiB(pipeline.MipScheduleCost.MaxAllocatedBytes),
+            MiB(pipeline.SaveSnapshotCost.AllocatedBytes), KiB(pipeline.SaveSnapshotCost.MaxAllocatedBytes));
+
+        if (renderer == null) return;
+        Mod.Logger.Notification(
+            "  render allocation interval MiB/max KiB: prune {0:0.00}/{1:0.0} | schedule {2:0.00}/{3:0.0} | "
+            + "upload {4:0.00}/{5:0.0} | evict {6:0.00}/{7:0.0} | seasonal {8:0.00}/{9:0.0} | "
+            + "far {10:0.00}/{11:0.0} | walk {12:0.00}/{13:0.0} | draw {14:0.00}/{15:0.0}",
+            MiB(renderer.PruneCost.AllocatedBytes), KiB(renderer.PruneCost.MaxAllocatedBytes),
+            MiB(renderer.ScheduleCost.AllocatedBytes), KiB(renderer.ScheduleCost.MaxAllocatedBytes),
+            MiB(renderer.UploadCost.AllocatedBytes), KiB(renderer.UploadCost.MaxAllocatedBytes),
+            MiB(renderer.EvictCost.AllocatedBytes), KiB(renderer.EvictCost.MaxAllocatedBytes),
+            MiB(renderer.SeasonalCost.AllocatedBytes), KiB(renderer.SeasonalCost.MaxAllocatedBytes),
+            MiB(renderer.FarDistanceCost.AllocatedBytes), KiB(renderer.FarDistanceCost.MaxAllocatedBytes),
+            MiB(renderer.WalkCost.AllocatedBytes), KiB(renderer.WalkCost.MaxAllocatedBytes),
+            MiB(renderer.DrawCost.AllocatedBytes), KiB(renderer.DrawCost.MaxAllocatedBytes));
     }
 
     void OnLeaveWorld()

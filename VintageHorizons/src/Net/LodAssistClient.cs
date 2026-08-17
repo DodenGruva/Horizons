@@ -5,8 +5,8 @@ using Vintagestory.API.Common;
 namespace VintageHorizons.Net;
 
 /// <summary>
-/// Adopts a section that arrived from the server. Returns false if it was not taken -
-/// the client already had local data for that key, or the blob would not parse.
+/// Adopts or accepts responsibility for a section that arrived from the server.
+/// Returns false if it was not taken.
 /// </summary>
 public delegate bool LodForeignSectionInstaller(long key, byte[] blob);
 
@@ -268,7 +268,24 @@ public sealed class LodAssistClient
     public void Pump(
         LodForeignSectionInstaller install,
         Action<long[]>? offerKeys = null,
-        Action<long, bool>? transferFailed = null)
+        Action<long, bool>? transferFailed = null) =>
+        PumpCore(install, deferredInstall: false, offerKeys, transferFailed);
+
+    /// <summary>
+    /// Pump arrivals into an asynchronous decoder. A successful callback retains the
+    /// transport in-flight slot until <see cref="CompleteInstall"/> publishes the result.
+    /// </summary>
+    public void PumpAsync(
+        LodForeignSectionInstaller enqueue,
+        Action<long[]>? offerKeys = null,
+        Action<long, bool>? transferFailed = null) =>
+        PumpCore(enqueue, deferredInstall: true, offerKeys, transferFailed);
+
+    void PumpCore(
+        LodForeignSectionInstaller install,
+        bool deferredInstall,
+        Action<long[]>? offerKeys,
+        Action<long, bool>? transferFailed)
     {
         // One protocol-bounded chunk per game tick. A retained manifest can contain many
         // chunks, and applying all of them in one callback would recreate the join hitch
@@ -322,18 +339,17 @@ public sealed class LodAssistClient
         {
             if (!Arrived.TryDequeue(out var got)) break;
             Interlocked.Add(ref arrivedBytes, -got.Blob.LongLength);
-            inFlight.Remove(got.Key);
 
             // Call install even for an empty blob, then publish an explicit failure below.
             // Short-circuiting the reply path used to leave declined keys stuck in
             // LodWorld.LoadsInFlight for the session, pinning their parent coarse.
             if (install(got.Key, got.Blob))
             {
-                SectionsReceived++;
-                retriesByKey.Remove(got.Key);
-                retryNotBeforeByKey.Remove(got.Key);
+                if (!deferredInstall) CompleteInstall(got.Key, installed: true);
                 continue;
             }
+
+            inFlight.Remove(got.Key);
 
             // "Not written yet" is not "never". The server says so explicitly, because
             // the two are the same empty packet otherwise, and treating not-yet as never
@@ -365,6 +381,25 @@ public sealed class LodAssistClient
 
         ArrivalItemsProcessed += arrivalBudget.Items;
         ArrivalBytesProcessed += arrivalBudget.Bytes;
+    }
+
+    /// <summary>
+    /// Release a reply retained by <see cref="PumpAsync"/> after owning-thread
+    /// publication or terminal rejection.
+    /// </summary>
+    public void CompleteInstall(long key, bool installed)
+    {
+        inFlight.Remove(key);
+        retriesByKey.Remove(key);
+        retryNotBeforeByKey.Remove(key);
+        if (installed)
+        {
+            SectionsReceived++;
+            return;
+        }
+
+        refused.Add(key);
+        RemoteKeys.Remove(key);
     }
 
     public void ResetPumpStats()

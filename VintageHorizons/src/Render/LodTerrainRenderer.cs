@@ -46,6 +46,7 @@ public class LodTerrainRenderer : IRenderer
     /// </summary>
     public LodPhaseCost PruneCost, ScheduleCost, UploadCost, EvictCost, SeasonalCost,
         FarDistanceCost, WalkCost, DrawCost;
+    public bool TrackPhaseAllocations { get; set; }
 
     public int ProjectionResetCount { get; private set; }
     public long MeshUploadBytes { get; private set; }
@@ -629,23 +630,23 @@ public class LodTerrainRenderer : IRenderer
         // and they are different shapes: pruning walks the whole dirty set once a frame,
         // while scheduling picks a bounded number of jobs out of it. A spike in the pair
         // was being read as a spike in scheduling.
-        long phaseStart = LodPhaseCost.Start();
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         PruneRenderDirty();
         PruneCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         ScheduleMeshJobs();
         ScheduleCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UploadFinishedMeshes();
         UploadCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         EvictStaleMeshes();
         EvictCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         RefreshSeasonalState();
         SeasonalCost.Add(phaseStart);
         if (sectionMeshes.Count == 0 && waterMeshes.Count == 0) return;
@@ -657,12 +658,12 @@ public class LodTerrainRenderer : IRenderer
             viewDistance = Math.Min(viewDistance, playerData.LastApprovedViewDistance);
         }
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UpdateEffectiveFarDistance(viewDistance);
         FarDistanceCost.Add(phaseStart);
         ApplyZFar();
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         drawList.Clear();
         foreach (long top in world.TopLevelKeys) CollectDrawNodes(top);
         WalkCost.Add(phaseStart);
@@ -711,7 +712,7 @@ public class LodTerrainRenderer : IRenderer
             cullDistSq = cull * cull;
         }
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
 
         // Pass 1: opaque terrain.
         foreach (long key in drawList)

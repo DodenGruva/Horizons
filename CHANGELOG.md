@@ -1,10 +1,31 @@
 # Changelog
 
-Player- and operator-visible changes accumulate under **Unreleased** once they are
-established well enough to describe. The section is reviewed and finalized when a version
-is released; see [docs/RELEASING.md](docs/RELEASING.md). Newest first.
+Player- and operator-visible changes and other significant established session outcomes
+accumulate under **Unreleased** once they are established well enough to describe. Do not
+wait for a version release to record significant completed work; a release reviews and
+finalizes the accumulated section. See [docs/RELEASING.md](docs/RELEASING.md). Newest
+first.
 
 ## [Unreleased]
+
+**Smoother adoption of server-assisted and singleplayer-cache terrain.** Compressed
+foreign sections are now inflated and structurally parsed by the storage worker instead
+of on the game tick. The owning thread still performs the live block lookup, terrain
+classification, recolouring, and final publication under its existing time/byte budget.
+World identity and local-win checks prevent a delayed foreign result from overwriting
+terrain the client captured while decode was pending. Network request slots now remain in
+flight until actual publication rather than packet arrival. Corrupt or future data fails
+one section without stopping later decode work. Focused checks cover queue bounds,
+thread-safe deferred palette state, failure isolation, and request transitions. A brief
+human playtest reported a noticeable subjective improvement; a controlled assist or
+sibling-cache benchmark is still pending.
+
+**Better evidence for allocation-driven stutter.** Explicit stats and benchmark sessions
+now record managed allocation totals and worst single-call allocation for client tick,
+pipeline, and renderer phases. The counters are opt-in, scoped to the measured client
+owners, and read outside the elapsed-time boundary. This makes later movement tests able
+to distinguish a phase's own work from memory pressure and garbage-collection effects;
+enabled-versus-disabled overhead still needs a steady stationary comparison.
 
 **Smoother server sweeps, generation, and terrain transfer.** Savegame sweeping,
 transient generation, and server-assist serving no longer release a full second's work in

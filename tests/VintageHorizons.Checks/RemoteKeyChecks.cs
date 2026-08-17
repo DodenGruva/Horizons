@@ -160,10 +160,19 @@ public static class RemoteKeyChecks
         c.False(world.LoadsInFlight.Contains(key),
             "a transient local miss releases the attempt because no reader retained responsibility");
 
+        world.LoadsInFlight.Add(key);
+        remote.MarkLocalOfferAccepted(key);
+        c.Eq(0, remote.Wanted().Length,
+            "decoder acceptance prevents a duplicate sibling-cache submission");
+        c.True(world.LoadsInFlight.Contains(key),
+            "decoder acceptance retains responsibility until publication");
+
         world.InstallLoaded(key, new LodSection());
-        remote.CompleteLocalOffer(key, LodLocalOfferOutcome.Installed);
-        c.Eq(0, remote.Wanted().Length, "a later successful install completes the request");
-        c.False(world.LoadsInFlight.Contains(key), "the successful install releases the in-flight marker");
+        remote.MarkInstalled(key);
+        c.True(remote.RemoteOnly.Contains(key),
+            "the offered route stays until persistence can acknowledge the adopted row");
+        c.False(world.LoadsInFlight.Contains(key),
+            "the successful install releases the in-flight marker");
 
         var networkWorld = new LodWorld();
         var networkRemote = new LodRemoteKeySet(networkWorld);

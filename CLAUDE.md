@@ -99,7 +99,9 @@ When the human says to update the documentation or finalize a session, run this 
 
 1. `dev/sessions/SESSION_<n>.md` — create from `TEMPLATE.md`.
 2. `dev/sessions/INDEX.md` — add one newest-first row.
-3. `CHANGELOG.md` — update only for released or explicitly changelog-worthy changes.
+3. `CHANGELOG.md` — always update for a release and for significant established session
+   changes. Between releases, add those changes under `Unreleased`; a version release
+   reviews and finalizes that accumulated section rather than being the only update point.
 4. `dev/GOTCHAS.md` — add newly proven traps or reversals.
 5. `dev/WIRE_HISTORY.md` — update only when protocol, blob format, or schema meaning changes.
 6. `dev/TODO.md` — keep open work only; move completed narrative to `dev/history/DONE.md`.

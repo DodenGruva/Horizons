@@ -17,6 +17,7 @@ public static class ServerAssistChecks
         ManifestAndArrivals(c);
         ArrivalDrainIsByteBoundedAndOldestFirst(c);
         InFlightCapReleasesOnAnyReply(c);
+        AsyncInstallRetainsItsInFlightSlot(c);
         NotYetIsNotNever(c);
         NotYetGivesUpEventually(c);
         ManifestKeepsOfferingWhatTheCacheGains(c);
@@ -484,6 +485,38 @@ public static class ServerAssistChecks
         client.Pump((_, _) => true);
         c.Eq(0, client.InFlight, "a delivered section frees its slot too");
         c.Eq(cap, client.SectionsReceived, "each delivery is counted");
+    }
+
+    static void AsyncInstallRetainsItsInFlightSlot(Check c)
+    {
+        var client = new LodAssistClient(null!, new CaptureLogger(), "0.2.1");
+        client.OnWelcome(new AssistWelcome { Protocol = LodAssist.Protocol, Enabled = true });
+        long good = LodWorld.SectionKey(0, 41, 7);
+        long corrupt = LodWorld.SectionKey(0, 42, 7);
+        long[] offered = { good, corrupt };
+        client.OnKeyManifest(new AssistKeyManifest { Keys = offered, Last = true });
+        client.Pump((_, _) => true);
+
+        long[] requested = client.SelectRequestBatch(offered);
+        c.Eq(2, requested.Length, "both async install fixtures acquire request slots");
+        client.OnSection(new AssistSection { Key = good, Blob = new byte[] { 4, 1 } });
+        client.OnSection(new AssistSection { Key = corrupt, Blob = new byte[] { 4, 2 } });
+        client.PumpAsync((_, _) => true);
+
+        c.Eq(2, client.InFlight,
+            "decoder acceptance retains request slots until owning-thread publication");
+        c.Eq(0, client.SectionsReceived,
+            "decoder acceptance is not reported as installation");
+
+        client.CompleteInstall(good, installed: true);
+        c.Eq(1, client.InFlight, "successful publication releases its retained slot");
+        c.Eq(1, client.SectionsReceived, "only successful publication counts as received");
+
+        client.CompleteInstall(corrupt, installed: false);
+        c.Eq(0, client.InFlight, "terminal decode rejection releases its retained slot");
+        c.False(client.RemoteKeys.Contains(corrupt),
+            "terminal decode rejection removes the unusable remote offer");
+        c.Eq(1, client.SectionsRefused, "terminal decode rejection is explicit refusal state");
     }
 
     /// <summary>

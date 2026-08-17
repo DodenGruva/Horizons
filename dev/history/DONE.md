@@ -67,3 +67,20 @@
   queues plus stable structural byte estimates for background-loaded sections.
 - Added 29 focused assertions and expanded the full game-backed fast tier to 802 passing
   assertions across 21 suites.
+
+## 2026-08-17 — off-thread foreign decode and allocation telemetry
+
+- Moved network and integrated-singleplayer foreign blob inflation and structural parsing
+  from the game tick to separately bounded queues on the storage owner.
+- Kept live block resolution, classification, recolouring, skip filtering, and publication
+  on the owning thread under the 2 ms / 512 KiB install policy.
+- Added world epochs, failure isolation, local-win rejection, and request-slot retention
+  through actual publication.
+- Preserved the foreign reload fallback until storage acknowledgements can prove an
+  adopted row durable.
+- Added opt-in, per-owner managed-allocation totals and worst-call deltas for client tick,
+  pipeline, and render phases without charging counter reads to phase elapsed time.
+- Added 75 focused assertions since Session 6 and expanded the full game-backed fast tier
+  to 877 passing assertions across 21 suites.
+- Built a local test ZIP; a brief human playtest reported a noticeable subjective
+  improvement, without a controlled before/after measurement.

@@ -17,6 +17,7 @@ public static class StoreChecks
         AFailedLookupIsNotRemembered(c);
         AColourlessCacheIsRepaired(c);
         DisposingTheOfferReaderReleasesItsFileHandle(c);
+        BackgroundForeignDecodeIsBoundedAndIsolated(c);
         Rejection(c);
         PurgeKeepsMatchingData(c);
     }
@@ -380,6 +381,65 @@ public static class StoreChecks
         c.NoThrow(() => store.DeserializeForeign(garbage, null), "a corrupted blob does not throw");
 
         c.True(store.DeserializeForeign(good, null) != null, "a good blob still deserializes");
+    }
+
+    static void BackgroundForeignDecodeIsBoundedAndIsolated(Check c)
+    {
+        using var store = new LodStore(null!);
+        using var worker = new LodStorageThread(store);
+        byte[] good = LodStore.Serialize(Fixtures.Snapshot(Fixtures.SolidSection()));
+
+        // Local sibling-cache work has its own cap. Completed results still count until
+        // the owning thread takes them, so a fast decoder cannot make this race flaky.
+        for (int i = 0; i < 8; i++)
+        {
+            c.True(worker.TryEnqueueForeign(
+                7, i, LodForeignSource.LocalOffer, good),
+                $"local foreign decode {i} enters the bounded queue");
+        }
+        c.False(worker.TryEnqueueForeign(
+            7, 99, LodForeignSource.LocalOffer, good),
+            "a ninth local foreign decode is rejected before retaining its blob");
+
+        for (int i = 0; i < 8; i++)
+        {
+            LodForeignDecodeResult result = WaitForForeign(worker, c);
+            c.Eq(7L, result.Epoch, "the decoded result retains its world epoch");
+            c.Eq((long)i, result.Key, "the foreign decoder preserves FIFO identity");
+            c.True(result.Section != null, "a valid foreign blob decodes on the worker");
+            c.True(result.Section?.PendingPaletteCodes != null,
+                "worker decode retains codes for owning-thread registry resolution");
+            c.True(result.Section == null || result.Section.Palette.All(e => e.BlockId == 0),
+                "worker decode never resolves live block ids");
+        }
+        c.True(worker.CanEnqueueForeign(LodForeignSource.LocalOffer),
+            "taking results releases local decoder capacity");
+
+        byte[] future = (byte[])good.Clone();
+        future[0] = 99;
+        c.True(worker.TryEnqueueForeign(
+            8, 100, LodForeignSource.ServerAssist, future),
+            "a future blob is isolated to one server decode job");
+        c.True(worker.TryEnqueueForeign(
+            8, 101, LodForeignSource.ServerAssist, good),
+            "valid work can queue behind a rejected blob");
+        c.Eq(null, WaitForForeign(worker, c).Section,
+            "a future blob returns one failed result rather than throwing");
+        c.True(WaitForForeign(worker, c).Section != null,
+            "the decoder remains alive after rejecting a future blob");
+    }
+
+    static LodForeignDecodeResult WaitForForeign(LodStorageThread worker, Check c)
+    {
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < 5000)
+        {
+            if (worker.TryTakeForeignResult(out LodForeignDecodeResult result)) return result;
+            Thread.Sleep(1);
+        }
+
+        c.True(false, "the foreign decoder publishes a result within five seconds");
+        return default;
     }
 
     static LodSection Restore(Check c, LodSection section, string[]? codes = null)

@@ -27,11 +27,35 @@ public static class PhaseCostChecks
         c.Eq(2, cost.Over50Ms, "50ms hitch count uses its own threshold");
         c.Eq(1, cost.Over100Ms, "100ms hitch count uses its own threshold");
 
+        cost.AddSample(TicksForUs(200), 64);
+        cost.AddSample(TicksForUs(300), 128);
+        c.Eq(2, cost.AllocationSamples, "allocation-enabled samples are counted separately");
+        c.Eq(192L, cost.AllocatedBytes, "per-phase allocation deltas accumulate");
+        c.Eq(128L, cost.MaxAllocatedBytes, "the worst single-call allocation is retained");
+        c.Eq(96.0, cost.AvgAllocatedBytes, "average allocation uses measured samples only");
+
+        c.Eq(-1L, LodPhaseCost.Start(trackAllocations: false).AllocatedBytes,
+            "disabled allocation telemetry does not call the allocation counter");
+        c.True(LodPhaseCost.Start(trackAllocations: true).AllocatedBytes >= 0,
+            "enabled allocation telemetry captures the current-thread counter");
+
+        var live = new LodPhaseCost();
+        LodPhaseStart liveStart = LodPhaseCost.Start(trackAllocations: true);
+        byte[] knownAllocation = new byte[4096];
+        live.Add(liveStart);
+        GC.KeepAlive(knownAllocation);
+        c.Eq(1, live.AllocationSamples, "a live phase records one allocation sample");
+        c.True(live.AllocatedBytes >= knownAllocation.Length,
+            "a live phase observes managed bytes allocated between start and add");
+
         cost.Reset();
         c.Eq(0, cost.Calls, "reset clears sample count");
         c.Eq(0, cost.Over25Ms, "reset clears hitch counts");
         c.Eq(0.0, cost.P95Us, "an empty interval reports zero percentile");
         c.Eq(0.0, cost.MaxUs, "an empty interval reports zero maximum");
+        c.Eq(0, cost.AllocationSamples, "reset clears allocation sample count");
+        c.Eq(0L, cost.AllocatedBytes, "reset clears allocated bytes");
+        c.Eq(0L, cost.MaxAllocatedBytes, "reset clears maximum allocation");
     }
 
     static long TicksForUs(double microseconds) =>

@@ -137,6 +137,24 @@ public class LodRemoteKeySet
     }
 
     /// <summary>
+    /// A sibling-cache reader transferred responsibility to the structural decoder.
+    /// Stop duplicate submissions while retaining LoadsInFlight until publication.
+    /// </summary>
+    public void MarkLocalOfferAccepted(long key) => remoteWanted.Remove(key);
+
+    /// <summary>
+    /// A foreign section is now resident and queued for local persistence. Keep the
+    /// offered route until storage acknowledgements exist: SaveDirty currently clears on
+    /// enqueue, so declaring the row local before its write completes can race an eviction.
+    /// </summary>
+    public void MarkInstalled(long key)
+    {
+        remoteWanted.Remove(key);
+        world.LoadFailed.Remove(key);
+        world.LoadsInFlight.Remove(key);
+    }
+
+    /// <summary>
     /// A network source accepted the request but reported that its row is not written yet.
     /// Release the transport attempt while preserving both the offered key and the owning
     /// thread's desire to retry it.

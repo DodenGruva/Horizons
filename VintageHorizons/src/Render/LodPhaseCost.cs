@@ -14,10 +14,12 @@ namespace VintageHorizons;
 /// the serve loop records what it costs the tick "so the caps can be judged against a
 /// measurement instead of an estimate".
 ///
-/// The timing costs two Stopwatch.GetTimestamp calls per phase per frame, which is around
-/// 40ns on this hardware. That is under a thousandth of the smallest phase measured, and
-/// it applies equally to any before and after, so it cannot manufacture a difference.
+/// Timing is always active. Managed-allocation sampling is opt-in for stats/benchmark
+/// sessions; when disabled, the hot path adds only one predictable branch to the existing
+/// timestamp pair and does not call the GC allocation counter.
 /// </summary>
+public readonly record struct LodPhaseStart(long Timestamp, long AllocatedBytes);
+
 public struct LodPhaseCost
 {
     // Compact piecewise histogram. Fine resolution where ordinary phases live, wider
@@ -38,11 +40,18 @@ public struct LodPhaseCost
     int over25Ms;
     int over50Ms;
     int over100Ms;
+    long allocatedBytes;
+    long maxAllocatedBytes;
+    int allocationSamples;
 
     /// <summary>Close a measurement opened with <see cref="Start"/>.</summary>
-    public void Add(long startTimestamp)
+    public void Add(LodPhaseStart start)
     {
-        AddElapsedTicks(Stopwatch.GetTimestamp() - startTimestamp);
+        long elapsed = Stopwatch.GetTimestamp() - start.Timestamp;
+        long allocationDelta = start.AllocatedBytes < 0
+            ? -1
+            : GC.GetAllocatedBytesForCurrentThread() - start.AllocatedBytes;
+        AddSample(elapsed, allocationDelta);
     }
 
     /// <summary>
@@ -50,6 +59,12 @@ public struct LodPhaseCost
     /// percentile boundaries without sleeping; production callers normally use Add(Start()).
     /// </summary>
     internal void AddElapsedTicks(long elapsed)
+    {
+        AddSample(elapsed, -1);
+    }
+
+    /// <summary>Deterministic timing/allocation seam for the fast checks.</summary>
+    internal void AddSample(long elapsed, long allocationDelta)
     {
         if (elapsed < 0) elapsed = 0;
         ticks += elapsed;
@@ -61,9 +76,22 @@ public struct LodPhaseCost
         if (us >= 25_000) over25Ms++;
         if (us >= 50_000) over50Ms++;
         if (us >= 100_000) over100Ms++;
+
+        if (allocationDelta >= 0)
+        {
+            allocatedBytes += allocationDelta;
+            if (allocationDelta > maxAllocatedBytes) maxAllocatedBytes = allocationDelta;
+            allocationSamples++;
+        }
     }
 
-    public static long Start() => Stopwatch.GetTimestamp();
+    public static LodPhaseStart Start(bool trackAllocations = false)
+    {
+        long allocationStart = trackAllocations
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : -1;
+        return new LodPhaseStart(Stopwatch.GetTimestamp(), allocationStart);
+    }
 
     public int Calls => calls;
     public double AvgUs => calls == 0 ? 0 : ticks * 1_000_000.0 / Stopwatch.Frequency / calls;
@@ -73,6 +101,12 @@ public struct LodPhaseCost
     public int Over25Ms => over25Ms;
     public int Over50Ms => over50Ms;
     public int Over100Ms => over100Ms;
+    public long AllocatedBytes => allocatedBytes;
+    public long MaxAllocatedBytes => maxAllocatedBytes;
+    public int AllocationSamples => allocationSamples;
+    public double AvgAllocatedBytes => allocationSamples == 0
+        ? 0
+        : allocatedBytes / (double)allocationSamples;
 
     static int BucketForMicroseconds(double us)
     {
@@ -109,6 +143,8 @@ public struct LodPhaseCost
         maxTicks = 0;
         calls = 0;
         over25Ms = over50Ms = over100Ms = 0;
+        allocatedBytes = maxAllocatedBytes = 0;
+        allocationSamples = 0;
         if (histogram != null) Array.Clear(histogram);
     }
 }

@@ -14,22 +14,24 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, and time/byte-bounded client installs. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance/allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs, and storage-owned foreign structural decode. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
 The client captures received chunk columns, converts them into persistent 3D RLE sections, builds a mip pyramid, meshes selected sections on workers, and renders them beyond vanilla view distance. An optional server installation can capture collectively explored terrain, sweep existing savegame columns, generate transient terrain on request, and offer stored sections to clients.
 
-Capture, meshing, mip boundary construction, compression, storage writes, demand-load decompression, and integrated-singleplayer sibling-cache key discovery have background workers. The sibling-cache scanner owns a separate read-only unpooled SQLite connection and publishes bounded immutable key deltas. `LodWorld`, block-registry/palette resolution, revision validation, mip publication, local blob adoption, GPU upload, selection, and draw setup remain on their owning game or render threads.
+Capture, meshing, mip boundary construction, compression, storage writes, demand-load decompression, foreign blob inflation/structural parsing, and integrated-singleplayer sibling-cache key discovery have background workers. The sibling-cache scanner owns a separate read-only unpooled SQLite connection and publishes bounded immutable key deltas. `LodWorld`, block-registry/palette resolution, revision validation, mip publication, foreign recolouring/publication, GPU upload, selection, and draw setup remain on their owning game or render threads.
 
-Sweep, transient generation, and server-assist allowances accrue across normal 50 ms ticks instead of releasing a full second's work in one callback. Client assist arrivals, sibling-cache blob adoption, and completed background-load publication use FIFO 2 ms / 512 KiB drains. One oldest item always progresses even if it alone exceeds a ceiling; later work waits. Concrete result queues expose pending items/bytes and oldest age.
+Sweep, transient generation, and server-assist allowances accrue across normal 50 ms ticks instead of releasing a full second's work in one callback. Client assist arrivals, decoded foreign publication, and completed background-load publication use FIFO 2 ms / 512 KiB drains. One oldest item always progresses even if it alone exceeds a ceiling; later work waits. Server and sibling-cache decode have separate outstanding limits, and concrete result queues expose pending items/bytes and oldest age.
+
+Foreign decode results carry a world epoch, key, source, deferred palette codes, estimated bytes, and ready time. Network/world request state survives decoder acceptance until owning-thread publication or terminal rejection. A resident local section wins both pre- and post-resolution checks. The foreign reload route remains available until future save acknowledgements can prove the adopted local row durable.
 
 Mip jobs carry a world epoch, child identity, and content revision. The child remains `MipDirty` and its parent remains RAM-pinned until a matching result commits. Failed, stale, or cross-world results cannot clear the durable `ApplyToParent` obligation.
 
 ## 3. Completed local performance work
 
 1. The full 0.2.1 fast tier now runs against the complete game installation. The Windows SQLite stale-version fixture disables connection pooling for its direct schema edit, preventing the old pooled connection from surviving file replacement.
-2. Client telemetry records p95/p99/max and 25/50/100 ms hitch counts for total game tick, assist/local-offer/pipeline work, pipeline subphases, and render subphases. It also counts projection resets and uploaded mesh bytes.
+2. Client telemetry records p95/p99/max and 25/50/100 ms hitch counts for total game tick, assist/local-offer/pipeline work, pipeline subphases, and render subphases. It also counts projection resets and uploaded mesh bytes. Explicit stats/benchmark sessions add per-phase managed-allocation totals and worst-call deltas without enabling unused integrated-server sampling.
 3. A Windows-native isolated benchmark runner launches a hidden server and rendered client with pidfile/command-line safety checks. It never force-kills a process and now sends the graceful server-stop command before publishing its completion marker.
 4. Expensive mip boundary collection, sorting, occupancy selection, and run merging moved from the owning tick to a dedicated bounded worker.
 5. Content revisions, world epochs, parent pins, in-flight limits, explicit failed results, and stale-result retry protect asynchronous mip publication.
@@ -40,6 +42,7 @@ Mip jobs carry a world epoch, child identity, and content revision. The child re
 10. Opaque and water mesh footprints maintain cached world-space bounds. Ordinary frames calculate the farthest required distance in O(1); the camera projection grows immediately in safe 512-block steps and shrinks only after a lower step remains stable for five seconds.
 11. Sweep and transient-generation load issuance use fractional 50 ms allowances, 1 ms deadlines, 16-probe per-tick publication caps, and the existing 256-probe in-flight ceiling. Delayed ticks discard catch-up credit without reducing ordinary long-run rates.
 12. Server assist uses fair per-player/global tick allowances and a 2 ms serving deadline. Client foreign/background install paths stop at 2 ms or 512 KiB, retain FIFO request state until actual publication, guarantee oldest-item progress, and report queue bytes/age.
+13. Network and sibling-cache foreign blobs transfer to separately bounded storage-owner queues for inflation and structural parsing. The owning thread performs live resolution, recolouring, filtering, stale/local-win rejection, publication, and persistence scheduling.
 
 ## 4. Measured diagnosis and result
 
@@ -60,7 +63,7 @@ The route is intentionally short and teleport-driven. It is strong evidence for 
 ## 5. Remaining performance findings
 
 1. Capture-result publication is now the largest measured owning-thread pipeline phase, reaching 11.3–14.1 ms maximum in the after runs.
-2. Foreign blob inflation, structural parsing, live block resolution, recolouring, and installation remain owning-thread work. Aggregate work is bounded, but one admitted decode cannot be preempted once started.
+2. Foreign live block resolution, recolouring, filtering, and publication remain owning-thread work. Aggregate work is bounded, but one admitted publication cannot be preempted once started.
 3. Server-assist blob reads remain synchronous on the server owning thread, though issuance now has rate and elapsed ceilings.
 4. Dirty pruning, scheduling, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
 
@@ -75,12 +78,11 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Move foreign structural decode off-thread with owning-thread registry resolution and stale/local-win rejection.
-2. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios plus allocation telemetry.
-3. Time-budget capture publication and GPU uploads where longer measurement warrants.
-4. Measure the initial 2 ms / 512 KiB install policy and tick-smoothed serving in integrated play; move server blob reads only with safe connection ownership.
-5. Make traversal/scheduling visibility-aware without coupling visibility to residency.
-6. Add storage save revisions, acknowledgements, retry, and shutdown durability.
+1. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios; measure enabled-versus-disabled allocation telemetry overhead.
+2. Time-budget capture publication and GPU uploads where longer measurement warrants.
+3. Measure the initial 2 ms / 512 KiB install policy, foreign publication/decode backlog, and tick-smoothed serving in integrated play; move server blob reads only with safe connection ownership.
+4. Make traversal/scheduling visibility-aware without coupling visibility to residency.
+5. Add storage save revisions, acknowledgements, retry, and shutdown durability.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -95,23 +97,28 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The steady far-distance path no longer enumerates resident mesh dictionaries. Mesh arrival/removal owns bounds updates, and only an extreme removal requests a later exact rebuild.
 - Sweep, generation, and assist serving now spend capped fractional allowances across 50 ms ticks; delayed ticks cannot release full-second catch-up work.
 - Assist arrivals, sibling-cache blobs, and background-load results all have elapsed-time and byte ceilings with FIFO oldest-item progress.
-- Count-only GPU uploads, synchronous foreign decode, and save acknowledgement gaps remain visible in source.
+- Foreign inflation and structural parsing occur only on the storage owner; owning-thread results resolve live palette state and reject cross-world, corrupt, or local-win arrivals.
+- Decoder acceptance retains request responsibility through publication. The adopted section keeps its foreign fallback because save enqueue is not a durability acknowledgement.
+- Allocation counter reads are opt-in per measured owner and sit outside the elapsed-time interval.
+- Count-only GPU uploads, owning-thread foreign publication, and save acknowledgement gaps remain visible in source.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 180 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 802 assertions across all 21 suites, including 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, 128 server-assist, blob, and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 182 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 877 assertions across all 21 suites, including foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four isolated route artifacts exist locally: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Not yet established
 
-- No human playtest has evaluated the runtime change.
+- One brief human playtest reported a noticeable subjective improvement after off-thread foreign decode; it was not a controlled or thorough comparison.
 - No long continuous-movement, rotation, join, sweep, or assist soak has been compared before/after.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
 - No integrated sweep or assist run has yet measured the smoothed server cadence, install backlog age, or temporary coarseness under the initial client budgets.
 - No moving-camera game process has yet measured projection-reset frequency or visually checked the cached-bounds far plane for clipping.
+- No controlled assist or sibling-cache run has separated foreign worker decode, owning-thread publication, backlog age, or throughput.
+- Enabled-versus-disabled allocation-telemetry overhead has not been measured in a steady stationary game scenario.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
 
 ## 9. Known uncertainty
@@ -122,6 +129,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
 - Cached bounds remove the steady mesh scan by construction, but the 512-block projection step, five-second shrink cooldown, and conservative rectangular overestimate have not yet been evaluated in continuous play.
 - The 2 ms / 512 KiB install ceilings are conservative initial policy. Compressed foreign bytes and estimated in-memory background-section bytes are intentionally path-local measures, not directly comparable throughput figures.
+- The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
+- Per-phase allocation counters identify managed bytes attributed to the current owning thread; they do not attribute native allocations or prove that a later GC pause belongs to one phase.
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 
 ## 10. Documentation map
@@ -140,5 +149,5 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 | `dev/history/DONE.md` | Completed work removed from TODO |
 | `dev/archive/` | Frozen superseded snapshot documents |
 | `DESIGN.md` | Historical design journal, measurements, and provenance |
-| `CHANGELOG.md` | Released player-visible history |
+| `CHANGELOG.md` | Released history plus significant established changes accumulating under Unreleased |
 | `README.md` | Player and contributor-facing overview |

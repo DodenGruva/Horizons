@@ -57,7 +57,12 @@ and the quantized camera projection.
 
 **Trap:** removing a key from the wanted set without clearing `LoadsInFlight` strands it permanently. Likewise, a server that silently drops a request fills every client in-flight slot.
 
-**Do:** model request state explicitly. Mark requested only when responsibility actually transferred; answer server requests even when refusing. Give bounded retries a monotonic cooldown, or an attempt ceiling can be exhausted over consecutive ticks without spanning the transient failure.
+**Do:** model request state explicitly. Mark requested only when responsibility actually
+transferred; answer server requests even when refusing. Background decoder acceptance is
+transferred responsibility, not success, so retain the transport/world slot until
+owning-thread publication or terminal rejection. Give bounded retries a monotonic
+cooldown, or an attempt ceiling can be exhausted over consecutive ticks without spanning
+the transient failure.
 
 ### G7 — Async section work needs revision validation
 
@@ -136,6 +141,19 @@ any work, every tick rejects the same item and nothing behind it can progress.
 **Do:** admit at least one oldest item from a non-empty drain, record its actual/estimated
 bytes, then stop before later work once a ceiling is exceeded. Track oldest age so lack of
 progress remains visible.
+
+### G16 — A queued save is not durable local data
+
+**Trigger:** changing foreign adoption, remote fallbacks, eviction, or save routing before
+storage acknowledgements exist.
+
+**Trap:** a foreign section is marked dirty when installed, but current save state clears
+when its snapshot is queued rather than when the exact row write is acknowledged. Removing
+the foreign source immediately can let eviction route a reload to a local row whose write
+is still pending or has failed.
+
+**Do:** retain the foreign fallback until revisioned storage acknowledgements can prove the
+local row durable. Do not infer persistence from RAM installation or save enqueue.
 
 ## Reversals and disproved claims
 

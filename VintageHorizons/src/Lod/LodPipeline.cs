@@ -20,6 +20,16 @@ public delegate (int Color, byte TintSlot) LodPaletteDescriber(int blockId, int 
 /// <summary>Which live tint applies to a block. The server has none and answers 0.</summary>
 public delegate byte LodTintSlotResolver(Block block);
 
+public enum LodForeignQueueOutcome
+{
+    Queued,
+    Retryable,
+    Unavailable,
+}
+
+public readonly record struct LodForeignInstallCompletion(
+    long Key, LodForeignSource Source, bool Installed);
+
 /// <summary>
 /// Everything between "a chunk column arrived" and "a section is on disk": capture
 /// scheduling, palette registration, mip propagation and persistence. Owns all mutation
@@ -73,6 +83,12 @@ public class LodPipeline
     /// </summary>
     public System.Func<LodSection, int>? RepairUncoloredPalette;
 
+    /// <summary>
+    /// Gives server-authored palette entries client atlas colours after their structural
+    /// decode and live block resolution. Client-only; a dedicated server leaves it null.
+    /// </summary>
+    public Action<LodSection>? RecolorForeignSection;
+
     /// <summary>Palette entries given a colour on load because the cache had none.</summary>
     public int PaletteEntriesRepaired { get; private set; }
 
@@ -105,8 +121,9 @@ public class LodPipeline
     public LodStorageThread? StorageThread => storageThread;
 
     /// <summary>Owning-thread pipeline phases since the last telemetry report.</summary>
-    public LodPhaseCost LoadInstallCost, CaptureScheduleCost, CaptureApplyCost,
+    public LodPhaseCost LoadInstallCost, ForeignInstallCost, CaptureScheduleCost, CaptureApplyCost,
         MipApplyCost, MipScheduleCost, SaveSnapshotCost;
+    public bool TrackPhaseAllocations { get; set; }
 
     /// <summary>Completed background-load publications since the last telemetry reset.</summary>
     public int LoadInstallItems { get; private set; }
@@ -114,6 +131,13 @@ public class LodPipeline
     public int PendingLoadResults => storageThread?.PendingLoadResults ?? 0;
     public long PendingLoadResultBytes => storageThread?.PendingLoadResultBytes ?? 0;
     public long OldestLoadResultAgeMs => storageThread?.OldestLoadResultAgeMs ?? 0;
+    public int ForeignInstallItems { get; private set; }
+    public long ForeignInstallBytes { get; private set; }
+    public int PendingForeignResults => storageThread?.PendingForeignResults ?? 0;
+    public long PendingForeignResultBytes => storageThread?.PendingForeignResultBytes ?? 0;
+    public long OldestForeignResultAgeMs => storageThread?.OldestForeignResultAgeMs ?? 0;
+
+    readonly Queue<LodForeignInstallCompletion> foreignInstallCompletions = new();
 
     int tickCounter;
     long worldEpoch;
@@ -139,6 +163,7 @@ public class LodPipeline
     public void ResetPhaseCosts()
     {
         LoadInstallCost.Reset();
+        ForeignInstallCost.Reset();
         CaptureScheduleCost.Reset();
         CaptureApplyCost.Reset();
         MipApplyCost.Reset();
@@ -146,6 +171,8 @@ public class LodPipeline
         SaveSnapshotCost.Reset();
         LoadInstallItems = 0;
         LoadInstallBytes = 0;
+        ForeignInstallItems = 0;
+        ForeignInstallBytes = 0;
     }
 
     /// <summary>Note a chunk column as needing (re)capture. Safe from any thread.</summary>
@@ -273,30 +300,26 @@ public class LodPipeline
         LodWorld.KeyLevel(key), LodWorld.KeySx(key), LodWorld.KeySz(key));
 
     /// <summary>
-    /// Adopt a section that arrived from somewhere other than local disk. Returns false if
-    /// the key already has local data, which wins: the client's own capture is what it
-    /// actually observed, including edits it witnessed (DESIGN.md §10.5).
+    /// Transfer one foreign compressed blob to the storage-owned decoder. The worker
+    /// retains block codes and stored flags only; registry resolution and publication
+    /// happen later on this pipeline's owning thread.
     /// </summary>
-    public bool InstallForeignBlob(long key, byte[] blob, Action<LodSection>? recolor)
+    public LodForeignQueueOutcome QueueForeignBlob(
+        long key, byte[] blob, LodForeignSource source)
     {
-        if (store == null || blob.Length == 0) return false;
-        if (World.Sections.ContainsKey(key)) return false;
-
-        LodSection? section = store.DeserializeForeign(blob, api.World);
-        if (section == null) return false;
-
-        // The sender had no texture atlas, so every palette colour is 0. Fill them in
-        // before anything can draw the section.
-        recolor?.Invoke(section);
-        section.RemoveRunsWithFlag(LodPaletteEntry.FlagSkip);
-
-        World.InstallLoaded(key, section);
-        // Persist it: re-fetching a mean 45.9 KB a section every session is not an option,
-        // so a section from the network becomes part of the local cache like any other.
-        World.MarkChanged(key);
-        ForeignSectionsInstalled++;
-        return true;
+        if (store == null || storageThread == null || blob.Length == 0)
+            return LodForeignQueueOutcome.Unavailable;
+        if (World.Sections.ContainsKey(key)) return LodForeignQueueOutcome.Unavailable;
+        return storageThread.TryEnqueueForeign(worldEpoch, key, source, blob)
+            ? LodForeignQueueOutcome.Queued
+            : LodForeignQueueOutcome.Retryable;
     }
+
+    public bool CanQueueForeignBlob(LodForeignSource source) =>
+        storageThread?.CanEnqueueForeign(source) == true;
+
+    public bool TryTakeForeignInstallCompletion(out LodForeignInstallCompletion completion) =>
+        foreignInstallCompletions.TryDequeue(out completion);
 
     public int ForeignSectionsInstalled { get; private set; }
 
@@ -328,6 +351,9 @@ public class LodPipeline
     public void CompleteLocalOffer(long key, LodLocalOfferOutcome outcome) =>
         Remote.CompleteLocalOffer(key, outcome);
 
+    /// <inheritdoc cref="LodRemoteKeySet.MarkLocalOfferAccepted"/>
+    public void MarkLocalOfferAccepted(long key) => Remote.MarkLocalOfferAccepted(key);
+
     /// <inheritdoc cref="LodRemoteKeySet.MarkRetryable"/>
     public void MarkRemoteRetryable(long key) => Remote.MarkRetryable(key);
 
@@ -336,30 +362,89 @@ public class LodPipeline
     {
         if (!Active) return;
 
-        long phaseStart = LodPhaseCost.Start();
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        InstallForeignSections();
+        ForeignInstallCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         InstallLoadedSections();
         LoadInstallCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         ScheduleCaptures();
         CaptureScheduleCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         ApplyCaptureResults();
         CaptureApplyCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         ApplyMipResults();
         MipApplyCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         ScheduleMipJobs();
         MipScheduleCost.Add(phaseStart);
 
-        phaseStart = LodPhaseCost.Start();
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         SaveSomeDirtySections(SectionSavesPerTick);
         SaveSnapshotCost.Add(phaseStart);
         tickCounter++;
+    }
+
+    /// <summary>
+    /// Finish decoded foreign sections on the owning thread. Palette lookup, live policy
+    /// classification, atlas recolouring, skip filtering, and publication all remain
+    /// here and share the same elapsed-time/byte policy as other section installs.
+    /// </summary>
+    void InstallForeignSections()
+    {
+        if (storageThread == null || store == null) return;
+
+        var budget = new LodDrainBudget();
+        while (storageThread.TryPeekForeignResult(out LodForeignDecodeResult waiting)
+            && budget.TryStart(waiting.EstimatedBytes))
+        {
+            if (!storageThread.TryTakeForeignResult(out LodForeignDecodeResult result)) break;
+            if (result.Epoch != worldEpoch) continue;
+
+            LodSection? section = result.Section;
+            bool installed = section != null && !World.Sections.ContainsKey(result.Key);
+            if (installed)
+            {
+                store.ResolvePendingPalette(section!, api.World);
+                RecolorForeignSection?.Invoke(section!);
+                section!.RemoveRunsWithFlag(LodPaletteEntry.FlagSkip);
+
+                // No worker result may overwrite data that became authoritative after
+                // submission. This second check documents the commit rule beside the
+                // actual mutation, even though no callback above is expected to capture.
+                installed = !World.Sections.ContainsKey(result.Key);
+            }
+
+            if (installed)
+            {
+                World.InstallLoaded(result.Key, section);
+                // Persist it: re-fetching a mean 45.9 KB a section every session is not an
+                // option, so a foreign section becomes local cache data after adoption.
+                World.MarkChanged(result.Key);
+                Remote.MarkInstalled(result.Key);
+                ForeignSectionsInstalled++;
+            }
+            else
+            {
+                // Corruption is terminal for this offered copy. If capture won the race,
+                // MarkUnavailable sees the resident section and clears only remote state,
+                // without poisoning its future local reload.
+                Remote.MarkUnavailable(result.Key);
+            }
+
+            foreignInstallCompletions.Enqueue(new LodForeignInstallCompletion(
+                result.Key, result.Source, installed));
+        }
+
+        ForeignInstallItems += budget.Items;
+        ForeignInstallBytes += budget.Bytes;
     }
 
     void ApplyMipResults()
@@ -658,6 +743,7 @@ public class LodPipeline
         queuedColumns.Clear();
         pendingColumns.Clear();
         Remote.Clear();
+        foreignInstallCompletions.Clear();
         // Results for the world we are leaving must not be applied to the next one.
         // Both queues, or a result held back for a reload would cross worlds.
         while (Worker.CaptureResults.TryDequeue(out _)) { }

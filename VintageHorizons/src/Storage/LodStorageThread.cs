@@ -6,6 +6,21 @@ namespace VintageHorizons;
 public readonly record struct LodLoadResult(
     long Key, LodSection? Section, long EstimatedBytes, long ReadyAtMilliseconds);
 
+/// <summary>Which bounded producer submitted a foreign blob for structural decode.</summary>
+public enum LodForeignSource
+{
+    ServerAssist,
+    LocalOffer,
+}
+
+/// <summary>A foreign blob decoded without touching the live block registry.</summary>
+public readonly record struct LodForeignDecodeResult(
+    long Epoch, long Key, LodForeignSource Source, LodSection? Section,
+    long EstimatedBytes, long ReadyAtMilliseconds);
+
+readonly record struct LodForeignDecodeJob(
+    long Epoch, long Key, LodForeignSource Source, byte[] Blob);
+
 /// <summary>
 /// Serializes and writes LOD sections away from the render thread.
 ///
@@ -35,6 +50,17 @@ public class LodStorageThread : IDisposable
     long loadResultBytes;
     Func<long, LodSection?>? loadFunc;
 
+    // Foreign blobs already live in bounded transport/read queues. Keep separate caps
+    // after responsibility transfers here so local sibling-cache work can never consume
+    // the slots reserved for the network client's protocol-bounded in-flight set.
+    const int MaxServerForeignOutstanding = Net.LodAssist.MaxSectionsInFlight;
+    const int MaxLocalForeignOutstanding = 8;
+    readonly ConcurrentQueue<LodForeignDecodeJob> foreignRequests = new();
+    readonly ConcurrentQueue<LodForeignDecodeResult> foreignResults = new();
+    int serverForeignOutstanding;
+    int localForeignOutstanding;
+    long foreignResultBytes;
+
     /// <summary>Set by the coordinator: performs one blocking read, called on this thread.</summary>
     public void SetLoader(Func<long, LodSection?> loader) => loadFunc = loader;
 
@@ -58,6 +84,59 @@ public class LodStorageThread : IDisposable
     public long OldestLoadResultAgeMs => loadResults.TryPeek(out LodLoadResult oldest)
         ? Math.Max(0, Environment.TickCount64 - oldest.ReadyAtMilliseconds)
         : 0;
+
+    public bool CanEnqueueForeign(LodForeignSource source) =>
+        Volatile.Read(ref ForeignOutstandingRef(source)) < ForeignLimit(source);
+
+    public bool TryEnqueueForeign(
+        long epoch, long key, LodForeignSource source, byte[] blob)
+    {
+        if (blob.Length == 0 || !TryReserveForeign(source)) return false;
+        foreignRequests.Enqueue(new LodForeignDecodeJob(epoch, key, source, blob));
+        signal.Set();
+        return true;
+    }
+
+    public bool TryPeekForeignResult(out LodForeignDecodeResult result) =>
+        foreignResults.TryPeek(out result);
+
+    public bool TryTakeForeignResult(out LodForeignDecodeResult result)
+    {
+        if (!foreignResults.TryDequeue(out result)) return false;
+        Interlocked.Add(ref foreignResultBytes, -result.EstimatedBytes);
+        Interlocked.Decrement(ref ForeignOutstandingRef(result.Source));
+        return true;
+    }
+
+    public int PendingForeignResults => foreignResults.Count;
+    public long PendingForeignResultBytes => Math.Max(0, Interlocked.Read(ref foreignResultBytes));
+    public long OldestForeignResultAgeMs => foreignResults.TryPeek(out LodForeignDecodeResult oldest)
+        ? Math.Max(0, Environment.TickCount64 - oldest.ReadyAtMilliseconds)
+        : 0;
+
+    ref int ForeignOutstandingRef(LodForeignSource source)
+    {
+        if (source == LodForeignSource.ServerAssist) return ref serverForeignOutstanding;
+        return ref localForeignOutstanding;
+    }
+
+    static int ForeignLimit(LodForeignSource source) =>
+        source == LodForeignSource.ServerAssist
+            ? MaxServerForeignOutstanding
+            : MaxLocalForeignOutstanding;
+
+    bool TryReserveForeign(LodForeignSource source)
+    {
+        ref int outstanding = ref ForeignOutstandingRef(source);
+        int limit = ForeignLimit(source);
+        while (true)
+        {
+            int current = Volatile.Read(ref outstanding);
+            if (current >= limit) return false;
+            if (Interlocked.CompareExchange(ref outstanding, current + 1, current) == current)
+                return true;
+        }
+    }
 
     public int Pending => queue.Count;
     public int SaveErrors;
@@ -93,6 +172,14 @@ public class LodStorageThread : IDisposable
         while (running)
         {
             bool didWork = false;
+
+            // One foreign decode per pass keeps it responsive without letting a burst of
+            // compressed network data indefinitely delay ordinary demand loads or saves.
+            if (foreignRequests.TryDequeue(out LodForeignDecodeJob foreign))
+            {
+                didWork = true;
+                DecodeForeign(foreign);
+            }
 
             // Loads first: a pending read is blocking terrain from appearing, a
             // pending write is not blocking anything.
@@ -138,9 +225,31 @@ public class LodStorageThread : IDisposable
             key, section, estimatedBytes, Environment.TickCount64));
     }
 
+    void DecodeForeign(LodForeignDecodeJob job)
+    {
+        LodSection? section = null;
+        try
+        {
+            // Null deliberately defers every registry lookup to the owning thread.
+            section = store.DeserializeForeign(job.Blob, null);
+        }
+        catch (Exception e)
+        {
+            Interlocked.Increment(ref ForeignDecodeErrors);
+            try { FirstForeignDecodeError ??= e.ToString(); } catch { /* diagnostics must not kill the thread */ }
+        }
+
+        long estimatedBytes = section?.EstimatedContentBytes ?? 0;
+        Interlocked.Add(ref foreignResultBytes, estimatedBytes);
+        foreignResults.Enqueue(new LodForeignDecodeResult(
+            job.Epoch, job.Key, job.Source, section, estimatedBytes, Environment.TickCount64));
+    }
+
     public int LoadErrors;
     public string? FirstLoadError;
     public long SectionsRead;
+    public int ForeignDecodeErrors;
+    public string? FirstForeignDecodeError;
 
     void WriteOne(LodSaveSnapshot snap)
     {

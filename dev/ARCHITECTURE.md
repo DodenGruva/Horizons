@@ -31,7 +31,8 @@ server cache key manifest
     -> client remote-key skeleton
     -> visibility-driven section requests
     -> stored compressed section blobs
-    -> client decode, block-code resolution, recolor, install, and local persistence
+    -> bounded storage-owner inflation and structural decode
+    -> owning-thread block-code resolution, recolor, install, and local persistence
 ```
 
 Integrated singleplayer sibling-cache discovery adds a dedicated read-only SQLite reader.
@@ -41,8 +42,9 @@ separate connection that remains owned by the game thread.
 
 Owning-thread section installation is FIFO and bounded by elapsed time and content bytes.
 The oldest item is allowed to exceed a ceiling once so an unusually large section cannot
-starve itself and every result behind it. Deferred request state remains in flight until
-that item is actually processed.
+starve itself and every result behind it. Foreign decoder acceptance transfers
+responsibility but does not mean installation: deferred world and transport request state
+remains in flight until the owning thread publishes or terminally rejects that item.
 
 ## Thread ownership
 
@@ -71,6 +73,13 @@ The mip worker receives immutable child-section arrays, a copied captured-column
 ### Storage worker
 
 The storage worker serializes immutable save snapshots, compresses them, and writes SQLite rows. Background loads deserialize block codes without touching the live block registry; the owning thread resolves those codes before publication.
+
+The same owner inflates and structurally deserializes compressed sections received from
+server assist or the integrated-singleplayer sibling cache. Network and local producers
+have separate bounded outstanding allowances. Results carry their world epoch, key,
+source, deferred block codes, estimated content bytes, and ready time. The owning thread
+rejects cross-world, corrupt, or local-win results, then resolves live ids/flags/tints,
+recolours client data, filters skipped runs, and publishes valid sections.
 
 ### Local-offer discovery worker
 
@@ -155,6 +164,9 @@ The server must answer every accepted section request, including explicit refusa
 10. **Competing LOD mods cause this renderer to defer.** Two systems must not fight over the camera far plane or distant terrain.
 11. **Performance work is evidence-driven.** Count budgets are not accepted as frame budgets without elapsed-time measurements.
 12. **Owning-thread install drains are FIFO, time/byte bounded, and progress-guaranteed.** One oversized oldest item may exceed a tick's ceiling; later work waits.
+13. **Foreign decode acceptance is not publication.** Request responsibility and source
+    fallback survive background decode until the owning thread installs or terminally
+    rejects the exact result. Local observed data still wins the race.
 
 ## Concurrency invariants
 
