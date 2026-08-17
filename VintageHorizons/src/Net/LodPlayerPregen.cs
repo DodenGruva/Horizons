@@ -40,7 +40,9 @@ public class LodPlayerPregen
     public const EnumWorldGenPass Pass = EnumWorldGenPass.Terrain;
 
     const int MaxProbesInFlight = 256;    // as LodSavegameSweep
+    const int MaxProbeIssuesPerTick = 16;
     const int StuckPeekTimeoutMs = 300_000;
+    const double TickWorkBudgetMs = 1.0;
 
     readonly ICoreServerAPI sapi;
     readonly ILogger logger;
@@ -49,6 +51,7 @@ public class LodPlayerPregen
 
     /// <summary>Which positions hold generated terrain, and the safety rule over them.</summary>
     readonly LodColumnMap exists = new();
+    readonly LodTickAllowance workAllowance = new();
 
     /// <summary>Peeks outstanding, key to issue time. Expired entries count as TimedOut.</summary>
     readonly Dictionary<long, long> peeksInFlight = new();
@@ -154,7 +157,7 @@ public class LodPlayerPregen
             + "written to the savegame and no chunk is loaded for any player. Progress every 10%.",
             StartedBy, CentreBlockX, CentreBlockZ, WorkTotal, radiusChunks);
 
-        listenerId = sapi.Event.RegisterGameTickListener(_ => Step(), 1000);
+        listenerId = sapi.Event.RegisterGameTickListener(_ => Step(), LodTickAllowance.TickMilliseconds);
     }
 
     /// <summary>
@@ -174,14 +177,19 @@ public class LodPlayerPregen
 
     void StepProbe()
     {
-        // Refill to a cap rather than issuing a fixed number per tick, as the sweep does.
-        while (probeIndex < ProbeTotal && probesInFlight < MaxProbesInFlight)
+        // Refill the cap gradually so probe calls and their main-thread publications do
+        // not arrive as a once-per-second group.
+        var tickBudget = new LodWorkBudget(TickWorkBudgetMs);
+        int issued = 0;
+        while (probeIndex < ProbeTotal && probesInFlight < MaxProbesInFlight
+            && issued < MaxProbeIssuesPerTick && !tickBudget.Expired)
         {
             (int dx, int dz) = LodColumnMap.SpiralAt(probeIndex++);
             int cx = centreCx + dx;
             int cz = centreCz + dz;
 
             probesInFlight++;
+            issued++;
             sapi.WorldManager.TestMapChunkExists(cx, cz, hit =>
             {
                 // The callback need not be on the main thread, and the map is not safe.
@@ -207,9 +215,12 @@ public class LodPlayerPregen
 
     void StepWork()
     {
+        int allowance = workAllowance.Available(sapi.World.ElapsedMilliseconds, perSecond);
+        var tickBudget = new LodWorkBudget(TickWorkBudgetMs);
         int started = 0;
         bool gated = false;
-        while (!Cancelled && !gated && workIndex < WorkTotal && started < perSecond)
+        while (!Cancelled && !gated && workIndex < WorkTotal && started < allowance
+            && !tickBudget.Expired)
         {
             (int dx, int dz) = LodColumnMap.SpiralAt(workIndex);
             int cx = centreCx + dx;
@@ -254,6 +265,7 @@ public class LodPlayerPregen
                     continue;
             }
         }
+        workAllowance.Spend(started);
 
         Report(workIndex, WorkTotal,
             $"Generation: {{0}}% ({workIndex}/{WorkTotal} columns) - {Generated} generated, "

@@ -392,12 +392,14 @@ public class VintageHorizonsModSystem : ModSystem
                 LodWorld.NearestDistanceSqTo(a, px, pz).CompareTo(LodWorld.NearestDistanceSqTo(b, px, pz)));
         }
 
-        int budget = Math.Min(wanted.Length, LocalOffersPerTick);
-        for (int i = 0; i < budget; i++)
+        var installBudget = new LodDrainBudget();
+        int itemLimit = Math.Min(wanted.Length, LocalOffersPerTick);
+        for (int i = 0; i < itemLimit && installBudget.TryStart(0); i++)
         {
             long key = wanted[i];
 
             byte[]? blob = localOffers.Blob(key);
+            installBudget.AddBytes(blob?.LongLength ?? 0);
             // A miss is ordinary while the sweep is still running: the key was listed but
             // its row is not written yet. MarkRemoteUnavailable is permanent, so it must
             // not be used for "not yet". It also must not enter the taken batch: no source
@@ -420,6 +422,9 @@ public class VintageHorizonsModSystem : ModSystem
                 pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Unavailable);
             }
         }
+
+        localOfferItemsProcessed += installBudget.Items;
+        localOfferBytesProcessed += installBudget.Bytes;
     }
 
     /// <summary>
@@ -428,6 +433,8 @@ public class VintageHorizonsModSystem : ModSystem
     /// decompresses a blob and recolours a palette on the main thread.
     /// </summary>
     const int LocalOffersPerTick = 4;
+    int localOfferItemsProcessed;
+    long localOfferBytesProcessed;
 
     /// <summary>
     /// Fill in palette colours for a section captured by a server, which had no texture
@@ -910,6 +917,20 @@ public class VintageHorizonsModSystem : ModSystem
                 pipeline.MipApplyCost.P95Us, pipeline.MipApplyCost.P99Us, pipeline.MipApplyCost.MaxUs,
                 pipeline.MipScheduleCost.P95Us, pipeline.MipScheduleCost.P99Us, pipeline.MipScheduleCost.MaxUs,
                 pipeline.SaveSnapshotCost.P95Us, pipeline.SaveSnapshotCost.P99Us, pipeline.SaveSnapshotCost.MaxUs);
+
+            Mod.Logger.Notification(
+                "  install budgets: assist {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
+                + "local {5} items/{6:0.00} MiB | background {7} items/{8:0.00} MiB, "
+                + "{9} queued/{10:0.00} MiB, oldest {11}ms",
+                assist?.ArrivalItemsProcessed ?? 0,
+                (assist?.ArrivalBytesProcessed ?? 0) / (1024.0 * 1024.0),
+                assist?.PendingArrivals ?? 0,
+                (assist?.PendingArrivalBytes ?? 0) / (1024.0 * 1024.0),
+                assist?.OldestArrivalAgeMs ?? 0,
+                localOfferItemsProcessed, localOfferBytesProcessed / (1024.0 * 1024.0),
+                pipeline.LoadInstallItems, pipeline.LoadInstallBytes / (1024.0 * 1024.0),
+                pipeline.PendingLoadResults, pipeline.PendingLoadResultBytes / (1024.0 * 1024.0),
+                pipeline.OldestLoadResultAgeMs);
         }
 
         if (storageThread?.FirstSaveError != null && !loggedFirstSaveError)
@@ -919,6 +940,9 @@ public class VintageHorizonsModSystem : ModSystem
         }
         pipeline.ResetStorageStats();
         pipeline.ResetPhaseCosts();
+        assist?.ResetPumpStats();
+        localOfferItemsProcessed = 0;
+        localOfferBytesProcessed = 0;
         totalTickCost.Reset();
         assistTickCost.Reset();
         localOfferTickCost.Reset();

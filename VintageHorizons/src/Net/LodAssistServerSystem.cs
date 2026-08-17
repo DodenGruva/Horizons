@@ -32,9 +32,9 @@ public class LodAssistServerSystem : ModSystem
             .SetMessageHandler<AssistHello>(OnHello)
             .SetMessageHandler<AssistSectionRequest>(OnSectionRequest);
 
-        // Once a second, not every tick: the per-second serve cap then IS the batch size,
-        // with no token bucket to get subtly wrong.
-        api.Event.RegisterGameTickListener(_ => ServePending(), 1000);
+        // Accumulate the configured per-second rates across normal ticks. Each allowance
+        // is capped at one tick's share, so a slow tick cannot cause a catch-up burst.
+        api.Event.RegisterGameTickListener(_ => ServePending(), LodTickAllowance.TickMilliseconds);
 
         // Every five seconds, which is slow next to the serve loop on purpose: this walks
         // the whole key snapshot per player, and the thing it is chasing (a pregen, a
@@ -155,7 +155,12 @@ public class LodAssistServerSystem : ModSystem
 
     long manifestDeltasSent;
 
-    void OnPlayerDisconnect(IServerPlayer player) => ledger.Forget(player.PlayerUID);
+    void OnPlayerDisconnect(IServerPlayer player)
+    {
+        ledger.Forget(player.PlayerUID);
+        pendingByPlayer.Remove(player.PlayerUID);
+        serveAllowanceByPlayer.Remove(player.PlayerUID);
+    }
 
     /// <summary>
     /// Pending section requests, per player, oldest first. Held here rather than answered
@@ -163,6 +168,9 @@ public class LodAssistServerSystem : ModSystem
     /// hundred sections gets them steadily instead of in one spike.
     /// </summary>
     readonly Dictionary<string, Queue<long>> pendingByPlayer = new();
+    readonly Dictionary<string, LodTickAllowance> serveAllowanceByPlayer = new();
+    readonly LodTickAllowance globalServeAllowance = new();
+    const double ServeWorkBudgetMs = 2.0;
 
     void OnSectionRequest(IServerPlayer fromPlayer, AssistSectionRequest msg)
     {
@@ -210,36 +218,18 @@ public class LodAssistServerSystem : ModSystem
     int sectionsRefused;
 
     /// <summary>
-    /// Serve at most the per-second cap to each waiting player. Called once a second, so
-    /// the cap is simply the batch size - no token bucket to get wrong.
+    /// Serve pending requests under continuously accrued per-player and global rates.
+    /// A small elapsed-time ceiling also stops after an unexpectedly slow blob read.
     /// </summary>
     void ServePending()
     {
-        if (pendingByPlayer.Count == 0) return;
-
         LodServerCaptureSystem? capture = sapi.ModLoader.GetModSystem<LodServerCaptureSystem>();
-        if (capture?.Capturing != true || !capture.Config.EnableServing)
-        {
-            // Refuse every queued key rather than dropping them. This path runs when the
-            // cache is not open yet, or when serving is off, and it used to clear the
-            // queues in silence. A client whose keys vanish here never asks again: it
-            // holds them in flight waiting for a reply that will never come, and its
-            // in-flight cap then blocks every later request for the whole session.
-            //
-            // A race at join time makes that reachable in ordinary play - the client can
-            // ask before the server's pipeline is open. It fits the intermittent stall
-            // seen on 2026-08-02, though that was never caught with logging in place, so
-            // this is a defect fixed on its own merits rather than a proven diagnosis.
-            foreach ((string uid, Queue<long> queue) in pendingByPlayer)
-            {
-                if (sapi.World.PlayerByUid(uid) is not IServerPlayer waiting) continue;
-                foreach (long key in queue) Refuse(waiting, key);
-            }
-            pendingByPlayer.Clear();
-            return;
-        }
-
-        LodServerConfig config = capture.Config;
+        LodServerConfig config = capture?.Config ?? new LodServerConfig();
+        long now = sapi.World.ElapsedMilliseconds;
+        int globalBudget = globalServeAllowance.Available(now, config.MaxSectionsPerSecondTotal);
+        if (pendingByPlayer.Count == 0 || globalBudget == 0) return;
+        bool serving = capture?.Capturing == true && config.EnableServing;
+        var tickBudget = new LodWorkBudget(ServeWorkBudgetMs);
 
         // Round-robin from a rotating start, so the global budget below cannot be
         // monopolised by whichever player happens to sort first in the dictionary.
@@ -247,10 +237,10 @@ public class LodAssistServerSystem : ModSystem
         uids.Sort(StringComparer.Ordinal);
         int start = uids.Count == 0 ? 0 : (int)(serveRound++ % (uint)uids.Count);
 
-        int globalBudget = config.MaxSectionsPerSecondTotal;
+        int globalSpent = 0;
         List<string>? emptied = null;
 
-        for (int n = 0; n < uids.Count && globalBudget > 0; n++)
+        for (int n = 0; n < uids.Count && globalSpent < globalBudget && !tickBudget.Expired; n++)
         {
             string uid = uids[(start + n) % uids.Count];
             Queue<long> queue = pendingByPlayer[uid];
@@ -262,10 +252,25 @@ public class LodAssistServerSystem : ModSystem
                 continue;
             }
 
-            int budget = Math.Min(config.MaxSectionsPerSecondPerPlayer, globalBudget);
-            while (budget-- > 0 && queue.Count > 0)
+            if (!serveAllowanceByPlayer.TryGetValue(uid, out LodTickAllowance? playerAllowance))
+                serveAllowanceByPlayer[uid] = playerAllowance = new LodTickAllowance();
+            int playerBudget = playerAllowance.Available(now, config.MaxSectionsPerSecondPerPlayer);
+            int playerSpent = 0;
+            while (playerSpent < playerBudget && globalSpent < globalBudget
+                && queue.Count > 0 && !tickBudget.Expired)
             {
                 long key = queue.Dequeue();
+
+                // Refuse gradually rather than clearing every queue in one callback. This
+                // path is reachable during join before the cache opens and when serving is
+                // disabled; every request still receives the explicit terminal response.
+                if (!serving)
+                {
+                    Refuse(player, key);
+                    playerSpent++;
+                    globalSpent++;
+                    continue;
+                }
 
                 // Radius is checked here, against where the player is NOW, rather than when
                 // the request was queued: a request that waited in the queue must not be
@@ -274,12 +279,13 @@ public class LodAssistServerSystem : ModSystem
                 {
                     channel.SendPacket(new AssistSection { Key = key }, player);
                     sectionsOutsideRadius++;
-                    globalBudget--;
+                    playerSpent++;
+                    globalSpent++;
                     continue;
                 }
 
                 serveClock.Restart();
-                byte[] blob = capture.LoadBlob(key) ?? Array.Empty<byte>();
+                byte[] blob = capture!.LoadBlob(key) ?? Array.Empty<byte>();
                 blobReadMs += serveClock.Elapsed.TotalMilliseconds;
 
                 // Empty blob rather than silence for a miss: the client needs to know to
@@ -297,11 +303,15 @@ public class LodAssistServerSystem : ModSystem
                 }, player);
                 sectionsServed++;
                 bytesServed += blob.Length;
-                globalBudget--;
+                playerSpent++;
+                globalSpent++;
             }
+            playerAllowance.Spend(playerSpent);
 
             if (queue.Count == 0) (emptied ??= new List<string>()).Add(uid);
         }
+
+        globalServeAllowance.Spend(globalSpent);
 
         if (emptied != null) foreach (string uid in emptied) pendingByPlayer.Remove(uid);
 

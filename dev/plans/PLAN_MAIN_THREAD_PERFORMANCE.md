@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, and cached bounds with stable projection are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, and bounded client installs are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, and upload bytes are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work. Moving-camera, server sweep/assist, queue-age, allocation, and disabled-overhead scenarios remain open.
+**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and assist/background-install queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work. Moving-camera, server sweep/assist, broader queue-age, allocation, and disabled-overhead scenarios remain open.
 
 ### Client instrumentation
 
@@ -190,6 +190,13 @@ visual clipping check remain open before runtime acceptance.
 - Projection-reset frequency and far-plane behavior are covered by isolated tests and a moving-camera run.
 
 ## 7. Phase 4 — smooth periodic server and client work
+
+**Implementation status:** The initial source/harness slice is complete. Sweep and
+transient generation run on 50 ms fractional allowances with bounded probe issuance;
+server assist uses fair per-player/global allowances and an elapsed deadline. Assist,
+sibling-cache, and background-load installs use FIFO 2 ms / 512 KiB drains with oldest-age
+telemetry and one-item progress. Server blob reads remain synchronous, and integrated
+sweep/assist runtime acceptance is still open.
 
 ### Sweep and generation
 

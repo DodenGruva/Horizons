@@ -39,6 +39,11 @@ It scans at a coarse cadence, computes key deltas on its own thread, and publish
 immutable batches for owning-thread registration. Visibility-driven blob reads use a
 separate connection that remains owned by the game thread.
 
+Owning-thread section installation is FIFO and bounded by elapsed time and content bytes.
+The oldest item is allowed to exceed a ceiling once so an unusually large section cannot
+starve itself and every result behind it. Deferred request state remains in flight until
+that item is actually processed.
+
 ## Thread ownership
 
 ### Client or server owning thread
@@ -149,6 +154,7 @@ The server must answer every accepted section request, including explicit refusa
 9. **Transient generation must not persist world terrain.** The LOD cache is the only intended output.
 10. **Competing LOD mods cause this renderer to defer.** Two systems must not fight over the camera far plane or distant terrain.
 11. **Performance work is evidence-driven.** Count budgets are not accepted as frame budgets without elapsed-time measurements.
+12. **Owning-thread install drains are FIFO, time/byte bounded, and progress-guaranteed.** One oversized oldest item may exceed a tick's ceiling; later work waits.
 
 ## Concurrency invariants
 

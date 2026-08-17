@@ -15,12 +15,65 @@ public static class ServerAssistChecks
         ServeRadiusIsNearestEdge(c);
         ProtocolNegotiation(c);
         ManifestAndArrivals(c);
+        ArrivalDrainIsByteBoundedAndOldestFirst(c);
         InFlightCapReleasesOnAnyReply(c);
         NotYetIsNotNever(c);
         NotYetGivesUpEventually(c);
         ManifestKeepsOfferingWhatTheCacheGains(c);
         ManifestDoesNotRepeatWhatItJustSent(c);
         AnEmptyCacheIsNotASwitchedOffAssist(c);
+    }
+
+    static void ArrivalDrainIsByteBoundedAndOldestFirst(Check c)
+    {
+        var client = new LodAssistClient(null!, new CaptureLogger(), "0.2.1")
+        {
+            ArrivalMaxBytesPerTick = 3,
+            ArrivalMaxMillisecondsPerTick = 1000,
+        };
+        long now = 0;
+        client.NowMs = () => now;
+        client.OnWelcome(new AssistWelcome { Protocol = LodAssist.Protocol, Enabled = true });
+
+        long[] keys =
+        {
+            LodWorld.SectionKey(0, 21, 1),
+            LodWorld.SectionKey(0, 22, 1),
+            LodWorld.SectionKey(0, 23, 1),
+        };
+        client.OnKeyManifest(new AssistKeyManifest { Keys = keys, Last = true });
+        client.Pump((_, _) => true);
+        c.Eq(3, client.SelectRequestBatch(keys).Length, "three offered sections hold request slots");
+
+        for (int i = 0; i < keys.Length; i++)
+        {
+            now = 10 + i * 10;
+            client.OnSection(new AssistSection { Key = keys[i], Blob = new byte[] { 1, 2 } });
+        }
+        now = 40;
+        c.Eq(3, client.PendingArrivals, "packet handlers queue all arrivals for the owning tick");
+        c.Eq(6L, client.PendingArrivalBytes, "queued compressed bytes are tracked");
+        c.Eq(30L, client.OldestArrivalAgeMs, "the oldest queued arrival age is visible");
+
+        var installed = new List<long>();
+        client.Pump((key, _) => { installed.Add(key); return true; });
+        c.SeqEq(new[] { keys[0] }, installed,
+            "the byte ceiling processes only the oldest fitting arrival");
+        c.Eq(2, client.PendingArrivals, "later arrivals remain queued for another tick");
+        c.Eq(4L, client.PendingArrivalBytes, "processed bytes leave the queue accounting");
+        c.Eq(2, client.InFlight, "only a processed reply releases its request slot");
+
+        client.Pump((key, _) => { installed.Add(key); return true; });
+        client.Pump((key, _) => { installed.Add(key); return true; });
+        c.SeqEq(keys, installed, "bounded FIFO drains still make forward progress");
+        c.Eq(0, client.PendingArrivals, "the arrival queue eventually drains");
+        c.Eq(0L, client.PendingArrivalBytes, "the byte backlog eventually drains");
+        c.Eq(3, client.ArrivalItemsProcessed, "arrival telemetry counts processed items");
+        c.Eq(6L, client.ArrivalBytesProcessed, "arrival telemetry counts processed bytes");
+
+        client.ResetPumpStats();
+        c.Eq(0, client.ArrivalItemsProcessed, "telemetry item counts reset by interval");
+        c.Eq(0L, client.ArrivalBytesProcessed, "telemetry byte counts reset by interval");
     }
 
     /// <summary>

@@ -2,6 +2,10 @@ using System.Collections.Concurrent;
 
 namespace VintageHorizons;
 
+/// <summary>A completed background read waiting for owning-thread publication.</summary>
+public readonly record struct LodLoadResult(
+    long Key, LodSection? Section, long EstimatedBytes, long ReadyAtMilliseconds);
+
 /// <summary>
 /// Serializes and writes LOD sections away from the render thread.
 ///
@@ -27,7 +31,8 @@ public class LodStorageThread : IDisposable
     // section arriving a few frames late; the capture path still loads inline
     // because it must merge into stored data before it may create anything.
     readonly ConcurrentQueue<long> loadRequests = new();
-    public readonly ConcurrentQueue<(long Key, LodSection? Section)> LoadResults = new();
+    readonly ConcurrentQueue<LodLoadResult> loadResults = new();
+    long loadResultBytes;
     Func<long, LodSection?>? loadFunc;
 
     /// <summary>Set by the coordinator: performs one blocking read, called on this thread.</summary>
@@ -38,6 +43,21 @@ public class LodStorageThread : IDisposable
         loadRequests.Enqueue(key);
         signal.Set();
     }
+
+    public bool TryPeekLoadResult(out LodLoadResult result) => loadResults.TryPeek(out result);
+
+    public bool TryTakeLoadResult(out LodLoadResult result)
+    {
+        if (!loadResults.TryDequeue(out result)) return false;
+        Interlocked.Add(ref loadResultBytes, -result.EstimatedBytes);
+        return true;
+    }
+
+    public int PendingLoadResults => loadResults.Count;
+    public long PendingLoadResultBytes => Math.Max(0, Interlocked.Read(ref loadResultBytes));
+    public long OldestLoadResultAgeMs => loadResults.TryPeek(out LodLoadResult oldest)
+        ? Math.Max(0, Environment.TickCount64 - oldest.ReadyAtMilliseconds)
+        : 0;
 
     public int Pending => queue.Count;
     public int SaveErrors;
@@ -112,7 +132,10 @@ public class LodStorageThread : IDisposable
 
         // Always answer, even on failure/miss: the requester clears its in-flight
         // marker from this queue and would otherwise never retry the key.
-        LoadResults.Enqueue((key, section));
+        long estimatedBytes = section?.EstimatedContentBytes ?? 0;
+        Interlocked.Add(ref loadResultBytes, estimatedBytes);
+        loadResults.Enqueue(new LodLoadResult(
+            key, section, estimatedBytes, Environment.TickCount64));
     }
 
     public int LoadErrors;

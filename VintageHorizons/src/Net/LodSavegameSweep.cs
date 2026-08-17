@@ -44,9 +44,12 @@ public class LodSavegameSweep
     /// before anything useful had happened.
     /// </summary>
     const int MaxProbesInFlight = 256;
+    const int MaxProbeIssuesPerTick = 16;
+    const double TickWorkBudgetMs = 1.0;
 
     /// <summary>Which positions hold generated terrain, and the safety rule over them.</summary>
     readonly LodColumnMap exists = new();
+    readonly LodTickAllowance loadAllowance = new();
 
     int probeIndex;
     int probesInFlight;
@@ -100,7 +103,7 @@ public class LodSavegameSweep
             + "Set SweepSavegame to false to disable. Progress every 10%.",
             radiusChunks * GlobalConstants.ChunkSize, ProbeTotal);
 
-        listenerId = sapi.Event.RegisterGameTickListener(_ => Step(), 1000);
+        listenerId = sapi.Event.RegisterGameTickListener(_ => Step(), LodTickAllowance.TickMilliseconds);
     }
 
     void Step()
@@ -112,15 +115,20 @@ public class LodSavegameSweep
 
     void StepProbe()
     {
-        // Refill to a cap rather than issuing a fixed number per tick: the sweep then runs
-        // at whatever rate the engine answers, without ever having more outstanding.
-        while (probeIndex < ProbeTotal && probesInFlight < MaxProbesInFlight)
+        // Refill the outstanding cap in small pieces. The old one-second callback could
+        // issue all 256 probes together and their main-thread publications could land as
+        // the same periodic burst.
+        var tickBudget = new LodWorkBudget(TickWorkBudgetMs);
+        int issued = 0;
+        while (probeIndex < ProbeTotal && probesInFlight < MaxProbesInFlight
+            && issued < MaxProbeIssuesPerTick && !tickBudget.Expired)
         {
             (int dx, int dz) = LodColumnMap.SpiralAt(probeIndex++);
             int cx = spawnCx + dx;
             int cz = spawnCz + dz;
 
             probesInFlight++;
+            issued++;
             sapi.WorldManager.TestMapChunkExists(cx, cz, hit =>
             {
                 // The callback need not be on the main thread, and HashSet is not safe.
@@ -151,8 +159,10 @@ public class LodSavegameSweep
 
     void StepLoad()
     {
+        int allowance = loadAllowance.Available(sapi.World.ElapsedMilliseconds, perSecond);
+        var tickBudget = new LodWorkBudget(TickWorkBudgetMs);
         int loaded = 0;
-        while (loadIndex < LoadTotal && loaded < perSecond)
+        while (loadIndex < LoadTotal && loaded < allowance && !tickBudget.Expired)
         {
             (int dx, int dz) = LodColumnMap.SpiralAt(loadIndex++);
             int cx = spawnCx + dx;
@@ -179,6 +189,7 @@ public class LodSavegameSweep
             Loaded++;
             loaded++;
         }
+        loadAllowance.Spend(loaded);
 
         int percent = loadIndex * 100 / LoadTotal;
         if (percent >= reported + 10)

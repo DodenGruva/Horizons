@@ -82,6 +82,28 @@ public class LodSection
 
     public bool IsEmpty => Runs.Length == 0;
 
+    /// <summary>
+    /// Approximate content retained by this section's arrays and palette. Object headers
+    /// are deliberately omitted: the install budget needs a stable measure proportional
+    /// to section complexity, not a runtime-specific heap profiler.
+    /// </summary>
+    public long EstimatedContentBytes
+    {
+        get
+        {
+            long bytes = ColumnStart.LongLength * sizeof(int)
+                + Runs.LongLength * sizeof(ulong)
+                + Captured.LongLength
+                + Palette.Count * 12L;
+            if (PendingPaletteCodes != null)
+            {
+                foreach (string? code in PendingPaletteCodes)
+                    bytes += 24L + (code?.Length ?? 0) * sizeof(char);
+            }
+            return bytes;
+        }
+    }
+
     public int RunCount(int col) => ColumnStart[col + 1] - ColumnStart[col];
 
     /// <summary>Enumerate a column's runs: callback(paletteId, yTop, yBottom).</summary>

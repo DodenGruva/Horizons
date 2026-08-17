@@ -51,3 +51,19 @@
 - Added 30 focused assertions and expanded the full game-backed fast tier to 758 passing
   assertions across 19 suites.
 - Built and structurally verified an ignored local Release ZIP for human playtesting.
+
+## 2026-08-17 — smoothed periodic work and bounded client installs
+
+- Replaced one-second sweep and transient-generation batches with 50 ms fractional
+  allowances, 1 ms issue deadlines, and at most 16 new probes per tick.
+- Replaced one-second server-assist serving with fair per-player/global allowances and a
+  2 ms serving deadline; explicit unavailable refusals now drain gradually too.
+- Added delayed-tick-safe fractional credit so configured rates remain accurate without
+  releasing catch-up work after a slow tick.
+- Time/byte-bounded server arrivals, integrated-singleplayer foreign blobs, and completed
+  background loads at 2 ms / 512 KiB per owning-thread pass.
+- Guaranteed one oldest FIFO item can progress even when it alone exceeds the byte limit.
+- Added interval item/byte, pending-byte, and oldest-age telemetry for concrete install
+  queues plus stable structural byte estimates for background-loaded sections.
+- Added 29 focused assertions and expanded the full game-backed fast tier to 802 passing
+  assertions across 21 suites.

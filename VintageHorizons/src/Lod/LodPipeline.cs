@@ -108,6 +108,13 @@ public class LodPipeline
     public LodPhaseCost LoadInstallCost, CaptureScheduleCost, CaptureApplyCost,
         MipApplyCost, MipScheduleCost, SaveSnapshotCost;
 
+    /// <summary>Completed background-load publications since the last telemetry reset.</summary>
+    public int LoadInstallItems { get; private set; }
+    public long LoadInstallBytes { get; private set; }
+    public int PendingLoadResults => storageThread?.PendingLoadResults ?? 0;
+    public long PendingLoadResultBytes => storageThread?.PendingLoadResultBytes ?? 0;
+    public long OldestLoadResultAgeMs => storageThread?.OldestLoadResultAgeMs ?? 0;
+
     int tickCounter;
     long worldEpoch;
 
@@ -137,6 +144,8 @@ public class LodPipeline
         MipApplyCost.Reset();
         MipScheduleCost.Reset();
         SaveSnapshotCost.Reset();
+        LoadInstallItems = 0;
+        LoadInstallBytes = 0;
     }
 
     /// <summary>Note a chunk column as needing (re)capture. Safe from any thread.</summary>
@@ -385,15 +394,22 @@ public class LodPipeline
     }
 
     /// <summary>
-    /// Adopt sections the storage thread finished reading. Cheap: the decompress
-    /// already happened off-thread, this only publishes the reference.
+    /// Adopt sections the storage thread finished reading. Decompression already happened
+    /// off-thread, but palette resolution and policy repair still touch the live registry
+    /// here, so publication is bounded by both elapsed time and estimated section bytes.
     /// </summary>
     void InstallLoadedSections()
     {
         if (storageThread == null) return;
 
-        while (storageThread.LoadResults.TryDequeue(out (long Key, LodSection? Section) result))
+        var budget = new LodDrainBudget();
+        while (storageThread.TryPeekLoadResult(out LodLoadResult waiting)
+            && budget.TryStart(waiting.EstimatedBytes))
         {
+            // Single owning-thread consumer: after the successful peek this can fail only
+            // during teardown, in which case no live world remains to publish into.
+            if (!storageThread.TryTakeLoadResult(out LodLoadResult result)) break;
+
             int repaired = 0;
             // Palette ids are resolved here, on the world thread, before anything can
             // read them: the storage thread must not touch the block registry.
@@ -417,6 +433,9 @@ public class LodPipeline
                 World.MarkChanged(result.Key);
             }
         }
+
+        LoadInstallItems += budget.Items;
+        LoadInstallBytes += budget.Bytes;
     }
 
     // ---- Capture scheduling (world thread gathers refs, worker reads blocks) ----

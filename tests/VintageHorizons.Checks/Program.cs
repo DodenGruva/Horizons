@@ -19,6 +19,8 @@ public static class Program
         ("pure", "mip downsample", MipChecks.Run),
         ("pure", "residency", ResidencyChecks.Run),
         ("pure", "phase timing", PhaseCostChecks.Run),
+        ("pure", "tick allowances", AllowanceChecks.Run),
+        ("pure", "drain budgets", DrainBudgetChecks.Run),
         ("pure", "far distance", FarDistanceChecks.Run),
         ("pure", "mesher", MesherChecks.Run),
         ("pure", "server config", ConfigChecks.Run),

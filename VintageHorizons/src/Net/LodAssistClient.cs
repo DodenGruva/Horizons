@@ -153,7 +153,11 @@ public sealed class LodAssistClient
     /// Arrivals awaiting the tick. An empty blob is a refusal; Retryable separates
     /// "not written yet" from "never", which are the same packet otherwise.
     /// </summary>
-    readonly ConcurrentQueue<(long Key, byte[] Blob, bool Retryable)> Arrived = new();
+    readonly ConcurrentQueue<(long Key, byte[] Blob, bool Retryable, long ReadyAtMs)> Arrived = new();
+    long arrivedBytes;
+
+    internal long ArrivalMaxBytesPerTick = LodDrainBudget.DefaultMaxBytes;
+    internal double ArrivalMaxMillisecondsPerTick = LodDrainBudget.DefaultMaxMilliseconds;
 
     readonly HashSet<long> inFlight = new();
 
@@ -185,6 +189,15 @@ public sealed class LodAssistClient
     public int InFlight => inFlight.Count;
     public int SectionsReceived { get; private set; }
     public int SectionsRefused => refused.Count;
+    public int PendingArrivals => Arrived.Count;
+    public long PendingArrivalBytes => Math.Max(0, Interlocked.Read(ref arrivedBytes));
+    public long OldestArrivalAgeMs => Arrived.TryPeek(out var oldest)
+        ? Math.Max(0, NowMs() - oldest.ReadyAtMs)
+        : 0;
+
+    /// <summary>Arrival work since the last telemetry reset.</summary>
+    public int ArrivalItemsProcessed { get; private set; }
+    public long ArrivalBytesProcessed { get; private set; }
 
     /// <summary>Keys currently being retried because the server has not written them yet.</summary>
     public int SectionsPendingOnServer => retriesByKey.Count;
@@ -240,8 +253,12 @@ public sealed class LodAssistClient
 
     public int SectionsRequested { get; private set; }
 
-    internal void OnSection(AssistSection msg) =>
-        Arrived.Enqueue((msg.Key, msg.Blob ?? Array.Empty<byte>(), msg.Retryable));
+    internal void OnSection(AssistSection msg)
+    {
+        byte[] blob = msg.Blob ?? Array.Empty<byte>();
+        Interlocked.Add(ref arrivedBytes, blob.LongLength);
+        Arrived.Enqueue((msg.Key, blob, msg.Retryable, NowMs()));
+    }
 
     /// <summary>
     /// Apply everything the handlers have queued, on the game tick. <paramref name="install"/>
@@ -298,8 +315,13 @@ public sealed class LodAssistClient
             }
         }
 
-        while (Arrived.TryDequeue(out (long Key, byte[] Blob, bool Retryable) got))
+        var arrivalBudget = new LodDrainBudget(
+            ArrivalMaxBytesPerTick, ArrivalMaxMillisecondsPerTick);
+        while (Arrived.TryPeek(out var waiting)
+            && arrivalBudget.TryStart(waiting.Blob.LongLength))
         {
+            if (!Arrived.TryDequeue(out var got)) break;
+            Interlocked.Add(ref arrivedBytes, -got.Blob.LongLength);
             inFlight.Remove(got.Key);
 
             // Call install even for an empty blob, then publish an explicit failure below.
@@ -340,6 +362,15 @@ public sealed class LodAssistClient
             RemoteKeys.Remove(got.Key);
             transferFailed?.Invoke(got.Key, false);
         }
+
+        ArrivalItemsProcessed += arrivalBudget.Items;
+        ArrivalBytesProcessed += arrivalBudget.Bytes;
+    }
+
+    public void ResetPumpStats()
+    {
+        ArrivalItemsProcessed = 0;
+        ArrivalBytesProcessed = 0;
     }
 
     /// <summary>Reset for the next world; the channel itself outlives the join.</summary>
@@ -356,7 +387,9 @@ public sealed class LodAssistClient
         retryNotBeforeByKey.Clear();
         SectionsReceived = 0;
         SectionsRequested = 0;
+        ResetPumpStats();
         while (manifestChunks.TryDequeue(out _)) { }
-        while (Arrived.TryDequeue(out _)) { }
+        while (Arrived.TryDequeue(out var stale))
+            Interlocked.Add(ref arrivedBytes, -stale.Blob.LongLength);
     }
 }

@@ -6,6 +6,15 @@ is released; see [docs/RELEASING.md](docs/RELEASING.md). Newest first.
 
 ## [Unreleased]
 
+**Smoother server sweeps, generation, and terrain transfer.** Savegame sweeping,
+transient generation, and server-assist serving no longer release a full second's work in
+one callback. Their configured rates are spread across normal ticks with small elapsed-time
+ceilings and bounded probe publication. On the client, arrived server sections, local
+singleplayer-cache blobs, and completed background loads now stop after 2 ms or 512 KiB in
+a tick instead of draining solely because results are ready. FIFO work always advances by
+at least one section, and telemetry reports queued bytes and oldest age. These policies are
+source- and harness-tested; integrated sweep/assist playtesting is still pending.
+
 **Less per-frame renderer work.** The renderer used to scan every resident distant-terrain
 mesh on every frame to find the camera's far edge. Because that distance was an exact
 camera-relative number, ordinary movement could also rebuild the game's projection for

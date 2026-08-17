@@ -115,6 +115,28 @@ and the quantized camera projection.
 
 **Do:** set `Pooling=false` on deliberate stale-file/schema-edit connections, or explicitly clear the relevant pool before replacement.
 
+### G14 — A tick burst cap must retain fractional rate credit
+
+**Trigger:** converting a per-second allowance into fixed-cadence tick grants.
+
+**Trap:** clamping all stored credit to the whole-item tick cap before spending discards
+fractional overflow whenever the configured rate does not divide the tick frequency. At
+20 Hz, a first implementation made an 8/s allowance run at roughly 6.7/s.
+
+**Do:** cap the actual whole-item grant, retain less than one token of normal fractional
+overflow, and discard old credit only when a delayed tick could create catch-up work.
+
+### G15 — A byte ceiling can starve an oversized FIFO head forever
+
+**Trigger:** adding byte or elapsed-time limits to a result queue.
+
+**Trap:** if the oldest item is larger than the byte limit and admission is checked before
+any work, every tick rejects the same item and nothing behind it can progress.
+
+**Do:** admit at least one oldest item from a non-empty drain, record its actual/estimated
+bytes, then stop before later work once a ceiling is exceeded. Track oldest age so lack of
+progress remains visible.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
