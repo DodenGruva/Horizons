@@ -22,12 +22,12 @@ doing what the history already does.
 
 ## 3. Update CHANGELOG.md
 
-Move everything under `## [Unreleased]` to a new `## [X.Y.Z] - YYYY-MM-DD` heading below
-it. Then leave `## [Unreleased]` empty above for whatever lands next. Write in the same
-voice as the rest of the file and the tag messages below. Say what changed and why it
-matters, not a bullet dump of commit subjects. Sometimes `[Unreleased]` is thin because
-changes landed without notes. That is the moment to read `git log vX.Y.Z..HEAD` and
-write the entry properly, rather than ship it thin.
+Review `## [Unreleased]` against `git log vX.Y.Z..HEAD`, the session index, and current
+status; it is a running player-facing ledger, not proof that nothing was missed. Fill any
+gaps in the same voice as the rest of the file. Say what changed and why it matters, not a
+bullet dump of commit subjects. Then move the complete text to a new
+`## [X.Y.Z] - YYYY-MM-DD` heading and leave `## [Unreleased]` empty above for whatever
+lands next.
 
 ## 4. Update the description
 

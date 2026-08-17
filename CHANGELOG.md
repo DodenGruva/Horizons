@@ -1,9 +1,44 @@
 # Changelog
 
-Written when a version is released, not when a commit lands - see
-[docs/RELEASING.md](docs/RELEASING.md). Newest first.
+Player- and operator-visible changes accumulate under **Unreleased** once they are
+established well enough to describe. The section is reviewed and finalized when a version
+is released; see [docs/RELEASING.md](docs/RELEASING.md). Newest first.
 
 ## [Unreleased]
+
+**Less per-frame renderer work.** The renderer used to scan every resident distant-terrain
+mesh on every frame to find the camera's far edge. Because that distance was an exact
+camera-relative number, ordinary movement could also rebuild the game's projection for
+tiny changes. The renderer now maintains the outer world-space bounds as meshes arrive and
+leave, so the steady calculation takes constant work however large the explored cache is.
+The camera projection grows immediately in safe 512-block steps and waits five seconds
+before shrinking to a stable lower step. The `.vhfar` cap behaves as before. Isolated
+checks cover the bounds and projection policy; continuous moving-camera playtesting is
+still pending.
+
+**Fixed: a temporary section miss no longer leaves that distant terrain stuck for the
+session.** A local singleplayer-cache read that missed could stop being wanted while still
+occupying an in-flight slot. A server's retryable "not written yet" answer could likewise
+finish the network attempt without restoring the pipeline request. Both paths now release
+the completed attempt and return the section to an explicit retryable state. Server retries
+wait 7.5 seconds and span a bounded window of roughly one minute; permanent refusal and
+bad data remain terminal instead of retrying forever.
+
+**Faster large singleplayer and server-assisted caches.** The integrated-singleplayer
+client no longer enumerates the sibling server cache's complete SQLite key index on the
+game thread. A dedicated read-only worker scans at a coarse cadence and publishes only new
+keys in bounded batches. Incoming server manifests are also applied once, one bounded
+chunk at a time, instead of passing the complete retained offer set through the pipeline
+on every tick. Idle game-thread work no longer grows with every section ever explored or
+offered.
+
+**Faster active exploration.** Building coarser horizon levels used to collect, sort, and
+merge vertical boundaries on the game tick. In the reproduced short exploration route,
+that phase reached 20–22.5 ms p95, 32.5–35 ms p99, and 103.1 ms maximum. The merge now runs
+on a bounded worker and carries world/revision identity so an old result cannot overwrite
+newer terrain. Two repeats of the same route ended with no mip errors or backlog and no
+game ticks at or above 25 ms. These are controlled short-route measurements; long
+continuous play and interrupted-restart testing remain open.
 
 ## [0.2.1] - 2026-08-15
 
