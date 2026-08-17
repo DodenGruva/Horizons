@@ -46,6 +46,11 @@
 
 **Do:** cache world-space bounds, compute distance in O(1), and quantize the applied far plane with hysteresis.
 
+**Implemented:** Session 5 tracks both opaque and water footprints, grows the projection
+immediately in safe 512-block steps, and requires a lower step to remain stable for five
+seconds before shrinking. Preserve the separation between the continuous shader far edge
+and the quantized camera projection.
+
 ### G6 — A request slot must end in success, explicit refusal, or retryable state
 
 **Trigger:** changing local offers, server assist, load failures, queue caps, or packet drops.

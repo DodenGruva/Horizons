@@ -37,3 +37,17 @@
 - Restored retryable server requests to the owning pipeline with a monotonic cooldown and bounded roughly one-minute retry window.
 - Cleared queued manifests between worlds and stopped the local reader during both normal world leave and mod disposal.
 - Expanded the full game-backed fast tier to 728 passing assertions.
+
+## 2026-08-17 — cached bounds and stable projection
+
+- Replaced the per-frame scan of every opaque mesh with cached horizontal world-space
+  bounds covering both opaque and water mesh keys.
+- Expanded bounds in constant time on installation and deferred one exact rebuild after an
+  extreme mesh removal; ordinary far-distance calculation is independent of mesh count.
+- Quantized the applied camera far plane upward in 512-block steps, with immediate growth
+  and a five-second stable cooldown before shrink.
+- Preserved the continuous shader far edge, vanilla-view safety margin, explicit `.vhfar`
+  cap, and world teardown reset.
+- Added 30 focused assertions and expanded the full game-backed fast tier to 758 passing
+  assertions across 19 suites.
+- Built and structurally verified an ignored local Release ZIP for human playtesting.

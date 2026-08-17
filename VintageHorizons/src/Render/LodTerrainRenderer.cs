@@ -66,6 +66,8 @@ public class LodTerrainRenderer : IRenderer
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
     readonly Dictionary<long, MeshRef> waterMeshes = new();
+    readonly LodMeshBounds meshBounds = new();
+    readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
     readonly Dictionary<long, long> lastSelectedFrame = new();
     readonly List<long> evictBatch = new();
@@ -203,33 +205,24 @@ public class LodTerrainRenderer : IRenderer
 
     public void ApplyZFar()
     {
-        float needed = GameMath.Max(3000, EffectiveFarDistance + 512);
+        float needed = LodFarDistance.RequiredProjection(EffectiveFarDistance);
+        LodFarPlaneUpdate update = farPlaneState.Update(needed, Environment.TickCount64);
         var clientMain = (ClientMain)capi.World;
 
-        if (clientMain.MainCamera.ZFar >= needed && appliedZFar == needed) return;
+        if (!update.Changed && clientMain.MainCamera.ZFar >= update.Distance
+            && appliedZFar == update.Distance) return;
 
-        clientMain.MainCamera.ZFar = needed;
+        clientMain.MainCamera.ZFar = update.Distance;
         capi.Render.Reset3DProjection();
-        appliedZFar = needed;
+        appliedZFar = update.Distance;
         ProjectionResetCount++;
     }
 
     void UpdateEffectiveFarDistance(float vanillaViewDistance)
     {
-        double maxDistSq = 0;
-        foreach (long key in sectionMeshes.Keys)
-        {
-            int footprint = LodWorld.KeyFootprintBlocks(key);
-            double dx = LodWorld.KeySx(key) * (double)footprint + footprint / 2.0 - camPos.X;
-            double dz = LodWorld.KeySz(key) * (double)footprint + footprint / 2.0 - camPos.Z;
-            double distSq = dx * dx + dz * dz;
-            if (distSq > maxDistSq) maxDistSq = distSq;
-        }
-
-        float far = (float)Math.Sqrt(maxDistSq) + LodSection.SectionBlocks * 1.5f;
-        if (FarViewDistanceCap > 0) far = Math.Min(far, FarViewDistanceCap);
-
-        EffectiveFarDistance = GameMath.Max(far, vanillaViewDistance + 1536);
+        if (meshBounds.Dirty) meshBounds.Rebuild(sectionMeshes.Keys, waterMeshes.Keys);
+        double farthest = meshBounds.FarthestDistanceTo(camPos.X, camPos.Z);
+        EffectiveFarDistance = LodFarDistance.Effective(farthest, vanillaViewDistance, FarViewDistanceCap);
     }
 
     // ---- Detail selection (quadtree walk) ----
@@ -415,8 +408,7 @@ public class LodTerrainRenderer : IRenderer
 
         foreach (long key in evictBatch)
         {
-            if (sectionMeshes.Remove(key, out MeshRef? mesh)) mesh.Dispose();
-            if (waterMeshes.Remove(key, out MeshRef? water)) water.Dispose();
+            RemoveMeshes(key);
             lastSelectedFrame.Remove(key);
             EvictedTotal++;
         }
@@ -532,16 +524,14 @@ public class LodTerrainRenderer : IRenderer
                 }
                 else
                 {
-                    if (sectionMeshes.Remove(best, out MeshRef? gone)) gone.Dispose();
-                    if (waterMeshes.Remove(best, out MeshRef? goneWater)) goneWater.Dispose();
+                    RemoveMeshes(best);
                 }
                 continue;
             }
 
             if (section.CapturedColumns == 0)
             {
-                if (sectionMeshes.Remove(best, out MeshRef? stale)) stale.Dispose();
-                if (waterMeshes.Remove(best, out MeshRef? staleWater)) staleWater.Dispose();
+                RemoveMeshes(best);
                 continue;
             }
 
@@ -570,8 +560,8 @@ public class LodTerrainRenderer : IRenderer
         {
             meshJobInFlight.Remove(result.Key);
 
-            if (sectionMeshes.Remove(result.Key, out MeshRef? old)) old.Dispose();
-            if (waterMeshes.Remove(result.Key, out MeshRef? oldWater)) oldWater.Dispose();
+            bool hadMesh = HasAnyMesh(result.Key);
+            DisposeMeshRefs(result.Key);
 
             if (result.IndexCount > 0)
             {
@@ -585,9 +575,26 @@ public class LodTerrainRenderer : IRenderer
                     result.WaterVertexCount, result.WaterIndexCount);
             }
 
+            bool hasMesh = HasAnyMesh(result.Key);
+            if (!hadMesh && hasMesh) meshBounds.Include(result.Key);
+            else if (hadMesh && !hasMesh) meshBounds.Remove(result.Key);
+
             // Fresh uploads get a grace stamp so they aren't evicted before first selection.
             lastSelectedFrame[result.Key] = frameCounter;
         }
+    }
+
+    void RemoveMeshes(long key)
+    {
+        if (!HasAnyMesh(key)) return;
+        DisposeMeshRefs(key);
+        meshBounds.Remove(key);
+    }
+
+    void DisposeMeshRefs(long key)
+    {
+        if (sectionMeshes.Remove(key, out MeshRef? mesh)) mesh.Dispose();
+        if (waterMeshes.Remove(key, out MeshRef? water)) water.Dispose();
     }
 
     MeshRef Upload(float[] xyz, byte[] rgba, int[] indices, int vertCount, int indexCount)
@@ -787,6 +794,10 @@ public class LodTerrainRenderer : IRenderer
         foreach (MeshRef meshRef in waterMeshes.Values) meshRef.Dispose();
         sectionMeshes.Clear();
         waterMeshes.Clear();
+        meshBounds.Clear();
+        farPlaneState.Reset();
+        appliedZFar = 0;
+        EffectiveFarDistance = LodFarDistance.MinimumProjectionDistance;
         meshJobInFlight.Clear();
         lastSelectedFrame.Clear();
     }

@@ -5,7 +5,7 @@
 **Status date:** 2026-08-17
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `31` C# files under `VintageHorizons/src`
+**Source files:** `32` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance instrumentation, versioned asynchronous mip propagation, and incremental local/network key discovery with retry-safe request transitions. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, and cached renderer bounds with stable projection changes. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -35,6 +35,7 @@ Mip jobs carry a world epoch, child identity, and content revision. The child re
 7. Sibling-cache key enumeration moved from the game tick to a dedicated coarse-cadence reader; it publishes newly discovered keys in batches of at most 2,048 and unchanged scans publish nothing.
 8. Server manifest ingestion applies one protocol-bounded chunk per tick and sends only that chunk's new keys into the pipeline instead of re-enumerating the retained manifest every tick.
 9. Local and network transfer failures now end in explicit installed, retryable, or unavailable state. Retryable server replies restore the pipeline request under a 7.5-second cooldown and bounded roughly one-minute retry window.
+10. Opaque and water mesh footprints maintain cached world-space bounds. Ordinary frames calculate the farthest required distance in O(1); the camera projection grows immediately in safe 512-block steps and shrinks only after a lower step remains stable for five seconds.
 
 ## 4. Measured diagnosis and result
 
@@ -55,10 +56,9 @@ The route is intentionally short and teleport-driven. It is strong evidence for 
 ## 5. Remaining performance findings
 
 1. Capture-result publication is now the largest measured owning-thread pipeline phase, reaching 11.3–14.1 ms maximum in the after runs.
-2. Every rendered frame scans resident section meshes for camera-relative far distance. Exact float changes can reset projection during movement; active intervals counted 2–19 resets.
-3. Sweep, transient generation, and assist serving still release per-second allowances in one-second callbacks.
-4. Assist arrivals and background load results are drained without elapsed-time or byte ceilings. Local foreign-blob read/decode/recolour/install remains owning-thread work under an item-count budget.
-5. Dirty pruning, scheduling, far-plane calculation, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
+2. Sweep, transient generation, and assist serving still release per-second allowances in one-second callbacks.
+3. Assist arrivals and background load results are drained without elapsed-time or byte ceilings. Local foreign-blob read/decode/recolour/install remains owning-thread work under an item-count budget.
+4. Dirty pruning, scheduling, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -71,9 +71,9 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Cache mesh bounds and stabilize far-plane projection changes; this is the next implementation phase.
+1. Spread sweep and assist allowances across ticks, then time/byte-budget owning-thread installs; this is the next implementation phase.
 2. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios plus queue-age/allocation telemetry.
-3. Smooth periodic server work and time/byte-budget installs, capture publication, and uploads where measurement warrants.
+3. Time-budget capture publication and GPU uploads where longer measurement warrants.
 4. Move foreign structural decode off-thread with owning-thread registry resolution.
 5. Make traversal/scheduling visibility-aware without coupling visibility to residency.
 6. Add storage save revisions, acknowledgements, retry, and shutdown durability.
@@ -88,12 +88,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The active branch descends from fork release 0.2.1 at `f8d4b03`.
 - The complete sibling-cache key query exists only on the dedicated discovery worker; the owning tick consumes at most one immutable delta batch.
 - Manifest ingestion publishes each chunk's new keys once; ordinary ticks no longer pass the retained `RemoteKeys` set through the pipeline.
-- Far-plane scan/reset, burst callbacks, unbounded drains, count-only uploads, and save acknowledgement gaps remain visible in source.
+- The steady far-distance path no longer enumerates resident mesh dictionaries. Mesh arrival/removal owns bounds updates, and only an extreme removal requests a later exact rebuild.
+- Burst callbacks, unbounded drains, count-only uploads, and save acknowledgement gaps remain visible in source.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 170 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 728 assertions across all 18 suites, including SQLite discovery/delta, remote-request state, server-assist retry, blob, and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 174 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 758 assertions across all 19 suites, including 30 cached-bounds/far-plane assertions, SQLite discovery/delta, remote-request state, server-assist retry, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four isolated route artifacts exist locally: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors.
 - The corrected Windows harness completed client and server shutdown without force termination.
@@ -103,6 +104,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - No human playtest has evaluated the runtime change.
 - No long continuous-movement, rotation, join, sweep, or assist soak has been compared before/after.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
+- No moving-camera game process has yet measured projection-reset frequency or visually checked the cached-bounds far plane for clipping.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
 
 ## 9. Known uncertainty
@@ -111,6 +113,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Teleport-driven exploration emphasizes capture/propagation and may underrepresent steady traversal, projection, and shader costs.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
+- Cached bounds remove the steady mesh scan by construction, but the 512-block projection step, five-second shrink cooldown, and conservative rectangular overestimate have not yet been evaluated in continuous play.
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 
 ## 10. Documentation map

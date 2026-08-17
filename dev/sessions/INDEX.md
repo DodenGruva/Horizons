@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 5 | 2026-08-17 | 0.2.1 | — | Cached opaque/water mesh bounds; made steady far-distance calculation O(1); stabilized projection with quantized growth and delayed shrink. |
 | 4 | 2026-08-17 | 0.2.1 | — | Moved sibling-cache key discovery to a dedicated delta publisher; applied manifests once; made local/server failures explicitly retryable or terminal. |
 | 3 | 2026-08-17 | 0.2.1 | — | Instrumented and reproduced game-tick spikes; moved versioned mip construction off-thread; two before/after routes eliminated measured ≥25 ms tick hitches. |
 | 2 | 2026-08-17 | 0.2.1 | — | Supplied snapshot matched to fork history; working branch rebased onto release 0.2.1; documentation and performance plan reconciled with existing fork fixes. |

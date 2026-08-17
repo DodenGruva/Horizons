@@ -112,6 +112,14 @@ The renderer uses a quadtree over section levels. Distance selects the desired d
 
 Opaque and translucent terrain use separate mesh buffers and passes. Seasonal/climate tint data is refreshed from live game color maps and applied in the shader. The camera uses relative section transforms so large world coordinates do not enter mesh vertex data.
 
+The renderer maintains a horizontal world-space rectangle over all opaque and water mesh
+keys. Additions expand it in constant time; removing an extreme marks it for one rebuild
+from the surviving keys. Ordinary frames derive the farthest required distance from the
+rectangle without scanning resident meshes. The camera far plane rounds upward in
+512-block steps, grows immediately, and shrinks only after a lower step remains stable for
+five seconds. The shader's effective far edge remains continuous, and `.vhfar` remains an
+explicit culling/far-edge cap rather than a different residency policy.
+
 Visibility, residency, and persistence are different concerns:
 
 - Visibility decides what is traversed and drawn now.

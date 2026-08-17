@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, and incremental key discovery/request correctness are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, and cached bounds with stable projection are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -16,7 +16,7 @@ The fork already implemented several relevant improvements after the reviewed sn
 - Dirty scheduling uses one bounded nearest-candidate pass instead of repeated full-set scans, and the render walk removed per-node square roots/logarithms.
 - Mesher scratch allocation was pooled, and basic renderer phase average/maximum timing exists.
 
-These are the new baseline, not work to reimplement. At plan approval, they did not close the plan: the once-per-second local scan was still a full main-thread query; the network manifest was still re-enumerated each tick; far-plane calculation and projection resets remained movement-sensitive; periodic server work remained bursty; installs and uploads lacked elapsed-time/byte ceilings; mip propagation was synchronous; and traversal/scheduling still scanned whole collections. The measured re-prioritization below records the first item since completed locally.
+These are the new baseline, not work to reimplement. At plan approval, they did not close the plan: the once-per-second local scan was still a full main-thread query; the network manifest was still re-enumerated each tick; far-plane calculation and projection resets remained movement-sensitive; periodic server work remained bursty; installs and uploads lacked elapsed-time/byte ceilings; mip propagation was synchronous; and traversal/scheduling still scanned whole collections. The measured re-prioritization and phase status notes below record the items since completed locally.
 
 ## Measured re-prioritization — 2026-08-17
 
@@ -164,6 +164,13 @@ Instrumentation should be cheap when disabled and available through an explicit 
 - Transient misses eventually install or remain visibly retryable; no key is stranded.
 
 ## 6. Phase 3 — cached bounds and stable projection
+
+**Implementation status:** Complete locally at the source and harness levels. Opaque and
+water mesh footprints maintain a cached world-space rectangle; ordinary frames compute the
+required distance in O(1). The applied projection rounds upward to 512-block steps, grows
+immediately, and shrinks after a stable five-second cooldown. Thirty isolated assertions
+cover bounds, caps, quantization, hysteresis, and reset. A continuous moving-camera run and
+visual clipping check remain open before runtime acceptance.
 
 ### Work
 
