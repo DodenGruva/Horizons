@@ -41,6 +41,15 @@ public class LodWorld
     /// <summary>Sections whose parent still needs to absorb their content (persisted as ApplyToParent).</summary>
     public readonly HashSet<long> MipDirty = new();
 
+    // A job keeps its child dirty until a revision-valid result commits. Parent pins
+    // stop the resident section receiving that result from disappearing meanwhile.
+    readonly Dictionary<long, long> mipInFlight = new();
+    readonly Dictionary<long, int> mipParentPins = new();
+    readonly Dictionary<long, long> contentRevisions = new();
+
+    public int MipInFlightCount => mipInFlight.Count;
+    public long ContentRevision(long key) => contentRevisions.GetValueOrDefault(key);
+
     /// <summary>Every key (all levels) that holds data or has any descendant with data. Drives quadtree descent.</summary>
     public readonly HashSet<long> HasDataSet = new();
 
@@ -199,7 +208,11 @@ public class LodWorld
             if (level >= MaxLevel) continue;
             // Unsaved or unpropagated data pins a section; a pending mesh rebuild does
             // NOT - the scheduler demand-reloads from disk when its turn comes.
-            if (SaveDirty.Contains(key) || MipDirty.Contains(key)) { LastSweepPinned++; continue; }
+            if (SaveDirty.Contains(key) || MipDirty.Contains(key) || mipParentPins.ContainsKey(key))
+            {
+                LastSweepPinned++;
+                continue;
+            }
 
             int footprint = KeyFootprintBlocks(key);
             double minX = KeySx(key) * (double)footprint;
@@ -281,6 +294,7 @@ public class LodWorld
 
     public void MarkChanged(long key)
     {
+        contentRevisions[key] = ContentRevision(key) + 1;
         RenderDirty.Add(key);
         SaveDirty.Add(key);
         if (KeyLevel(key) < MaxLevel) MipDirty.Add(key);
@@ -307,19 +321,24 @@ public class LodWorld
         if (applyToParent && level < MaxLevel) MipDirty.Add(key);
     }
 
-    // ---- Mip propagation (child → parent), main thread, budgeted ----
+    // ---- Mip propagation (child → parent), worker-built and revision-validated ----
 
-    public void ProcessPropagation(int maxSections)
+    /// <summary>
+    /// Freeze a bounded set of pending children for the mip worker. Dirty state is not
+    /// cleared here: it is the durable rerun obligation until a matching result commits.
+    /// </summary>
+    public List<MipJob> CreatePropagationJobs(long epoch, int maxSections)
     {
-        if (MipDirty.Count == 0) return;
+        var jobs = new List<MipJob>(maxSections);
+        if (MipDirty.Count == 0 || maxSections <= 0) return jobs;
 
-        List<long>? batch = null;
+        var batch = new List<long>(maxSections);
         foreach (long key in MipDirty)
         {
-            (batch ??= new List<long>()).Add(key);
+            if (mipInFlight.ContainsKey(key)) continue;
+            batch.Add(key);
             if (batch.Count >= maxSections) break;
         }
-        if (batch == null) return;
 
         foreach (long childKey in batch)
         {
@@ -331,18 +350,52 @@ public class LodWorld
             if (!EnsureResident(childKey)) continue;
             if (!EnsureResident(parentKey)) continue;
 
-            MipDirty.Remove(childKey);
-            SaveDirty.Add(childKey); // persist the cleared ApplyToParent flag
-
-            if (!Sections.TryGetValue(childKey, out LodSection? child) || child.CapturedColumns == 0) continue;
-
-            LodSection parent = GetOrCreateSection(parentKey);
-
-            if (LodMip.DownsampleIntoParent(child, parent, KeySx(childKey) & 1, KeySz(childKey) & 1))
+            if (!Sections.TryGetValue(childKey, out LodSection? child) || child.CapturedColumns == 0)
             {
-                MarkChanged(parentKey);
+                MipDirty.Remove(childKey);
+                SaveDirty.Add(childKey); // persist the cleared ApplyToParent flag
+                continue;
             }
+
+            long revision = ContentRevision(childKey);
+            mipInFlight[childKey] = revision;
+            mipParentPins[parentKey] = mipParentPins.GetValueOrDefault(parentKey) + 1;
+            jobs.Add(LodMip.CreateJob(epoch, childKey, revision, child,
+                KeySx(childKey) & 1, KeySz(childKey) & 1));
         }
+
+        return jobs;
+    }
+
+    /// <summary>
+    /// Publish one worker result if the child still has exactly the revision that was
+    /// snapshotted. A stale or failed result releases its slot but leaves MipDirty set,
+    /// so the newest content is scheduled again rather than overwritten.
+    /// </summary>
+    public bool CompletePropagation(MipResult result)
+    {
+        if (!mipInFlight.TryGetValue(result.ChildKey, out long expectedRevision)
+            || expectedRevision != result.ChildRevision) return false;
+
+        mipInFlight.Remove(result.ChildKey);
+        long parentKey = ParentKey(result.ChildKey);
+        if (mipParentPins.TryGetValue(parentKey, out int pins))
+        {
+            if (pins <= 1) mipParentPins.Remove(parentKey);
+            else mipParentPins[parentKey] = pins - 1;
+        }
+
+        if (result.Failed || ContentRevision(result.ChildKey) != result.ChildRevision)
+        {
+            return false;
+        }
+
+        MipDirty.Remove(result.ChildKey);
+        SaveDirty.Add(result.ChildKey); // persist the cleared ApplyToParent flag
+
+        LodSection parent = GetOrCreateSection(parentKey);
+        if (LodMip.ApplyToParent(result, parent)) MarkChanged(parentKey);
+        return true;
     }
 
     /// <summary>
@@ -371,6 +424,9 @@ public class LodWorld
         RenderDirty.Clear();
         SaveDirty.Clear();
         MipDirty.Clear();
+        mipInFlight.Clear();
+        mipParentPins.Clear();
+        contentRevisions.Clear();
         HasDataSet.Clear();
         TopLevelKeys.Clear();
         LoadsInFlight.Clear();

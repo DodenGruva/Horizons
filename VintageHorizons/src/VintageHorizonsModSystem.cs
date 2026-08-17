@@ -243,11 +243,22 @@ public class VintageHorizonsModSystem : ModSystem
     {
         if (!pipeline.Active) return;
 
+        long tickStart = LodPhaseCost.Start();
         ReportFillIn();
-        PumpServerAssist();
-        PumpLocalOffers();
-        pipeline.Tick();
 
+        long phaseStart = LodPhaseCost.Start();
+        PumpServerAssist();
+        assistTickCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
+        PumpLocalOffers();
+        localOfferTickCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
+        pipeline.Tick();
+        pipelineTickCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         var pos = capi.World.Player.Entity.Pos;
         if (pipeline.MaybeEvictAround(pos.X, pos.Z))
         {
@@ -256,6 +267,8 @@ public class VintageHorizonsModSystem : ModSystem
                 (int)pos.X, (int)pos.Z, world.LastSweepChecked, world.LastSweepPinned,
                 world.LastSweepCold, world.EvictedSectionsTotal);
         }
+        residentEvictTickCost.Add(phaseStart);
+        totalTickCost.Add(tickStart);
     }
 
     /// <summary>
@@ -733,8 +746,10 @@ public class VintageHorizonsModSystem : ModSystem
         capi.SendChatMessage($"/tp ={(int)exploreX} {y} ={(int)exploreZ}");
     }
 
-    bool loggedFirstCaptureError, loggedFirstMeshError, loggedFirstSaveError;
+    bool loggedFirstCaptureError, loggedFirstMeshError, loggedFirstMipError, loggedFirstSaveError;
     int gen0AtLastReport, gen1AtLastReport, gen2AtLastReport;
+    LodPhaseCost totalTickCost, assistTickCost, localOfferTickCost, pipelineTickCost,
+        residentEvictTickCost;
 
     void LogStats(string prefix)
     {
@@ -752,16 +767,23 @@ public class VintageHorizonsModSystem : ModSystem
             loggedFirstMeshError = true;
             Mod.Logger.Warning("First mesh error was: {0}", worker.FirstMeshError);
         }
+        if (!loggedFirstMipError && worker.FirstMipError != null)
+        {
+            loggedFirstMipError = true;
+            Mod.Logger.Warning("First mip error was: {0}", worker.FirstMipError);
+        }
 
         Mod.Logger.Notification(
             "{0}: {1} sections resident [{2}] ({3} RAM-evicted, {4} from cache), {5} meshes ({6} evicted), " +
             "{7} selected [{8}] minus {9} frustum-culled, {10} columns captured, {11} pending, " +
-            "worker: {12} captures / {13} meshes queued / {14}+{15} errors, {16} awaiting mip, {17} render-dirty, {18} unsaved",
+            "worker: {12} captures / {13} meshes / {14} mips queued / {15}+{16}+{17} errors, " +
+            "{18} awaiting mip ({19} in flight), {20} render-dirty, {21} unsaved",
             prefix, world.Sections.Count, world.DescribeLevels(), world.EvictedSectionsTotal, pipeline.CachedSectionsLoaded,
             renderer.MeshCount, renderer.EvictedTotal, renderer.LastDrawCount, renderer.DescribeDrawnLevels(),
-            renderer.LastCulledCount, pipeline.ColumnsCaptured, pipeline.PendingColumns, worker.PendingCaptures, worker.PendingMeshes,
-            worker.CaptureErrors, worker.MeshErrors, world.MipDirty.Count, world.RenderDirty.Count,
-            world.SaveDirty.Count);
+            renderer.LastCulledCount, pipeline.ColumnsCaptured, pipeline.PendingColumns,
+            worker.PendingCaptures, worker.PendingMeshes, worker.PendingMips,
+            worker.CaptureErrors, worker.MeshErrors, worker.MipErrors,
+            world.MipDirty.Count, world.MipInFlightCount, world.RenderDirty.Count, world.SaveDirty.Count);
 
         Mod.Logger.Notification(
             "  storage on main thread since last report: snapshot {0} calls, {1:0.00}ms avg, {2:0.00}ms max | " +
@@ -825,6 +847,32 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.DrawCost.AvgUs, renderer.DrawCost.MaxUs,
                 renderer.PruneCost.AvgUs, renderer.PruneCost.MaxUs);
 
+            Mod.Logger.Notification(
+                "  render p95/p99/max us: prune {0:0}/{1:0}/{2:0} | schedule {3:0}/{4:0}/{5:0} | "
+                + "upload {6:0}/{7:0}/{8:0} | evict {9:0}/{10:0}/{11:0} | seasonal {12:0}/{13:0}/{14:0} | "
+                + "far {15:0}/{16:0}/{17:0} | walk {18:0}/{19:0}/{20:0} | draw {21:0}/{22:0}/{23:0}",
+                renderer.PruneCost.P95Us, renderer.PruneCost.P99Us, renderer.PruneCost.MaxUs,
+                renderer.ScheduleCost.P95Us, renderer.ScheduleCost.P99Us, renderer.ScheduleCost.MaxUs,
+                renderer.UploadCost.P95Us, renderer.UploadCost.P99Us, renderer.UploadCost.MaxUs,
+                renderer.EvictCost.P95Us, renderer.EvictCost.P99Us, renderer.EvictCost.MaxUs,
+                renderer.SeasonalCost.P95Us, renderer.SeasonalCost.P99Us, renderer.SeasonalCost.MaxUs,
+                renderer.FarDistanceCost.P95Us, renderer.FarDistanceCost.P99Us, renderer.FarDistanceCost.MaxUs,
+                renderer.WalkCost.P95Us, renderer.WalkCost.P99Us, renderer.WalkCost.MaxUs,
+                renderer.DrawCost.P95Us, renderer.DrawCost.P99Us, renderer.DrawCost.MaxUs);
+
+            Mod.Logger.Notification(
+                "  render interval: {0} projection resets, {1:0.00} MiB uploaded; phase hitches >=25/50/100ms: {2}/{3}/{4}",
+                renderer.ProjectionResetCount, renderer.MeshUploadBytes / (1024.0 * 1024.0),
+                renderer.PruneCost.Over25Ms + renderer.ScheduleCost.Over25Ms + renderer.UploadCost.Over25Ms
+                    + renderer.EvictCost.Over25Ms + renderer.SeasonalCost.Over25Ms + renderer.FarDistanceCost.Over25Ms
+                    + renderer.WalkCost.Over25Ms + renderer.DrawCost.Over25Ms,
+                renderer.PruneCost.Over50Ms + renderer.ScheduleCost.Over50Ms + renderer.UploadCost.Over50Ms
+                    + renderer.EvictCost.Over50Ms + renderer.SeasonalCost.Over50Ms + renderer.FarDistanceCost.Over50Ms
+                    + renderer.WalkCost.Over50Ms + renderer.DrawCost.Over50Ms,
+                renderer.PruneCost.Over100Ms + renderer.ScheduleCost.Over100Ms + renderer.UploadCost.Over100Ms
+                    + renderer.EvictCost.Over100Ms + renderer.SeasonalCost.Over100Ms + renderer.FarDistanceCost.Over100Ms
+                    + renderer.WalkCost.Over100Ms + renderer.DrawCost.Over100Ms);
+
             // Collections since the last report, beside the phase maxima, because the
             // two are related and the relationship is easy to get backwards. A phase
             // maximum is not a measurement of that phase: the far-distance scan averages
@@ -844,12 +892,44 @@ public class VintageHorizonsModSystem : ModSystem
             gen2AtLastReport = GC.CollectionCount(2);
         }
 
+        if (totalTickCost.Calls > 0)
+        {
+            Mod.Logger.Notification(
+                "  game tick p95/p99/max us over {0} ticks: total {1:0}/{2:0}/{3:0} | assist {4:0}/{5:0}/{6:0} | "
+                + "local offers {7:0}/{8:0}/{9:0} | pipeline {10:0}/{11:0}/{12:0} | resident evict {13:0}/{14:0}/{15:0}; "
+                + "total hitches >=25/50/100ms: {16}/{17}/{18}",
+                totalTickCost.Calls,
+                totalTickCost.P95Us, totalTickCost.P99Us, totalTickCost.MaxUs,
+                assistTickCost.P95Us, assistTickCost.P99Us, assistTickCost.MaxUs,
+                localOfferTickCost.P95Us, localOfferTickCost.P99Us, localOfferTickCost.MaxUs,
+                pipelineTickCost.P95Us, pipelineTickCost.P99Us, pipelineTickCost.MaxUs,
+                residentEvictTickCost.P95Us, residentEvictTickCost.P99Us, residentEvictTickCost.MaxUs,
+                totalTickCost.Over25Ms, totalTickCost.Over50Ms, totalTickCost.Over100Ms);
+
+            Mod.Logger.Notification(
+                "  pipeline p95/p99/max us: load install {0:0}/{1:0}/{2:0} | capture schedule {3:0}/{4:0}/{5:0} | "
+                + "capture apply {6:0}/{7:0}/{8:0} | mip apply {9:0}/{10:0}/{11:0} | "
+                + "mip schedule {12:0}/{13:0}/{14:0} | save snapshot {15:0}/{16:0}/{17:0}",
+                pipeline.LoadInstallCost.P95Us, pipeline.LoadInstallCost.P99Us, pipeline.LoadInstallCost.MaxUs,
+                pipeline.CaptureScheduleCost.P95Us, pipeline.CaptureScheduleCost.P99Us, pipeline.CaptureScheduleCost.MaxUs,
+                pipeline.CaptureApplyCost.P95Us, pipeline.CaptureApplyCost.P99Us, pipeline.CaptureApplyCost.MaxUs,
+                pipeline.MipApplyCost.P95Us, pipeline.MipApplyCost.P99Us, pipeline.MipApplyCost.MaxUs,
+                pipeline.MipScheduleCost.P95Us, pipeline.MipScheduleCost.P99Us, pipeline.MipScheduleCost.MaxUs,
+                pipeline.SaveSnapshotCost.P95Us, pipeline.SaveSnapshotCost.P99Us, pipeline.SaveSnapshotCost.MaxUs);
+        }
+
         if (storageThread?.FirstSaveError != null && !loggedFirstSaveError)
         {
             loggedFirstSaveError = true;
             Mod.Logger.Warning("First storage-write error was: {0}", storageThread.FirstSaveError);
         }
         pipeline.ResetStorageStats();
+        pipeline.ResetPhaseCosts();
+        totalTickCost.Reset();
+        assistTickCost.Reset();
+        localOfferTickCost.Reset();
+        pipelineTickCost.Reset();
+        residentEvictTickCost.Reset();
         renderer?.ResetPhaseCosts();
     }
 
@@ -882,7 +962,8 @@ public class VintageHorizonsModSystem : ModSystem
                 $"({pipeline.CachedSectionsLoaded} from cache), meshes: {renderer.MeshCount}, " +
                 $"drawn: {renderer.LastDrawCount} [{renderer.DescribeDrawnLevels()}], " +
                 $"columns captured: {pipeline.ColumnsCaptured}, pending: {pipeline.PendingColumns}, " +
-                $"worker: {pipeline.Worker.PendingCaptures}c/{pipeline.Worker.PendingMeshes}m, awaiting mip: {pipeline.World.MipDirty.Count}, " +
+                $"worker: {pipeline.Worker.PendingCaptures}c/{pipeline.Worker.PendingMeshes}m/{pipeline.Worker.PendingMips}p, " +
+                $"awaiting mip: {pipeline.World.MipDirty.Count} ({pipeline.World.MipInFlightCount} in flight), " +
                 $"unsaved: {pipeline.World.SaveDirty.Count}, persistence: {(pipeline.Persisting ? "on" : "off")}, " +
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +

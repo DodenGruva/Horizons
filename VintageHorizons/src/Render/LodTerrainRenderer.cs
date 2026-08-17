@@ -44,15 +44,24 @@ public class LodTerrainRenderer : IRenderer
     /// under what any frame-rate comparison can resolve, so they are timed rather than
     /// inferred. Reported by .vhinfo and by the periodic stats line.
     /// </summary>
-    public LodPhaseCost PruneCost, ScheduleCost, FarDistanceCost, WalkCost, DrawCost;
+    public LodPhaseCost PruneCost, ScheduleCost, UploadCost, EvictCost, SeasonalCost,
+        FarDistanceCost, WalkCost, DrawCost;
+
+    public int ProjectionResetCount { get; private set; }
+    public long MeshUploadBytes { get; private set; }
 
     public void ResetPhaseCosts()
     {
         PruneCost.Reset();
         ScheduleCost.Reset();
+        UploadCost.Reset();
+        EvictCost.Reset();
+        SeasonalCost.Reset();
         FarDistanceCost.Reset();
         WalkCost.Reset();
         DrawCost.Reset();
+        ProjectionResetCount = 0;
+        MeshUploadBytes = 0;
     }
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
@@ -202,6 +211,7 @@ public class LodTerrainRenderer : IRenderer
         clientMain.MainCamera.ZFar = needed;
         capi.Render.Reset3DProjection();
         appliedZFar = needed;
+        ProjectionResetCount++;
     }
 
     void UpdateEffectiveFarDistance(float vanillaViewDistance)
@@ -582,6 +592,9 @@ public class LodTerrainRenderer : IRenderer
 
     MeshRef Upload(float[] xyz, byte[] rgba, int[] indices, int vertCount, int indexCount)
     {
+        // What UploadMesh is asked to transfer, not backing-array capacity. Mesher pools
+        // can deliberately hand back arrays larger than the live vertex/index counts.
+        MeshUploadBytes += vertCount * 16L + indexCount * sizeof(int);
         var mesh = new MeshData(false);
         mesh.SetVerticesCount(vertCount);
         mesh.SetIndicesCount(indexCount);
@@ -617,9 +630,17 @@ public class LodTerrainRenderer : IRenderer
         ScheduleMeshJobs();
         ScheduleCost.Add(phaseStart);
 
+        phaseStart = LodPhaseCost.Start();
         UploadFinishedMeshes();
+        UploadCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         EvictStaleMeshes();
+        EvictCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         RefreshSeasonalState();
+        SeasonalCost.Add(phaseStart);
         if (sectionMeshes.Count == 0 && waterMeshes.Count == 0) return;
 
         var playerData = capi.World.Player.WorldData;

@@ -38,6 +38,7 @@ public class LodPipeline
     const int CaptureSchedulesPerTick = 8;
     const int CaptureAppliesPerTick = 8;
     const int PropagationsPerTick = 3;
+    const int MaxMipBacklog = 12;
     const int SectionSavesPerTick = 6;
     const int MaxWorkerCaptureBacklog = 24;
     const int ChunkSize = GlobalConstants.ChunkSize;
@@ -103,7 +104,12 @@ public class LodPipeline
     public int LoadCalls { get; private set; }
     public LodStorageThread? StorageThread => storageThread;
 
+    /// <summary>Owning-thread pipeline phases since the last telemetry report.</summary>
+    public LodPhaseCost LoadInstallCost, CaptureScheduleCost, CaptureApplyCost,
+        MipApplyCost, MipScheduleCost, SaveSnapshotCost;
+
     int tickCounter;
+    long worldEpoch;
 
     public LodPipeline(ICoreAPI api, ILogger logger, LodPaletteDescriber describePalette,
         LodTintSlotResolver? tintSlotFor = null)
@@ -121,6 +127,16 @@ public class LodPipeline
     {
         SaveMsMax = SaveMsTotal = LoadMsMax = LoadMsTotal = 0;
         SaveCalls = LoadCalls = 0;
+    }
+
+    public void ResetPhaseCosts()
+    {
+        LoadInstallCost.Reset();
+        CaptureScheduleCost.Reset();
+        CaptureApplyCost.Reset();
+        MipApplyCost.Reset();
+        MipScheduleCost.Reset();
+        SaveSnapshotCost.Reset();
     }
 
     /// <summary>Note a chunk column as needing (re)capture. Safe from any thread.</summary>
@@ -181,6 +197,7 @@ public class LodPipeline
     /// </param>
     public void Open(string subdir, string suffix = "")
     {
+        worldEpoch++;
         string worldKey = api.World.SavegameIdentifier;
         if (string.IsNullOrEmpty(worldKey)) worldKey = "seed-" + api.World.Seed;
         worldKey = Regex.Replace(worldKey, "[^A-Za-z0-9_-]", "_");
@@ -303,12 +320,50 @@ public class LodPipeline
     {
         if (!Active) return;
 
+        long phaseStart = LodPhaseCost.Start();
         InstallLoadedSections();
+        LoadInstallCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         ScheduleCaptures();
+        CaptureScheduleCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         ApplyCaptureResults();
-        World.ProcessPropagation(PropagationsPerTick);
+        CaptureApplyCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
+        ApplyMipResults();
+        MipApplyCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
+        ScheduleMipJobs();
+        MipScheduleCost.Add(phaseStart);
+
+        phaseStart = LodPhaseCost.Start();
         SaveSomeDirtySections(SectionSavesPerTick);
+        SaveSnapshotCost.Add(phaseStart);
         tickCounter++;
+    }
+
+    void ApplyMipResults()
+    {
+        for (int n = 0; n < PropagationsPerTick && Worker.MipResults.TryDequeue(out MipResult? result); n++)
+        {
+            if (result.Epoch == worldEpoch) World.CompletePropagation(result);
+        }
+    }
+
+    void ScheduleMipJobs()
+    {
+        int capacity = MaxMipBacklog - World.MipInFlightCount;
+        if (capacity <= 0) return;
+
+        foreach (MipJob job in World.CreatePropagationJobs(
+            worldEpoch, Math.Min(PropagationsPerTick, capacity)))
+        {
+            Worker.EnqueueMip(job);
+        }
     }
 
     /// <summary>
@@ -552,6 +607,7 @@ public class LodPipeline
     public void Close()
     {
         Active = false;
+        worldEpoch++;
         World.LoadFromStore = null;
         World.RequestAsyncLoad = null;
 
@@ -579,6 +635,7 @@ public class LodPipeline
         // Results for the world we are leaving must not be applied to the next one.
         // Both queues, or a result held back for a reload would cross worlds.
         while (Worker.CaptureResults.TryDequeue(out _)) { }
+        Worker.ClearMipWork();
         deferredCaptures.Clear();
         World.Clear();
         CachedSectionsLoaded = 0;

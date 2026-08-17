@@ -18,6 +18,8 @@ public static class MipChecks
         MajorityOccupancy(c);
         RunMerging(c);
         PaletteRemap(c);
+        WorkerBoundary(c);
+        RevisionValidation(c);
         NothingToDo(c);
     }
 
@@ -181,6 +183,56 @@ public static class MipChecks
         c.Eq(LodPaletteEntry.FlagWater, parent.Palette[pid].Flags, "flags survive the remap");
         c.Eq((byte)7, parent.Palette[pid].TintSlot, "tint slot survives the remap");
         c.Eq(999, parent.Palette[0].BlockId, "the parent's existing palette entry is undisturbed");
+    }
+
+    static void WorkerBoundary(Check c)
+    {
+        LodSection child = Solid(0, 12, 2);
+        var parent = new LodSection();
+        MipJob job = LodMip.CreateJob(epoch: 4, childKey: 99, childRevision: 7, child, qx: 1, qz: 0);
+        MipResult result = LodMip.BuildResult(job);
+
+        c.Eq(0, parent.CapturedColumns, "worker construction does not mutate the live parent");
+        c.Eq(4L, result.Epoch, "worker result preserves its world epoch");
+        c.Eq(99L, result.ChildKey, "worker result preserves its child identity");
+        c.Eq(7L, result.ChildRevision, "worker result preserves its content revision");
+        c.True(LodMip.ApplyToParent(result, parent), "owning-thread publication changes the parent");
+        c.Eq(Half * Half, parent.CapturedColumns, "published worker result fills only its quadrant");
+    }
+
+    static void RevisionValidation(Check c)
+    {
+        var world = new LodWorld();
+        long childKey = LodWorld.SectionKey(0, 8, 10);
+        LodSection child = world.GetOrCreateSection(childKey);
+        child.FindOrAddPaletteEntry(blockId: 1, color: 0x00112233, flags: 0);
+        int col = LodSection.ColumnIndex(0, 0);
+        child.SetColumn(col, new[] { LodSection.PackRun(0, 10, 0) });
+        world.MarkChanged(childKey);
+
+        List<MipJob> first = world.CreatePropagationJobs(epoch: 12, maxSections: 1);
+        c.Eq(1, first.Count, "a dirty child schedules one mip job");
+        c.Eq(1, world.MipInFlightCount, "scheduled mip work is tracked in flight");
+
+        // Change the child after the immutable snapshot was handed away. The old result
+        // must release its slot without clearing the durable rerun obligation.
+        child.SetColumn(col, new[] { LodSection.PackRun(0, 20, 0) });
+        world.MarkChanged(childKey);
+        c.False(world.CompletePropagation(LodMip.BuildResult(first[0])),
+            "a stale result cannot commit over newer child content");
+        c.True(world.MipDirty.Contains(childKey), "stale work leaves the child retryable");
+        c.Eq(0, world.MipInFlightCount, "stale completion releases its in-flight slot");
+
+        List<MipJob> retry = world.CreatePropagationJobs(epoch: 12, maxSections: 1);
+        c.Eq(1, retry.Count, "the newest revision reschedules");
+        c.True(world.CompletePropagation(LodMip.BuildResult(retry[0])),
+            "the matching revision commits");
+        c.False(world.MipDirty.Contains(childKey), "valid commit clears the child's propagation flag");
+
+        long parentKey = LodWorld.ParentKey(childKey);
+        c.True(world.Sections.TryGetValue(parentKey, out LodSection? parent), "valid commit creates the parent");
+        ulong[] merged = parent!.ColumnRuns(LodSection.ColumnIndex(0, 0)).ToArray();
+        c.Eq(20, LodSection.RunYTop(merged[0]), "the parent receives the newest child revision");
     }
 
     static void NothingToDo(Check c)

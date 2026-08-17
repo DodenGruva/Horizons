@@ -62,7 +62,16 @@ public static class StoreChecks
             // Now make the stored version disagree. The purge must fire, and say how
             // much it took - silent destruction of a player's cache is the thing to
             // avoid, not the destruction itself.
-            using (var conn = new Microsoft.Data.Sqlite.SqliteConnection("Data Source=" + path))
+            // Pooling is deliberately off. Dispose on a pooled connection only returns
+            // its native handle to the process-wide pool; on Windows that keeps this
+            // temporary file open and makes LodStore's writable reopen fail. The fixture
+            // is testing schema invalidation, not connection-pool lifetime.
+            var editOptions = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Pooling = false,
+            };
+            using (var conn = new Microsoft.Data.Sqlite.SqliteConnection(editOptions.ToString()))
             {
                 conn.Open();
                 using var cmd = conn.CreateCommand();

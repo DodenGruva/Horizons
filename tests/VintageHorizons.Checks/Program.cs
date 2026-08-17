@@ -18,6 +18,7 @@ public static class Program
         ("pure", "section properties", SectionPropertyChecks.Run),
         ("pure", "mip downsample", MipChecks.Run),
         ("pure", "residency", ResidencyChecks.Run),
+        ("pure", "phase timing", PhaseCostChecks.Run),
         ("pure", "mesher", MesherChecks.Run),
         ("pure", "server config", ConfigChecks.Run),
         ("pure", "lod mod deferral", DeferralChecks.Run),

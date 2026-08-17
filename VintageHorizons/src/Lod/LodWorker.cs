@@ -91,8 +91,10 @@ public class LodWorker : IDisposable
 
     readonly ConcurrentQueue<CaptureJob> captureJobs = new();
     readonly ConcurrentQueue<MeshJob> meshJobs = new();
+    readonly ConcurrentQueue<MipJob> mipJobs = new();
     public readonly ConcurrentQueue<CaptureResult> CaptureResults = new();
     public readonly ConcurrentQueue<MeshResult> MeshResults = new();
+    public readonly ConcurrentQueue<MipResult> MipResults = new();
 
     /// <summary>Wakes the capture thread. One job, one thread, so auto-reset is right.</summary>
     readonly AutoResetEvent captureSignal = new(false);
@@ -102,8 +104,10 @@ public class LodWorker : IDisposable
     /// AutoResetEvent would wake exactly one however many were queued.
     /// </summary>
     readonly SemaphoreSlim meshSignal = new(0);
+    readonly AutoResetEvent mipSignal = new(false);
 
     readonly Thread captureThread;
+    readonly Thread mipThread;
     readonly Thread[] meshThreads;
     volatile bool running = true;
 
@@ -113,21 +117,26 @@ public class LodWorker : IDisposable
     /// get the same treatment: it reads live IWorldChunk objects the engine owns, and
     /// multiplying that by a thread count multiplies the risk for no comparable gain.
     ///
-    /// Leaves two cores for the game's own render and simulation threads.
+    /// Capture and mip each have one dedicated worker as well. On machines with at
+    /// least six logical processors, reserve two more for the game's render/simulation
+    /// work; smaller machines still get one mesh worker so the pipeline can progress.
     /// </summary>
-    static int MeshThreadCount => Math.Clamp(Environment.ProcessorCount - 2, 1, 4);
+    static int MeshThreadCount => Math.Clamp(Environment.ProcessorCount - 4, 1, 4);
 
     public int MeshThreads => meshThreads.Length;
 
     public int PendingCaptures => captureJobs.Count;
     public int PendingMeshes => meshJobs.Count;
+    public int PendingMips => mipJobs.Count;
 
     public int CaptureErrors;
     public int MeshErrors;
+    public int MipErrors;
 
     /// <summary>First swallowed exception of each kind, for soak-log diagnosis.</summary>
     public string? FirstCaptureError;
     public string? FirstMeshError;
+    public string? FirstMipError;
 
     public LodWorker()
     {
@@ -138,6 +147,17 @@ public class LodWorker : IDisposable
             Priority = ThreadPriority.BelowNormal,
         };
         captureThread.Start();
+
+        // Mip construction is CPU-heavy but reads only immutable snapshots. Keeping it
+        // off both capture and mesh queues prevents a propagation burst from delaying
+        // newly explored columns or every visible mesh behind it.
+        mipThread = new Thread(MipLoop)
+        {
+            Name = "vintagehorizons-mip",
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
+        };
+        mipThread.Start();
 
         meshThreads = new Thread[MeshThreadCount];
         for (int i = 0; i < meshThreads.Length; i++)
@@ -162,6 +182,22 @@ public class LodWorker : IDisposable
     {
         meshJobs.Enqueue(job);
         meshSignal.Release();
+    }
+
+    public void EnqueueMip(MipJob job)
+    {
+        mipJobs.Enqueue(job);
+        mipSignal.Set();
+    }
+
+    /// <summary>
+    /// Drop queued/results from the world being closed. A job already executing may
+    /// still publish later; its epoch makes the next world reject it.
+    /// </summary>
+    public void ClearMipWork()
+    {
+        mipJobs.Clear();
+        MipResults.Clear();
     }
 
     // Separate loops, not one. The old shared loop drained EVERY queued capture before
@@ -211,6 +247,40 @@ public class LodWorker : IDisposable
                 Interlocked.Increment(ref MeshErrors);
                 Interlocked.CompareExchange(ref FirstMeshError, e.ToString(), null);
             }
+        }
+    }
+
+    void MipLoop()
+    {
+        while (running)
+        {
+            bool didWork = false;
+            while (mipJobs.TryDequeue(out MipJob? job))
+            {
+                didWork = true;
+                try
+                {
+                    MipResults.Enqueue(LodMip.BuildResult(job));
+                }
+                catch (Exception e)
+                {
+                    Interlocked.Increment(ref MipErrors);
+                    Interlocked.CompareExchange(ref FirstMipError, e.ToString(), null);
+                    // Always return the identity so the owning thread releases the
+                    // in-flight slot and leaves the dirty obligation retryable.
+                    MipResults.Enqueue(new MipResult
+                    {
+                        Epoch = job.Epoch,
+                        ChildKey = job.ChildKey,
+                        ChildRevision = job.ChildRevision,
+                        RunsByParentColumn = new ulong[]?[LodSection.GridSize * LodSection.GridSize],
+                        ChildPalette = job.Palette,
+                        Failed = true,
+                    });
+                }
+            }
+
+            if (!didWork) mipSignal.WaitOne(250);
         }
     }
 
@@ -294,12 +364,15 @@ public class LodWorker : IDisposable
     {
         running = false;
         captureSignal.Set();
+        mipSignal.Set();
         meshSignal.Release(meshThreads.Length);
 
         captureThread.Join(2000);
+        mipThread.Join(2000);
         foreach (Thread t in meshThreads) t.Join(2000);
 
         captureSignal.Dispose();
+        mipSignal.Dispose();
         meshSignal.Dispose();
     }
 }

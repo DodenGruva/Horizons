@@ -1,22 +1,18 @@
-# VintageHorizons - Design
+> **ARCHIVED 2026-08-17 — SUPERSEDED, DO NOT USE AS CURRENT.**
+> Preserved intact from the supplied source snapshot before the documentation workflow was established.
+> Its current successor is `dev/ARCHITECTURE.md`. Never edit or cite this file as current.
 
-> **Historical design journal and evidence record.** This document preserves the
-> project's evolving rationale, experiments, and provenance. The canonical current
-> architecture and settled invariants live in
-> [`dev/ARCHITECTURE.md`](dev/ARCHITECTURE.md); current state lives in
-> [`STATUS.md`](STATUS.md).
+# VintageHorizons - Design
 
 A Distant Horizons-style extended-render-distance LOD mod for Vintage Story that is
 **fully client-side**: it works on any server, vanilla or modded, because it builds its
 LODs exclusively from chunk data the client already receives.
 
-Supporting research is kept privately, in `notes/research/`, and is not published. It
-covers the Vintage Story client API and how the two established LOD mods are built.
+Supporting research (file-path-anchored deep dives) lives in `docs/research/`:
 
-What matters publicly is the provenance, so it is stated here rather than left implied.
-**Distant Horizons** (LGPL-3.0) informed concepts only; the implementation here is a clean
-one. **Voxy** is all-rights-reserved, so it contributed ideas and **no code was copied from
-it**. Neither project's source is redistributed by this repository.
+- [`distant-horizons-architecture.md`](docs/research/distant-horizons-architecture.md) - the veteran design (LGPL-3.0; concepts only, clean reimplementation)
+- [`voxy-architecture.md`](docs/research/voxy-architecture.md) - the fast newcomer (all-rights-reserved; **ideas only, never copy code**)
+- [`vintage-story-api.md`](docs/research/vintage-story-api.md) - everything the VS 1.22.x client API gives us, with citations
 
 ## 1. Why this is possible (and why nobody has done it in VS yet)
 
@@ -938,23 +934,3 @@ which is what the Peek/Load/SkipFrontier rule prevents.
 `VINTAGEHORIZONS_DEVTOOLS=1`. Without that variable it does not exist, and the write
 contract in section 14 holds exactly as written. It is the one deliberate exception,
 and it is opt-in, admin-only, and reports the position it touched.
-
-## 16. The first measured 0.2.1 spike was mip propagation
-
-Source inspection identified several plausible owning-thread costs, but the first
-instrumented active-exploration route separated them. Across two baseline runs,
-synchronous child-to-parent propagation reached 20–22.5ms p95, 32.5–35ms p99, and
-103.1ms maximum. Pipeline time tracked total game-tick time, while measured render
-subphases remained below the 25ms hitch threshold.
-
-Boundary collection, sorting, occupancy selection, and merged-run construction now run
-on a dedicated bounded worker. Jobs carry a world epoch and child content revision;
-the owning thread rejects stale/failed results, remaps the palette, publishes the parent
-quadrant, and only then clears `ApplyToParent`. Two same-route after runs ended with no
-game ticks at or above 25ms, no mip errors/backlog, and mip apply/schedule maxima of
-1.93/0.43ms. At the most affected waypoint, mean worst-1%-frame time fell from 24.08ms
-to 2.18ms across two runs per side.
-
-This route teleports between active capture points and is intentionally short. It proves
-the reproduced mip spike and this implementation's effect on it; continuous movement,
-camera rotation, long soak, and human play quality remain separate evidence obligations.

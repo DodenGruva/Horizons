@@ -13,6 +13,7 @@ CLAUDE.local.md
 bin/
 obj/
 *.user
+Microsoft.NET.Workload_*.log
 
 # IDEs
 .vs/

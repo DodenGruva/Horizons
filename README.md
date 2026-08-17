@@ -222,9 +222,13 @@ stream in).
   mutates a dictionary). Sections deserialized on the storage thread keep their palette
   block *codes* and have ids resolved at install time on the main thread.
 
-See [DESIGN.md](DESIGN.md) for the architecture, [CHANGELOG.md](CHANGELOG.md) for what
-shipped in each version, and [docs/RELEASING.md](docs/RELEASING.md) for the release
-procedure.
+See [dev/ARCHITECTURE.md](dev/ARCHITECTURE.md) for the current architecture and settled
+invariants. [STATUS.md](STATUS.md) records current evidence and uncertainty,
+[dev/TODO.md](dev/TODO.md) owns open work, and the approved performance sequence is in
+[dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md](dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md).
+[DESIGN.md](DESIGN.md) remains the historical design journal and research-provenance
+record. See [CHANGELOG.md](CHANGELOG.md) for released changes and
+[docs/RELEASING.md](docs/RELEASING.md) for the release procedure.
 
 ## Credits
 

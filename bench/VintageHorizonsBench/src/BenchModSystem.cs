@@ -507,6 +507,16 @@ public class BenchModSystem : ModSystem, IRenderer
         foreach (string row in csvRows) sb.AppendLine(row);
         File.WriteAllText(csvPath, sb.ToString());
 
+        // The Windows runner cannot safely emulate a Unix SIGTERM or type into a hidden
+        // server console. Send the stop command BEFORE publishing the done marker: the
+        // runner closes the client as soon as it sees that marker, which could prevent a
+        // delayed callback from ever sending. Off by default so existing Linux batches
+        // retain control of server lifetime between runs.
+        if (Environment.GetEnvironmentVariable("VHBENCH_STOP_SERVER") == "1")
+        {
+            capi.SendChatMessage("/stop");
+        }
+
         // The orchestration script watches for this file, then stops the client through
         // its pidfile. Writing a marker beats having the mod try to close the game.
         File.WriteAllText(Path.Combine(outDir, $"{Sanitize(label)}.done"), csvPath + "\n");

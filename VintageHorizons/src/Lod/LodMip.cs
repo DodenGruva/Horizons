@@ -1,6 +1,37 @@
 namespace VintageHorizons;
 
 /// <summary>
+/// Immutable child-section input for mip construction. The large run arrays are safe to
+/// share because section writes replace them wholesale; the mutable capture mask and
+/// palette are copied while the owning thread creates the job.
+/// </summary>
+public sealed class MipJob
+{
+    public long Epoch;
+    public long ChildKey;
+    public long ChildRevision;
+    public int Qx, Qz;
+    public required ulong[] Runs;
+    public required int[] ColumnStart;
+    public required bool[] Captured;
+    public required LodPaletteEntry[] Palette;
+}
+
+/// <summary>
+/// Worker-built parent-quadrant columns. Runs still use child palette ids; remapping and
+/// publication into the live parent stay on the owning thread.
+/// </summary>
+public sealed class MipResult
+{
+    public long Epoch;
+    public long ChildKey;
+    public long ChildRevision;
+    public required ulong[]?[] RunsByParentColumn;
+    public required LodPaletteEntry[] ChildPalette;
+    public bool Failed;
+}
+
+/// <summary>
 /// Child→parent section downsampling: every 2×2 child columns merge into one parent
 /// column via a y-boundary slice sweep (DH's approach). A slice is solid when at
 /// least two of the four child columns cover it; the slice takes the most common
@@ -11,15 +42,41 @@ public static class LodMip
     [ThreadStatic] static List<int>? boundaries;
     [ThreadStatic] static List<ulong>? outRuns;
 
-    /// <summary>Merge the whole child section into one parent quadrant. Returns true if the parent changed.</summary>
+    /// <summary>
+    /// Compatibility helper for checks and isolated callers. Runtime propagation uses
+    /// <see cref="BuildResult"/> on the mip worker and only applies its result here.
+    /// </summary>
     public static bool DownsampleIntoParent(LodSection child, LodSection parent, int qx, int qz)
+    {
+        MipJob job = CreateJob(epoch: 0, childKey: 0, childRevision: 0, child, qx, qz);
+        return ApplyToParent(BuildResult(job), parent);
+    }
+
+    public static MipJob CreateJob(long epoch, long childKey, long childRevision,
+        LodSection child, int qx, int qz)
+    {
+        return new MipJob
+        {
+            Epoch = epoch,
+            ChildKey = childKey,
+            ChildRevision = childRevision,
+            Qx = qx,
+            Qz = qz,
+            Runs = child.Runs,
+            ColumnStart = child.ColumnStart,
+            Captured = (bool[])child.Captured.Clone(),
+            Palette = child.Palette.ToArray(),
+        };
+    }
+
+    /// <summary>
+    /// Perform the expensive boundary collection, sorting and slice merging without
+    /// touching a live section. Safe on a worker thread.
+    /// </summary>
+    public static MipResult BuildResult(MipJob job)
     {
         const int gs = LodSection.GridSize;
         const int half = gs / 2;
-
-        // Child palette id → parent palette id, registered lazily.
-        var paletteMap = new int[child.Palette.Count];
-        for (int i = 0; i < paletteMap.Length; i++) paletteMap[i] = -1;
 
         var batch = new ulong[]?[gs * gs];
 
@@ -41,31 +98,56 @@ public static class LodMip
                     for (int dx = 0; dx < 2; dx++)
                     {
                         int ci = LodSection.ColumnIndex(px * 2 + dx, pz * 2 + dz);
-                        if (!child.Captured[ci]) continue;
-                        colStart[captured] = child.ColumnStart[ci];
-                        colEnd[captured] = child.ColumnStart[ci + 1];
+                        if (!job.Captured[ci]) continue;
+                        colStart[captured] = job.ColumnStart[ci];
+                        colEnd[captured] = job.ColumnStart[ci + 1];
                         captured++;
                     }
                 }
                 if (captured == 0) continue;
 
-                ulong[] merged = MergeColumns(child.Runs, colStart, colEnd, captured);
+                batch[LodSection.ColumnIndex(job.Qx * half + px, job.Qz * half + pz)] =
+                    MergeColumns(job.Runs, colStart, colEnd, captured);
+            }
+        }
 
-                // Remap child palette ids to the parent palette.
-                for (int i = 0; i < merged.Length; i++)
+        return new MipResult
+        {
+            Epoch = job.Epoch,
+            ChildKey = job.ChildKey,
+            ChildRevision = job.ChildRevision,
+            RunsByParentColumn = batch,
+            ChildPalette = job.Palette,
+        };
+    }
+
+    /// <summary>
+    /// Remap worker output into the live parent's palette and publish the quadrant.
+    /// This owning-thread tail is linear and allocation-bounded; the combinatorial
+    /// boundary sweep has already finished on the worker.
+    /// </summary>
+    public static bool ApplyToParent(MipResult result, LodSection parent)
+    {
+        ulong[]?[] batch = result.RunsByParentColumn;
+        var paletteMap = new int[result.ChildPalette.Length];
+        Array.Fill(paletteMap, -1);
+
+        for (int col = 0; col < batch.Length; col++)
+        {
+            ulong[]? merged = batch[col];
+            if (merged == null) continue;
+
+            for (int i = 0; i < merged.Length; i++)
+            {
+                int cpid = LodSection.RunPaletteId(merged[i]);
+                int ppid = paletteMap[cpid];
+                if (ppid < 0)
                 {
-                    int cpid = LodSection.RunPaletteId(merged[i]);
-                    int ppid = paletteMap[cpid];
-                    if (ppid < 0)
-                    {
-                        LodPaletteEntry e = child.Palette[cpid];
-                        ppid = parent.FindOrAddPaletteEntry(e.BlockId, e.Color, e.Flags, e.TintSlot);
-                        paletteMap[cpid] = ppid;
-                    }
-                    merged[i] = LodSection.PackRun(ppid, LodSection.RunYTop(merged[i]), LodSection.RunYBottom(merged[i]));
+                    LodPaletteEntry e = result.ChildPalette[cpid];
+                    ppid = parent.FindOrAddPaletteEntry(e.BlockId, e.Color, e.Flags, e.TintSlot);
+                    paletteMap[cpid] = ppid;
                 }
-
-                batch[LodSection.ColumnIndex(qx * half + px, qz * half + pz)] = merged;
+                merged[i] = LodSection.PackRun(ppid, LodSection.RunYTop(merged[i]), LodSection.RunYBottom(merged[i]));
             }
         }
 
