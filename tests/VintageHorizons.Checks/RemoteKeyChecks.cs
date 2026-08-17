@@ -17,6 +17,7 @@ public static class RemoteKeyChecks
         LocalWins(c);
         WantedFollowsTheView(c);
         OnlyForgetWhatWasSent(c);
+        LocalOfferOutcomes(c);
         Unavailable(c);
     }
 
@@ -137,6 +138,72 @@ public static class RemoteKeyChecks
 
         remote.MarkRequested(Array.Empty<long>());
         c.Eq(3, remote.Wanted().Length, "sending nothing forgets nothing");
+    }
+
+    /// <summary>
+    /// A sibling-cache key can be listed before its blob becomes visible to the reader.
+    /// The old caller put it in the taken array before reading, so a miss removed the
+    /// wanted marker while LoadsInFlight remained set and the key could never be retried.
+    /// </summary>
+    static void LocalOfferOutcomes(Check c)
+    {
+        var world = new LodWorld();
+        var remote = new LodRemoteKeySet(world);
+        long key = LodWorld.SectionKey(0, 21, 22);
+        remote.AddRemoteKeys(new[] { key });
+        remote.WantFromRemote(key);
+        world.LoadsInFlight.Add(key);
+
+        remote.CompleteLocalOffer(key, LodLocalOfferOutcome.RetryableMiss);
+        c.SeqEq(new[] { key }, remote.Wanted(),
+            "a transient local miss remains wanted for a later read");
+        c.False(world.LoadsInFlight.Contains(key),
+            "a transient local miss releases the attempt because no reader retained responsibility");
+
+        world.InstallLoaded(key, new LodSection());
+        remote.CompleteLocalOffer(key, LodLocalOfferOutcome.Installed);
+        c.Eq(0, remote.Wanted().Length, "a later successful install completes the request");
+        c.False(world.LoadsInFlight.Contains(key), "the successful install releases the in-flight marker");
+
+        var networkWorld = new LodWorld();
+        var networkRemote = new LodRemoteKeySet(networkWorld);
+        long network = LodWorld.SectionKey(0, 27, 28);
+        networkRemote.AddRemoteKeys(new[] { network });
+        networkRemote.WantFromRemote(network);
+        networkWorld.LoadsInFlight.Add(network);
+        networkRemote.MarkRequested(new[] { network });
+        c.Eq(0, networkRemote.Wanted().Length,
+            "a network request transfers responsibility while its reply is pending");
+        networkRemote.MarkRetryable(network);
+        c.SeqEq(new[] { network }, networkRemote.Wanted(),
+            "a retryable server reply restores the request to wanted");
+        c.False(networkWorld.LoadsInFlight.Contains(network),
+            "a retryable server reply releases the completed transport attempt");
+
+        var corruptWorld = new LodWorld();
+        var corruptRemote = new LodRemoteKeySet(corruptWorld);
+        long corrupt = LodWorld.SectionKey(0, 23, 24);
+        corruptRemote.AddRemoteKeys(new[] { corrupt });
+        corruptRemote.WantFromRemote(corrupt);
+        corruptWorld.LoadsInFlight.Add(corrupt);
+        corruptRemote.CompleteLocalOffer(corrupt, LodLocalOfferOutcome.Unavailable);
+        c.False(corruptWorld.LoadsInFlight.Contains(corrupt),
+            "a permanently unreadable local blob releases the in-flight marker");
+        c.True(corruptWorld.LoadFailed.Contains(corrupt),
+            "a permanently unreadable local blob records explicit failure");
+
+        var racedWorld = new LodWorld();
+        var racedRemote = new LodRemoteKeySet(racedWorld);
+        long raced = LodWorld.SectionKey(0, 25, 26);
+        racedRemote.AddRemoteKeys(new[] { raced });
+        racedRemote.WantFromRemote(raced);
+        racedWorld.LoadsInFlight.Add(raced);
+        racedWorld.Sections[raced] = new LodSection();
+        racedRemote.CompleteLocalOffer(raced, LodLocalOfferOutcome.Unavailable);
+        c.False(racedWorld.LoadsInFlight.Contains(raced),
+            "a local-win race releases the obsolete remote request");
+        c.False(racedWorld.LoadFailed.Contains(raced),
+            "a local-win race does not poison the resident section");
     }
 
     static void Unavailable(Check c)

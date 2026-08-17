@@ -34,6 +34,11 @@ server cache key manifest
     -> client decode, block-code resolution, recolor, install, and local persistence
 ```
 
+Integrated singleplayer sibling-cache discovery adds a dedicated read-only SQLite reader.
+It scans at a coarse cadence, computes key deltas on its own thread, and publishes bounded
+immutable batches for owning-thread registration. Visibility-driven blob reads use a
+separate connection that remains owned by the game thread.
+
 ## Thread ownership
 
 ### Client or server owning thread
@@ -61,6 +66,13 @@ The mip worker receives immutable child-section arrays, a copied captured-column
 ### Storage worker
 
 The storage worker serializes immutable save snapshots, compresses them, and writes SQLite rows. Background loads deserialize block codes without touching the live block registry; the owning thread resolves those codes before publication.
+
+### Local-offer discovery worker
+
+The integrated-singleplayer sibling-cache scanner exclusively owns its read-only SQLite
+connection and its discovered-key set. It never touches `LodWorld`; the owning thread
+applies each published key batch once. Its separate visibility-driven blob connection is
+used only by the owning thread.
 
 ### Render thread
 

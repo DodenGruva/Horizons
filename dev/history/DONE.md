@@ -27,3 +27,13 @@
 - Moved mip boundary sorting/merge construction to a bounded dedicated worker with world epochs, content revisions, stale/failure retry, and parent pins.
 - Added regression checks for immutable worker construction and child mutation during in-flight work.
 - Completed two before and two after route runs; after runs ended with no ≥25 ms game-tick hitches and no mip backlog/errors.
+
+## 2026-08-17 — incremental discovery and retry-safe requests
+
+- Moved integrated-singleplayer sibling-cache key enumeration to a dedicated read-only SQLite connection and below-normal reader thread.
+- Added coarse background scans that publish only newly discovered keys in bounded immutable batches; unchanged scans produce no game-thread work.
+- Applied each incoming server manifest chunk once and stopped re-enumerating the retained remote-key set every tick.
+- Replaced implicit local-offer bookkeeping with explicit installed, retryable-miss, and unavailable outcomes.
+- Restored retryable server requests to the owning pipeline with a monotonic cooldown and bounded roughly one-minute retry window.
+- Cleared queued manifests between worlds and stopped the local reader during both normal world leave and mod disposal.
+- Expanded the full game-backed fast tier to 728 passing assertions.

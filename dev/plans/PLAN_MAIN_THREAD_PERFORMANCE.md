@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client instrumentation, Windows benchmark route, and the first versioned asynchronous mip slice are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, and incremental key discovery/request correctness are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -132,6 +132,8 @@ Instrumentation should be cheap when disabled and available through an explicit 
 - Disabled instrumentation does not materially change the steady baseline.
 
 ## 5. Phase 2 — incremental key discovery and request correctness
+
+**Implementation status:** Complete locally. Sibling-cache SQL enumeration runs on a dedicated read-only connection and publishes bounded deltas; network manifests publish each chunk once; local and server failure paths preserve explicit retryable or terminal state with cooldown. The full fast tier covers these transitions, but integrated singleplayer/server-assist runtime validation remains open.
 
 ### Local sibling cache
 

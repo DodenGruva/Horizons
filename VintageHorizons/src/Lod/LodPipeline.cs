@@ -315,6 +315,13 @@ public class LodPipeline
     /// <inheritdoc cref="LodRemoteKeySet.MarkRequested"/>
     public void MarkRemoteRequested(IEnumerable<long> sent) => Remote.MarkRequested(sent);
 
+    /// <inheritdoc cref="LodRemoteKeySet.CompleteLocalOffer"/>
+    public void CompleteLocalOffer(long key, LodLocalOfferOutcome outcome) =>
+        Remote.CompleteLocalOffer(key, outcome);
+
+    /// <inheritdoc cref="LodRemoteKeySet.MarkRetryable"/>
+    public void MarkRemoteRetryable(long key) => Remote.MarkRetryable(key);
+
     /// <summary>One step of the whole pipeline. Call once per game tick.</summary>
     public void Tick()
     {

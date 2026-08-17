@@ -1,5 +1,18 @@
 namespace VintageHorizons;
 
+/// <summary>The owning-thread outcome of trying to adopt one local sibling-cache offer.</summary>
+public enum LodLocalOfferOutcome
+{
+    /// <summary>The blob installed and the source no longer owns a pending request.</summary>
+    Installed,
+
+    /// <summary>The listed row was not readable yet; keep every request marker retryable.</summary>
+    RetryableMiss,
+
+    /// <summary>The blob was corrupt or local data won the race; stop asking this source.</summary>
+    Unavailable,
+}
+
 /// <summary>
 /// Bookkeeping for sections a remote source offers: which keys only it has, which of those
 /// the view currently wants, and which have been asked for already.
@@ -96,6 +109,44 @@ public class LodRemoteKeySet
     public void MarkRequested(IEnumerable<long> sent)
     {
         foreach (long key in sent) remoteWanted.Remove(key);
+    }
+
+    /// <summary>
+    /// Complete one visibility-driven read from the local sibling cache. A retryable miss
+    /// keeps the key wanted but releases LoadsInFlight because no reader retained
+    /// responsibility. Removing wanted while leaving that marker set is the stranded-key
+    /// failure this state transition prevents.
+    /// </summary>
+    public void CompleteLocalOffer(long key, LodLocalOfferOutcome outcome)
+    {
+        switch (outcome)
+        {
+            case LodLocalOfferOutcome.Installed:
+                remoteWanted.Remove(key);
+                break;
+            case LodLocalOfferOutcome.RetryableMiss:
+                world.LoadsInFlight.Remove(key);
+                remoteWanted.Add(key);
+                break;
+            case LodLocalOfferOutcome.Unavailable:
+                MarkUnavailable(key);
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(outcome), outcome, null);
+        }
+    }
+
+    /// <summary>
+    /// A network source accepted the request but reported that its row is not written yet.
+    /// Release the transport attempt while preserving both the offered key and the owning
+    /// thread's desire to retry it.
+    /// </summary>
+    public void MarkRetryable(long key)
+    {
+        if (!RemoteOnly.Contains(key)) return;
+        world.LoadFailed.Remove(key);
+        world.LoadsInFlight.Remove(key);
+        remoteWanted.Add(key);
     }
 
     /// <summary>

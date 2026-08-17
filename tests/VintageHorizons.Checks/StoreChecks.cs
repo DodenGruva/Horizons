@@ -284,7 +284,30 @@ public static class StoreChecks
             c.True(offers != null, "the server-side cache beside a client path opens");
             if (offers == null) return;
 
-            c.Eq(1, offers.Keys().Length, "and lists its sections");
+            long first = LodWorld.SectionKey(0, 1, 2);
+            long[] initial = WaitForOfferDelta(offers);
+            c.SeqEq(new[] { first }, initial,
+                "the reader publishes its initial key scan from the worker");
+
+            // A later scan publishes only the row that appeared since the first one,
+            // never the complete retained table again.
+            using (var w = new Microsoft.Data.Sqlite.SqliteConnection(writer.ToString()))
+            {
+                w.Open();
+                using var cmd = w.CreateCommand();
+                cmd.CommandText = "INSERT INTO Section VALUES (1, 3, 4, x'00', 0, 1);";
+                cmd.ExecuteNonQuery();
+            }
+
+            long second = LodWorld.SectionKey(1, 3, 4);
+            offers.RequestDiscovery();
+            c.SeqEq(new[] { second }, WaitForOfferDelta(offers),
+                "a later scan publishes only newly discovered keys");
+
+            offers.RequestDiscovery();
+            Thread.Sleep(100);
+            c.False(offers.TryTakeDiscoveredKeys(out _),
+                "an unchanged scan publishes no owning-thread work");
             offers.Dispose();
 
             if (OperatingSystem.IsLinux())
@@ -297,6 +320,18 @@ public static class StoreChecks
         {
             try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
         }
+    }
+
+    static long[] WaitForOfferDelta(LodLocalOfferSource offers)
+    {
+        offers.RequestDiscovery();
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (timeout.ElapsedMilliseconds < 5000)
+        {
+            if (offers.TryTakeDiscoveredKeys(out long[] keys)) return keys;
+            Thread.Sleep(10);
+        }
+        return Array.Empty<long>();
     }
 
     static bool ProcessHoldsHandleTo(string path)

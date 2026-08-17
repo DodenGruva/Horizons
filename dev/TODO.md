@@ -21,9 +21,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### P1 fixes
 
-- Replace the once-per-second main-thread full SQLite key scan with background delta discovery.
-- Apply remote manifest keys once rather than re-enumerating the full set each tick.
-- Fix transient local-offer misses so request state remains retryable.
 - Cache mesh world bounds and stabilize the far plane with quantization and hysteresis.
 - Spread sweep and assist allowances across ticks.
 - Time/byte-budget foreign-section and background-load installation.
@@ -56,7 +53,8 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 - The short active-exploration harness reproduced and attributed the largest game-tick spike, but it is teleport-driven and not a substitute for a human continuous-movement playtest.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
-- The complete game-backed fast tier passes 707 assertions. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The complete game-backed fast tier passes 728 assertions. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- Incremental sibling-cache discovery and retry-safe local/server request transitions are source-traced and fixture-tested, but not yet exercised in integrated singleplayer or live server assist.
 - Projection resets are now counted live (2–19 per active interval), but the bounds/hysteresis fix still needs a dedicated moving-camera run.
 - Server-assist and savegame-sweep spike cadence has not yet been profiled in integrated singleplayer.
 - GPU bottleneck attribution remains unmeasured; CPU/render-thread findings must not be presented as proof that the shader or GPU is innocent.

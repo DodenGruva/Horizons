@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Data.Sqlite;
 using Vintagestory.API.Common;
 
@@ -25,11 +26,57 @@ public sealed class LodLocalOfferSource : IDisposable
 {
     readonly SqliteConnection conn;
     readonly ILogger logger;
+    readonly string path;
+    readonly ConcurrentQueue<long[]> keyDeltas = new();
+    readonly AutoResetEvent scanSignal = new(false);
+    readonly Thread scanThread;
+    readonly Dictionary<long, long> blobRetryNotBefore = new();
+    volatile bool running = true;
 
-    LodLocalOfferSource(SqliteConnection conn, ILogger logger)
+    /// <summary>
+    /// A growing sibling cache changes slowly. The worker still does a safe full scan,
+    /// but only at this coarse cadence and only it owns the scan connection. The owning
+    /// game thread receives immutable batches containing keys it has not seen before.
+    /// </summary>
+    const int ScanIntervalMs = 2000;
+
+    /// <summary>
+    /// Bound the amount of quadtree registration one game tick receives when the first
+    /// scan finds a large existing cache. Keys are fixed-size and cheap, but an initial
+    /// cache can still contain tens of thousands of them.
+    /// </summary>
+    const int KeysPerDelta = 2048;
+
+    /// <summary>A transient row miss should not become a 20 Hz SQLite poll.</summary>
+    const int BlobMissRetryMs = 1000;
+
+    LodLocalOfferSource(string path, SqliteConnection conn, ILogger logger)
     {
+        this.path = path;
         this.conn = conn;
         this.logger = logger;
+        scanThread = new Thread(ScanLoop)
+        {
+            Name = "vintagehorizons-local-offers",
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
+        };
+        scanThread.Start();
+    }
+
+    static SqliteConnection OpenReadOnly(string path)
+    {
+        // Pooling off is a correctness requirement; see TryOpen and G13.
+        var builder = new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Shared,
+            Pooling = false,
+        };
+        var opened = new SqliteConnection(builder.ToString());
+        opened.Open();
+        return opened;
     }
 
     /// <summary>
@@ -54,17 +101,9 @@ public sealed class LodLocalOfferSource : IDisposable
             // of the same world had the integrated server refused by its own cache file,
             // "it seems to be not writable", every time, on the platform whose file
             // sharing blocks a writer while any handle is open. This connection is opened
-            // once per world and queried in bulk; pooling bought nothing to begin with.
-            var builder = new SqliteConnectionStringBuilder
-            {
-                DataSource = path,
-                Mode = SqliteOpenMode.ReadOnly,
-                Cache = SqliteCacheMode.Shared,
-                Pooling = false,
-            };
-            var opened = new SqliteConnection(builder.ToString());
-            opened.Open();
-            return new LodLocalOfferSource(opened, logger);
+            // once per world; pooling bought nothing to begin with.
+            SqliteConnection opened = OpenReadOnly(path);
+            return new LodLocalOfferSource(path, opened, logger);
         }
         catch (Exception e)
         {
@@ -73,25 +112,74 @@ public sealed class LodLocalOfferSource : IDisposable
         }
     }
 
-    /// <summary>Every section the server side holds, as packed keys.</summary>
-    public long[] Keys()
+    /// <summary>
+    /// One immutable batch of newly discovered keys, or false when the worker has
+    /// published nothing since the last game tick. The SQL enumeration never crosses
+    /// onto the caller's thread.
+    /// </summary>
+    public bool TryTakeDiscoveredKeys(out long[] keys) => keyDeltas.TryDequeue(out keys!);
+
+    /// <summary>Wake the reader early. Used by the isolated fixture; production polls.</summary>
+    internal void RequestDiscovery() => scanSignal.Set();
+
+    void ScanLoop()
     {
+        var known = new HashSet<long>();
         try
         {
-            var keys = new List<long>();
-            using SqliteCommand cmd = conn.CreateCommand();
+            // This connection is created, used and disposed on this thread. The separate
+            // connection above remains game-thread-owned for small, visibility-driven
+            // blob reads; no command or connection state crosses thread ownership.
+            using SqliteConnection scanConn = OpenReadOnly(path);
+            using SqliteCommand cmd = scanConn.CreateCommand();
             cmd.CommandText = "SELECT Detail, SX, SZ FROM Section";
-            using SqliteDataReader reader = cmd.ExecuteReader();
-            while (reader.Read())
+
+            while (running)
             {
-                keys.Add(LodWorld.SectionKey(reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2)));
+                try
+                {
+                    var scanned = new List<long>();
+                    using SqliteDataReader reader = cmd.ExecuteReader();
+                    while (reader.Read())
+                    {
+                        scanned.Add(LodWorld.SectionKey(
+                            reader.GetInt32(0), reader.GetInt32(1), reader.GetInt32(2)));
+                    }
+
+                    // Commit the scan to the known set only after the reader reached EOF.
+                    // If SQLite throws halfway through, marking that partial prefix known
+                    // before publishing it would suppress those keys forever on retry.
+                    List<long>? discovered = null;
+                    foreach (long key in scanned)
+                    {
+                        if (known.Add(key)) (discovered ??= new List<long>()).Add(key);
+                    }
+
+                    if (discovered != null)
+                    {
+                        for (int start = 0; start < discovered.Count; start += KeysPerDelta)
+                        {
+                            int count = Math.Min(KeysPerDelta, discovered.Count - start);
+                            keyDeltas.Enqueue(discovered.GetRange(start, count).ToArray());
+                        }
+                    }
+                }
+                catch (Exception e)
+                {
+                    // A live writer can make a read fail transiently. Keep the known set
+                    // and try again; re-publishing old keys would only add owning-thread
+                    // work and AddRemoteKeys already has its own deduplication.
+                    try { logger.Warning("Could not list server-side LOD sections: {0}", e.Message); }
+                    catch { /* diagnostics must not kill the reader */ }
+                }
+
+                scanSignal.WaitOne(ScanIntervalMs);
             }
-            return keys.ToArray();
         }
         catch (Exception e)
         {
-            logger.Warning("Could not list server-side LOD sections: {0}", e.Message);
-            return Array.Empty<long>();
+            try { logger.Warning("Could not start server-side LOD discovery: {0}", e.Message); }
+            catch { /* diagnostics must not kill shutdown */ }
         }
     }
 
@@ -101,6 +189,12 @@ public sealed class LodLocalOfferSource : IDisposable
     /// </summary>
     public byte[]? Blob(long key)
     {
+        long now = Environment.TickCount64;
+        if (blobRetryNotBefore.TryGetValue(key, out long notBefore) && now < notBefore)
+        {
+            return null;
+        }
+
         try
         {
             using SqliteCommand cmd = conn.CreateCommand();
@@ -108,10 +202,20 @@ public sealed class LodLocalOfferSource : IDisposable
             cmd.Parameters.AddWithValue("@d", LodWorld.KeyLevel(key));
             cmd.Parameters.AddWithValue("@x", LodWorld.KeySx(key));
             cmd.Parameters.AddWithValue("@z", LodWorld.KeySz(key));
-            return cmd.ExecuteScalar() as byte[];
+            byte[]? blob = cmd.ExecuteScalar() as byte[];
+            if (blob == null || blob.Length == 0)
+            {
+                blobRetryNotBefore[key] = now + BlobMissRetryMs;
+            }
+            else
+            {
+                blobRetryNotBefore.Remove(key);
+            }
+            return blob;
         }
         catch (Exception e)
         {
+            blobRetryNotBefore[key] = now + BlobMissRetryMs;
             logger.Warning("Could not read a server-side LOD section: {0}", e.Message);
             return null;
         }
@@ -119,6 +223,11 @@ public sealed class LodLocalOfferSource : IDisposable
 
     public void Dispose()
     {
+        running = false;
+        scanSignal.Set();
+        scanThread.Join(15000);
+        scanSignal.Dispose();
+
         try
         {
             conn.Close();

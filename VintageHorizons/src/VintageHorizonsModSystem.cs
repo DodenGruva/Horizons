@@ -280,16 +280,22 @@ public class VintageHorizonsModSystem : ModSystem
         if (assist == null || !assist.Available) return;
 
         int before = pipeline.RemoteOnly.Count;
-        assist.Pump((key, blob) =>
-        {
-            if (blob.Length > 0 && pipeline.InstallForeignBlob(key, blob, RecolorForeignSection)) return true;
-            pipeline.MarkRemoteUnavailable(key);
-            return false;
-        });
-
-        // Manifest keys become quadtree-visible here rather than in the packet handler:
-        // HasDataSet belongs to this thread.
-        if (assist.RemoteKeys.Count > 0) pipeline.AddRemoteKeys(assist.RemoteKeys);
+        assist.Pump(
+            (key, blob) => blob.Length > 0
+                && pipeline.InstallForeignBlob(key, blob, RecolorForeignSection),
+            // Manifest keys become quadtree-visible here rather than in the packet
+            // handler: HasDataSet belongs to this thread. Pump publishes each chunk's
+            // newly accepted keys once, so the complete retained manifest is never
+            // re-enumerated on ordinary ticks.
+            offered => pipeline.AddRemoteKeys(offered),
+            // Every failed transfer ends in one explicit state. "Not written yet"
+            // releases the attempt and restores wanted; refusal, parse failure and a
+            // local-win race remove the obsolete remote route.
+            (key, retryable) =>
+            {
+                if (retryable) pipeline.MarkRemoteRetryable(key);
+                else pipeline.MarkRemoteUnavailable(key);
+            });
 
         // Nearest first. The render path asks for exactly the sections it wants, but far
         // more than the in-flight cap allows at once, and an unordered set hands the
@@ -326,7 +332,6 @@ public class VintageHorizonsModSystem : ModSystem
     LodLocalOfferSource? localOffers;
     bool loggedLocalOffers;
     int localOfferProbeTicks;
-    int localOfferScanTicks;
 
     /// <summary>
     /// About 5s at the 50ms tick. The retry usually answers with one failed File.Exists,
@@ -334,17 +339,6 @@ public class VintageHorizonsModSystem : ModSystem
     /// minutes once it appears.
     /// </summary>
     const int LocalOfferProbeIntervalTicks = 100;
-
-    /// <summary>
-    /// About 1s at the 50ms tick, for re-reading the offered key list.
-    ///
-    /// Unlike the probe above, this one is NOT cheap: it is a full scan of the server
-    /// side's Section table, and it ran on every tick for the whole session. A swept
-    /// world holds thousands of sections, so that was tens of thousands of row decodes
-    /// and a fresh key array every 50ms, on the main thread, to learn about the handful
-    /// of rows a sweep writes per second.
-    /// </summary>
-    const int LocalOfferScanIntervalTicks = 20;
 
     /// <summary>
     /// Adopt sections the server side swept out of the savegame.
@@ -371,28 +365,19 @@ public class VintageHorizonsModSystem : ModSystem
             if (localOffers == null) return;
         }
 
-        // The sweep writes continuously, so re-reading the key list picks up whatever has
-        // landed since. AddRemoteKeys ignores anything already known, and anything local
-        // disk already holds.
-        //
-        // A sweep writes a few sections a second, so a second of latency here costs
-        // nothing. The install budget below still runs every tick: what is throttled is
-        // asking the database what exists, not acting on the answer.
-        if (++localOfferScanTicks >= LocalOfferScanIntervalTicks)
+        // A dedicated read-only connection enumerates the sibling cache on its worker.
+        // It publishes only new keys, in bounded immutable batches; this thread merely
+        // registers at most one such batch per tick in the live LodWorld.
+        if (localOffers.TryTakeDiscoveredKeys(out long[] offered))
         {
-            localOfferScanTicks = 0;
-            long[] offered = localOffers.Keys();
-            if (offered.Length > 0)
+            pipeline.AddRemoteKeys(offered);
+            if (!loggedLocalOffers)
             {
-                pipeline.AddRemoteKeys(offered);
-                if (!loggedLocalOffers)
-                {
-                    loggedLocalOffers = true;
-                    // Sweeps and /vhgen both fill the sibling cache; this line covers either.
-                    Mod.Logger.Notification(
-                        "Server-side cache offers {0} sections locally. The mod adopts them as "
-                        + "the view needs them.", offered.Length);
-                }
+                loggedLocalOffers = true;
+                // Sweeps and /vhgen both fill the sibling cache; this line covers either.
+                Mod.Logger.Notification(
+                    "Server-side cache offers sections locally. The mod adopts them as "
+                    + "the view needs them.");
             }
         }
 
@@ -408,24 +393,33 @@ public class VintageHorizonsModSystem : ModSystem
         }
 
         int budget = Math.Min(wanted.Length, LocalOffersPerTick);
-        var taken = new long[budget];
         for (int i = 0; i < budget; i++)
         {
             long key = wanted[i];
-            taken[i] = key;
 
             byte[]? blob = localOffers.Blob(key);
             // A miss is ordinary while the sweep is still running: the key was listed but
             // its row is not written yet. MarkRemoteUnavailable is permanent, so it must
-            // not be used for "not yet" - leaving the key alone lets a later tick retry.
-            if (blob == null || blob.Length == 0) continue;
-
-            if (!pipeline.InstallForeignBlob(key, blob, RecolorForeignSection))
+            // not be used for "not yet". It also must not enter the taken batch: no source
+            // accepted responsibility, so forgetting it here would strand the key in
+            // LodWorld.LoadsInFlight and make a later row permanently invisible.
+            if (blob == null || blob.Length == 0)
             {
-                pipeline.MarkRemoteUnavailable(key);
+                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.RetryableMiss);
+                continue;
+            }
+
+            if (pipeline.InstallForeignBlob(key, blob, RecolorForeignSection))
+            {
+                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Installed);
+            }
+            else
+            {
+                // Parse failure or a local-win race is an explicit terminal outcome.
+                // MarkUnavailable clears both wanted and LoadsInFlight itself.
+                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Unavailable);
             }
         }
-        pipeline.MarkRemoteRequested(taken);
     }
 
     /// <summary>
@@ -942,6 +936,7 @@ public class VintageHorizonsModSystem : ModSystem
         localOffers?.Dispose();
         localOffers = null;
         loggedLocalOffers = false;
+        localOfferProbeTicks = 0;
         pipeline.Close();
         while (pipeline.Worker.MeshResults.TryDequeue(out _)) { }
         renderer.ClearMeshes();
@@ -1086,6 +1081,14 @@ public class VintageHorizonsModSystem : ModSystem
 
             // Nothing to unregister while deferring: that path registers no listener.
             if (deferringTo == null) capi.Event.UnregisterGameTickListener(tickListenerId);
+        });
+
+        // The sibling-cache reader owns a background connection and must stop before
+        // process teardown even if the engine skipped the ordinary LeaveWorld event.
+        Quietly(() =>
+        {
+            localOffers?.Dispose();
+            localOffers = null;
         });
 
         // Stops the storage writer before the connection it writes through.

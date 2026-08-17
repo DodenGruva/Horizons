@@ -166,6 +166,13 @@ public sealed class LodAssistClient
     /// each ask costs a request slot the rest of the view is waiting for.
     /// </summary>
     readonly Dictionary<long, int> retriesByKey = new();
+    readonly Dictionary<long, long> retryNotBeforeByKey = new();
+
+    /// <summary>Monotonic clock seam for retry scheduling checks.</summary>
+    internal Func<long> NowMs = static () => Environment.TickCount64;
+
+    /// <summary>Eight attempts at this cadence span about a minute.</summary>
+    internal const int RetryDelayMs = 7500;
 
     /// <summary>
     /// Roughly a minute of asking at the rate the request loop runs, which comfortably
@@ -220,9 +227,11 @@ public sealed class LodAssistClient
     internal long[] SelectRequestBatch(IEnumerable<long> wanted)
     {
         List<long>? batch = null;
+        long now = NowMs();
         foreach (long key in wanted)
         {
             if (inFlight.Count >= LodAssist.MaxSectionsInFlight) break;
+            if (retryNotBeforeByKey.TryGetValue(key, out long notBefore) && now < notBefore) continue;
             if (!RemoteKeys.Contains(key) || refused.Contains(key) || !inFlight.Add(key)) continue;
             (batch ??= new List<long>()).Add(key);
         }
@@ -239,51 +248,68 @@ public sealed class LodAssistClient
     /// is given each arrived section and returns whether it was adopted; a section the
     /// client already has locally is declined there, since local capture wins (§10.5).
     /// </summary>
-    public void Pump(LodForeignSectionInstaller install)
+    public void Pump(
+        LodForeignSectionInstaller install,
+        Action<long[]>? offerKeys = null,
+        Action<long, bool>? transferFailed = null)
     {
-        while (manifestChunks.TryDequeue(out (long[] Keys, bool Last) chunk))
+        // One protocol-bounded chunk per game tick. A retained manifest can contain many
+        // chunks, and applying all of them in one callback would recreate the join hitch
+        // that chunking is meant to prevent.
+        if (manifestChunks.TryDequeue(out (long[] Keys, bool Last) chunk))
         {
+            List<long>? newlyOffered = null;
             foreach (long key in chunk.Keys)
             {
-                if (!refused.Contains(key)) RemoteKeys.Add(key);
+                if (!refused.Contains(key) && RemoteKeys.Add(key))
+                {
+                    (newlyOffered ??= new List<long>()).Add(key);
+                }
             }
 
-            if (!chunk.Last) continue;
+            // The callback runs on this same owning-thread Pump. It receives only the
+            // delta from this chunk, so LodWorld registration happens once rather than by
+            // re-enumerating the complete retained RemoteKeys set every game tick.
+            if (newlyOffered != null) offerKeys?.Invoke(newlyOffered.ToArray());
 
-            // The first manifest is the join, and is worth a line. Everything after it is
-            // a follow-up offer, and those now arrive every few seconds while a server
-            // cache is growing. Repeating "complete" for each one would be noise, and the
-            // count it announced at join is no longer the number to measure against.
-            if (ManifestComplete)
+            if (chunk.Last)
             {
-                logger.Debug("VintageHorizons: server offered more sections, {0} now known",
-                    RemoteKeys.Count);
-                continue;
+                // The first manifest is the join, and is worth a line. Everything after it is
+                // a follow-up offer, and those now arrive every few seconds while a server
+                // cache is growing. Repeating "complete" for each one would be noise, and the
+                // count it announced at join is no longer the number to measure against.
+                if (ManifestComplete)
+                {
+                    logger.Debug("VintageHorizons: server offered more sections, {0} now known",
+                        RemoteKeys.Count);
+                }
+                else
+                {
+                    ManifestComplete = true;
+                    // Announced vs applied: a mismatch means keys were captured or evicted
+                    // mid-send, expected on a live server and worth seeing rather than silently
+                    // tolerating once transfer starts trusting this set.
+                    logger.Notification(
+                        "VintageHorizons: server key manifest complete - {0} keys received{1}",
+                        RemoteKeys.Count,
+                        ManifestExpected > 0 && ManifestExpected != RemoteKeys.Count
+                            ? $" (server announced {ManifestExpected})" : "");
+                }
             }
-
-            ManifestComplete = true;
-            // Announced vs applied: a mismatch means keys were captured or evicted
-            // mid-send, expected on a live server and worth seeing rather than silently
-            // tolerating once transfer starts trusting this set.
-            logger.Notification(
-                "VintageHorizons: server key manifest complete - {0} keys received{1}",
-                RemoteKeys.Count,
-                ManifestExpected > 0 && ManifestExpected != RemoteKeys.Count
-                    ? $" (server announced {ManifestExpected})" : "");
         }
 
         while (Arrived.TryDequeue(out (long Key, byte[] Blob, bool Retryable) got))
         {
             inFlight.Remove(got.Key);
 
-            // install is called even for an empty blob, so the one place that knows a key
-            // is unavailable can also release the render path's wait on it. Short-circuiting
-            // here instead left declined keys stuck in LodWorld.LoadsInFlight for the
-            // session, which pinned their parent coarse.
+            // Call install even for an empty blob, then publish an explicit failure below.
+            // Short-circuiting the reply path used to leave declined keys stuck in
+            // LodWorld.LoadsInFlight for the session, pinning their parent coarse.
             if (install(got.Key, got.Blob))
             {
                 SectionsReceived++;
                 retriesByKey.Remove(got.Key);
+                retryNotBeforeByKey.Remove(got.Key);
                 continue;
             }
 
@@ -291,13 +317,15 @@ public sealed class LodAssistClient
             // the two are the same empty packet otherwise, and treating not-yet as never
             // cost the player that section for the rest of the session even though the
             // row appeared seconds later. Left in RemoteKeys so the request loop picks it
-            // up again; install has already released the render path's wait on it.
+            // up again; transferFailed restores the owning pipeline's retryable state.
             if (got.Retryable)
             {
                 int tries = retriesByKey.TryGetValue(got.Key, out int n) ? n + 1 : 1;
                 if (tries < MaxRetriesPerKey)
                 {
                     retriesByKey[got.Key] = tries;
+                    retryNotBeforeByKey[got.Key] = NowMs() + RetryDelayMs;
+                    transferFailed?.Invoke(got.Key, true);
                     continue;
                 }
                 // Out of patience: fall through and refuse it, which is where a client
@@ -307,8 +335,10 @@ public sealed class LodAssistClient
             // Declined, gone, or already held locally. Remembering that is what stops us
             // asking every tick forever for something that will never arrive.
             retriesByKey.Remove(got.Key);
+            retryNotBeforeByKey.Remove(got.Key);
             refused.Add(got.Key);
             RemoteKeys.Remove(got.Key);
+            transferFailed?.Invoke(got.Key, false);
         }
     }
 
@@ -323,8 +353,10 @@ public sealed class LodAssistClient
         inFlight.Clear();
         refused.Clear();
         retriesByKey.Clear();
+        retryNotBeforeByKey.Clear();
         SectionsReceived = 0;
         SectionsRequested = 0;
+        while (manifestChunks.TryDequeue(out _)) { }
         while (Arrived.TryDequeue(out _)) { }
     }
 }

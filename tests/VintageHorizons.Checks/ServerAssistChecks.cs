@@ -326,19 +326,27 @@ public static class ServerAssistChecks
 
         long[] first = { LodWorld.SectionKey(0, 1, 1), LodWorld.SectionKey(0, 2, 2) };
         long[] second = { LodWorld.SectionKey(0, 3, 3) };
+        var published = new List<long>();
 
         client.OnKeyManifest(new AssistKeyManifest { Keys = first, Last = false });
         c.Eq(0, client.RemoteKeys.Count, "a handler does not touch shared state, only queues");
 
-        client.Pump((_, _) => true);
+        client.Pump((_, _) => true, keys => published.AddRange(keys));
         c.Eq(2, client.RemoteKeys.Count, "the tick applies the first chunk");
+        c.SeqEq(first, published, "the first chunk publishes its keys once to the owning pipeline");
         c.False(client.ManifestComplete, "a non-final chunk does not complete the manifest");
 
         client.OnKeyManifest(new AssistKeyManifest { Keys = second, Last = true });
-        client.Pump((_, _) => true);
+        client.Pump((_, _) => true, keys => published.AddRange(keys));
         c.Eq(3, client.RemoteKeys.Count, "the tick applies the final chunk");
+        c.SeqEq(first.Concat(second).ToArray(), published,
+            "the final chunk publishes only its new delta, not the complete retained manifest");
         c.True(client.ManifestComplete, "the final chunk completes the manifest");
         c.True(logger.Contains("manifest complete"), "manifest completion is logged");
+
+        client.OnKeyManifest(new AssistKeyManifest { Keys = first, Last = false });
+        client.Pump((_, _) => true, keys => published.AddRange(keys));
+        c.Eq(3, published.Count, "a repeated manifest chunk publishes no duplicate pipeline work");
 
         // A null key array on the wire must not throw.
         c.NoThrow(() =>
@@ -347,16 +355,20 @@ public static class ServerAssistChecks
             client.Pump((_, _) => true);
         }, "a manifest chunk with no keys does not throw");
 
-        // An empty blob means the server declined. The installer is still called, because
-        // it is the one place that can release the render path's wait on the key -
-        // short-circuiting here left declined keys stuck in flight and pinned their parents
-        // coarse for the whole session.
-        var offered = new List<long>();
+        // An empty blob means the server declined. The installer is still called and an
+        // explicit permanent result is published; short-circuiting the reply path left
+        // keys stuck in flight and pinned their parents coarse for the whole session.
+        var arrived = new List<long>();
+        var failed = new List<(long Key, bool Retryable)>();
         long declined = LodWorld.SectionKey(0, 1, 1);
         client.OnSection(new AssistSection { Key = declined, Blob = Array.Empty<byte>() });
-        client.Pump((key, blob) => { offered.Add(key); return false; });
+        client.Pump(
+            (key, blob) => { arrived.Add(key); return false; },
+            transferFailed: (key, retryable) => failed.Add((key, retryable)));
 
-        c.SeqEq(new[] { declined }, offered, "a declined section still reaches the installer");
+        c.SeqEq(new[] { declined }, arrived, "a declined section still reaches the installer");
+        c.SeqEq(new[] { (declined, false) }, failed,
+            "a permanent refusal publishes an explicit terminal transfer result");
         c.Eq(1, client.SectionsRefused, "a declined section is counted as refused");
         c.False(client.RemoteKeys.Contains(declined), "a declined key leaves the offered set");
 
@@ -433,6 +445,8 @@ public static class ServerAssistChecks
     static void NotYetIsNotNever(Check c)
     {
         var client = new LodAssistClient(null!, new CaptureLogger(), "0.2.0");
+        long now = 0;
+        client.NowMs = () => now;
         client.OnWelcome(new AssistWelcome { Protocol = LodAssist.Protocol, Enabled = true });
 
         long key = LodWorld.SectionKey(0, 11, 12);
@@ -443,12 +457,21 @@ public static class ServerAssistChecks
         c.SeqEq(offered, client.SelectRequestBatch(offered), "the offered key is requested");
 
         // A retryable refusal frees the slot but keeps the key askable.
+        var failed = new List<(long Key, bool Retryable)>();
         client.OnSection(new AssistSection { Key = key, Retryable = true });
-        client.Pump((_, _) => false);
+        client.Pump(
+            (_, _) => false,
+            transferFailed: (failedKey, retryable) => failed.Add((failedKey, retryable)));
         c.Eq(0, client.InFlight, "a not-yet refusal still frees its slot");
+        c.SeqEq(new[] { (key, true) }, failed,
+            "a not-yet reply publishes an explicit retryable transfer result");
         c.Eq(0, client.SectionsRefused, "and is not counted as a refusal");
         c.Eq(1, client.SectionsPendingOnServer, "it is counted as waiting on the server");
-        c.SeqEq(offered, client.SelectRequestBatch(offered), "so the key is asked for again");
+        c.Eq(0, client.SelectRequestBatch(offered).Length,
+            "the key is not hammered again before its retry cooldown");
+        now += LodAssistClient.RetryDelayMs;
+        c.SeqEq(offered, client.SelectRequestBatch(offered),
+            "the key is asked for again after its retry cooldown");
 
         // It arrives on the next attempt: the waiting state clears and nothing is refused.
         client.OnSection(new AssistSection { Key = key, Blob = new byte[] { 1 } });
@@ -462,6 +485,8 @@ public static class ServerAssistChecks
     static void NotYetGivesUpEventually(Check c)
     {
         var client = new LodAssistClient(null!, new CaptureLogger(), "0.2.0");
+        long now = 0;
+        client.NowMs = () => now;
         client.OnWelcome(new AssistWelcome { Protocol = LodAssist.Protocol, Enabled = true });
 
         long key = LodWorld.SectionKey(0, 13, 14);
@@ -470,15 +495,23 @@ public static class ServerAssistChecks
         client.Pump((_, _) => true);
 
         int asks = 0;
+        var failed = new List<(long Key, bool Retryable)>();
         for (int i = 0; i < 50; i++)
         {
+            now += LodAssistClient.RetryDelayMs;
             if (client.SelectRequestBatch(offered).Length == 0) break;
             asks++;
             client.OnSection(new AssistSection { Key = key, Retryable = true });
-            client.Pump((_, _) => false);
+            client.Pump(
+                (_, _) => false,
+                transferFailed: (failedKey, retryable) => failed.Add((failedKey, retryable)));
         }
 
         c.True(asks is > 1 and < 50, "the key is retried, but a bounded number of times");
+        c.True(failed.Count > 1 && failed.Take(failed.Count - 1).All(result => result.Retryable),
+            "every bounded retry except the last remains explicitly retryable");
+        c.Eq((key, false), failed[^1],
+            "the exhausted retry budget publishes an explicit permanent result");
         c.Eq(1, client.SectionsRefused, "and ends as an ordinary refusal");
         c.Eq(0, client.SectionsPendingOnServer, "with nothing left tracked as waiting");
         c.Eq(0, client.SelectRequestBatch(offered).Length, "after which it is never asked again");

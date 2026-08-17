@@ -52,7 +52,7 @@
 
 **Trap:** removing a key from the wanted set without clearing `LoadsInFlight` strands it permanently. Likewise, a server that silently drops a request fills every client in-flight slot.
 
-**Do:** model request state explicitly. Mark requested only when responsibility actually transferred; answer server requests even when refusing.
+**Do:** model request state explicitly. Mark requested only when responsibility actually transferred; answer server requests even when refusing. Give bounded retries a monotonic cooldown, or an attempt ceiling can be exhausted over consecutive ticks without spanning the transient failure.
 
 ### G7 — Async section work needs revision validation
 

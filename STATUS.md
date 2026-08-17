@@ -12,15 +12,15 @@
 
 ## 1. Repository state
 
-`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, based on and tracking `origin/master` release 0.2.1 at `f8d4b03`.
+`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance instrumentation, and the first measured runtime fix: versioned asynchronous mip propagation. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance instrumentation, versioned asynchronous mip propagation, and incremental local/network key discovery with retry-safe request transitions. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
 The client captures received chunk columns, converts them into persistent 3D RLE sections, builds a mip pyramid, meshes selected sections on workers, and renders them beyond vanilla view distance. An optional server installation can capture collectively explored terrain, sweep existing savegame columns, generate transient terrain on request, and offer stored sections to clients.
 
-Capture, meshing, mip boundary construction, compression, storage writes, and demand-load decompression have background workers. `LodWorld`, block-registry/palette resolution, revision validation, mip publication, GPU upload, selection, and draw setup remain on their owning game or render threads.
+Capture, meshing, mip boundary construction, compression, storage writes, demand-load decompression, and integrated-singleplayer sibling-cache key discovery have background workers. The sibling-cache scanner owns a separate read-only unpooled SQLite connection and publishes bounded immutable key deltas. `LodWorld`, block-registry/palette resolution, revision validation, mip publication, local blob adoption, GPU upload, selection, and draw setup remain on their owning game or render threads.
 
 Mip jobs carry a world epoch, child identity, and content revision. The child remains `MipDirty` and its parent remains RAM-pinned until a matching result commits. Failed, stale, or cross-world results cannot clear the durable `ApplyToParent` obligation.
 
@@ -32,6 +32,9 @@ Mip jobs carry a world epoch, child identity, and content revision. The child re
 4. Expensive mip boundary collection, sorting, occupancy selection, and run merging moved from the owning tick to a dedicated bounded worker.
 5. Content revisions, world epochs, parent pins, in-flight limits, explicit failed results, and stale-result retry protect asynchronous mip publication.
 6. Lower-core machines reserve capacity for game render/simulation work by accounting for the dedicated capture and mip threads when selecting mesh-worker count.
+7. Sibling-cache key enumeration moved from the game tick to a dedicated coarse-cadence reader; it publishes newly discovered keys in batches of at most 2,048 and unchanged scans publish nothing.
+8. Server manifest ingestion applies one protocol-bounded chunk per tick and sends only that chunk's new keys into the pipeline instead of re-enumerating the retained manifest every tick.
+9. Local and network transfer failures now end in explicit installed, retryable, or unavailable state. Retryable server replies restore the pipeline request under a 7.5-second cooldown and bounded roughly one-minute retry window.
 
 ## 4. Measured diagnosis and result
 
@@ -52,30 +55,28 @@ The route is intentionally short and teleport-driven. It is strong evidence for 
 ## 5. Remaining performance findings
 
 1. Capture-result publication is now the largest measured owning-thread pipeline phase, reaching 11.3–14.1 ms maximum in the after runs.
-2. `PumpLocalOffers` still executes a full SQLite section-key scan on the game thread once per second. Network assist also passes the complete `RemoteKeys` set through `AddRemoteKeys` every tick.
-3. Every rendered frame scans resident section meshes for camera-relative far distance. Exact float changes can reset projection during movement; active intervals counted 2–19 resets.
-4. Sweep, transient generation, and assist serving still release per-second allowances in one-second callbacks.
-5. Assist arrivals and background load results are drained without elapsed-time or byte ceilings.
-6. Dirty pruning, scheduling, far-plane calculation, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
+2. Every rendered frame scans resident section meshes for camera-relative far distance. Exact float changes can reset projection during movement; active intervals counted 2–19 resets.
+3. Sweep, transient generation, and assist serving still release per-second allowances in one-second callbacks.
+4. Assist arrivals and background load results are drained without elapsed-time or byte ceilings. Local foreign-blob read/decode/recolour/install remains owning-thread work under an item-count budget.
+5. Dirty pruning, scheduling, far-plane calculation, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
 ## 6. Remaining correctness and durability findings
 
-- A transient local sibling-cache blob miss is placed in the `taken` array before read success. `MarkRemoteRequested(taken)` can remove it from the wanted set while `LoadsInFlight` remains set, stranding the key.
 - Dirty sections leave `SaveDirty` when queued rather than after a storage acknowledgement. Failed writes do not automatically restore the exact dirty revision.
 - Shutdown can encounter dirty state after the storage enqueue cap is full; save revisions/acknowledgements remain open work.
 - Asynchronous mip propagation still needs long soak, interrupted restart, and integrated-server validation beyond its regression checks and two short routes.
+- Incremental sibling-cache discovery and retry-safe local/server request transitions are harness-tested but not yet integrated-game-tested.
 
 ## 7. Current open work
 
-1. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios plus queue-age/allocation telemetry.
-2. Make local/network key discovery incremental and repair transient-miss state transitions.
-3. Cache mesh bounds and stabilize far-plane projection changes.
-4. Smooth periodic server work and time/byte-budget installs, capture publication, and uploads where measurement warrants.
-5. Move foreign structural decode off-thread with owning-thread registry resolution.
-6. Make traversal/scheduling visibility-aware without coupling visibility to residency.
-7. Add storage save revisions, acknowledgements, retry, and shutdown durability.
+1. Cache mesh bounds and stabilize far-plane projection changes; this is the next implementation phase.
+2. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios plus queue-age/allocation telemetry.
+3. Smooth periodic server work and time/byte-budget installs, capture publication, and uploads where measurement warrants.
+4. Move foreign structural decode off-thread with owning-thread registry resolution.
+5. Make traversal/scheduling visibility-aware without coupling visibility to residency.
+6. Add storage save revisions, acknowledgements, retry, and shutdown durability.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -85,12 +86,14 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - Supplied code matched fork commit `27e5e6a` with zero source/asset project mismatches.
 - The active branch descends from fork release 0.2.1 at `f8d4b03`.
-- Remaining key scans, far-plane scan/reset, burst callbacks, unbounded drains, count-only uploads, transient local miss, and save acknowledgement gaps remain visible in source.
+- The complete sibling-cache key query exists only on the dedicated discovery worker; the owning tick consumes at most one immutable delta batch.
+- Manifest ingestion publishes each chunk's new keys once; ordinary ticks no longer pass the retained `RemoteKeys` set through the pipeline.
+- Far-plane scan/reset, burst callbacks, unbounded drains, count-only uploads, and save acknowledgement gaps remain visible in source.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 168 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 707 assertions across all 18 suites, including SQLite/blob fixtures and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 170 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 728 assertions across all 18 suites, including SQLite discovery/delta, remote-request state, server-assist retry, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four isolated route artifacts exist locally: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors.
 - The corrected Windows harness completed client and server shutdown without force termination.
@@ -99,6 +102,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - No human playtest has evaluated the runtime change.
 - No long continuous-movement, rotation, join, sweep, or assist soak has been compared before/after.
+- No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
 
 ## 9. Known uncertainty
@@ -106,6 +110,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The reported recurring spikes may have multiple CPU and GPU causes. The current route proves one major synchronous source, not exclusivity.
 - Teleport-driven exploration emphasizes capture/propagation and may underrepresent steady traversal, projection, and shader costs.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
+- Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 
 ## 10. Documentation map
