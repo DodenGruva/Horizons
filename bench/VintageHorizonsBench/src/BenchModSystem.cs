@@ -27,6 +27,7 @@ namespace VintageHorizonsBench;
 ///   VHBENCH_MEASURE seconds to measure at each waypoint (default 10)
 ///   VHBENCH_LAPS    MEASURED laps of the route, aggregated per waypoint (default 1)
 ///   VHBENCH_WARMUP_LAPS  laps walked first and thrown away (default 1)
+///   VHBENCH_COOLDOWN seconds to hold the final endpoint before completion (default 0)
 ///
 /// A route entry can be a fixed viewpoint or a trajectory. During a trajectory's measure
 /// interval the client position and camera interpolate continuously from the entry's
@@ -68,12 +69,13 @@ public class BenchModSystem : ModSystem, IRenderer
     double settleSec = 20;
     double settleMaxSec = 90;
     double measureSec = 10;
+    double cooldownSec;
     int laps = 1;
     int warmupLaps = 1;
     int TotalLaps => warmupLaps + laps;
     bool Measuring => lap >= warmupLaps;
 
-    enum Phase { WaitingForJoin, Settling, Measuring, Done }
+    enum Phase { WaitingForJoin, Settling, Measuring, CoolingDown, Done }
 
     Phase phase = Phase.WaitingForJoin;
     int waypointIndex = -1;
@@ -149,6 +151,7 @@ public class BenchModSystem : ModSystem, IRenderer
         outDir = Environment.GetEnvironmentVariable("VHBENCH_OUT") ?? Path.Combine(GamePaths.DataPath, "bench");
         settleSec = ReadDouble("VHBENCH_SETTLE", 20);
         measureSec = ReadDouble("VHBENCH_MEASURE", 10);
+        cooldownSec = Math.Max(0, ReadDouble("VHBENCH_COOLDOWN", 0));
         laps = Math.Max(1, (int)ReadDouble("VHBENCH_LAPS", 1));
 
         // Both of these default to the OLD behaviour, and that is deliberate. A caller
@@ -177,9 +180,9 @@ public class BenchModSystem : ModSystem, IRenderer
         Directory.CreateDirectory(outDir);
         Mod.Logger.Notification(
             "Bench armed: label '{0}', {1} route entries ({8} moving) x ({2} warm-up + {3} measured) laps, "
-            + "settle {4}-{5}s, measure {6}s, out {7}",
+            + "settle {4}-{5}s, measure {6}s, cooldown {9}s, out {7}",
             label, route.Waypoints.Count, warmupLaps, laps, settleSec, settleMaxSec,
-            measureSec, outDir, route.Waypoints.Count(wp => wp.HasTrajectory));
+            measureSec, outDir, route.Waypoints.Count(wp => wp.HasTrajectory), cooldownSec);
 
         capi.Event.LevelFinalize += OnLevelFinalize;
         capi.Event.RegisterRenderer(this, EnumRenderStage.Done, "vintagehorizonsbench");
@@ -210,6 +213,16 @@ public class BenchModSystem : ModSystem, IRenderer
         {
             if (++lap >= TotalLaps)
             {
+                if (cooldownSec > 0)
+                {
+                    waypointIndex = route.Waypoints.Count - 1;
+                    phase = Phase.CoolingDown;
+                    phaseStartedAt = nowSec;
+                    Mod.Logger.Notification(
+                        "Bench '{0}' holding final endpoint for {1:0.##}s before completion",
+                        label, cooldownSec);
+                    return;
+                }
                 Finish();
                 return;
             }
@@ -347,10 +360,20 @@ public class BenchModSystem : ModSystem, IRenderer
 
         BenchWaypoint wp = route.Waypoints[waypointIndex];
         double elapsed = nowSec - phaseStartedAt;
-        double progress = phase == Phase.Measuring && wp.HasTrajectory && measureSec > 0
-            ? Math.Clamp(elapsed / measureSec, 0, 1)
-            : 0;
+        double progress = phase switch
+        {
+            Phase.Measuring when wp.HasTrajectory && measureSec > 0
+                => Math.Clamp(elapsed / measureSec, 0, 1),
+            Phase.CoolingDown when wp.HasTrajectory => 1,
+            _ => 0
+        };
         PinView(wp, progress);
+
+        if (phase == Phase.CoolingDown)
+        {
+            if (elapsed >= cooldownSec) Finish();
+            return;
+        }
 
         if (phase == Phase.Settling)
         {

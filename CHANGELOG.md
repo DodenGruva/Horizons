@@ -8,6 +8,15 @@ first.
 
 ## [Unreleased]
 
+**Clean-cache exploration evidence.** A new one-way benchmark follows the active capture
+frontier for 1,600 blocks without looping back through earlier legs. Two independently
+reset client-cache runs had no Vintage Horizons game ticks at or above 25 ms; their worst
+ticks were 15.790 and 10.950 ms. Capture backlog stayed within 20 results / 1.61 MiB /
+234 ms and 11 results / 0.89 MiB / 62 ms, then converged during an opt-in endpoint cooldown.
+The cooldown holds the final view only after frame measurement and leaves existing route
+behavior unchanged by default. This is client-only evidence on one machine; join, sweep,
+assist, and integrated-server scenarios remain open.
+
 **Smoother capture publication during warm-cache traversal.** A full corrected
 movement/rotation route reproduced capture-result publication at 12.038 ms on the game
 tick. Publication now stops at result boundaries after 2 ms or 512 KiB, retains the
@@ -17,8 +26,8 @@ are rejected by world epoch. The same full route reduced the measured capture ma
 holding backlog to 9 results / 0.70 MiB / 93 ms old, with average FPS within 0.2%, improved
 1% lows at all four waypoints, and no ticks at or above 25 ms. One admitted result remains
 non-preemptible. The route crossed terrain already present in the VH cache; a human watched
-it and reported smooth motion with no noticed clipping or turn-around stalls. Genuinely
-uncached terrain and integrated scenarios remain untested.
+it and reported smooth motion with no noticed clipping or turn-around stalls. A separate
+clean-cache capture-frontier route is now measured; integrated scenarios remain untested.
 
 **Reproducible moving-camera performance route.** The isolated benchmark can now follow
 deterministic harness-owned trajectories as well as hold fixed viewpoints. A bundled
@@ -31,7 +40,8 @@ to Vintage Story's PI-centred camera pitch and pins both mouse axes. Earlier rou
 screenshots were sky-biased; their capture/mip tick comparison remains useful, but they
 are not renderer-load or visual evidence. A corrected terrain-facing warm-cache route
 completed with five projection resets and no tick hitches. Human review reported smooth
-motion with no noticed clipping or turn-around stalls; uncached-terrain review remains open.
+motion with no noticed clipping or turn-around stalls. Clean-cache endpoint screenshots
+are now inspected; human review of the cold route in motion remains open.
 
 **Smoother adoption of server-assisted and singleplayer-cache terrain.** Compressed
 foreign sections are now inflated and structurally parsed by the storage worker instead

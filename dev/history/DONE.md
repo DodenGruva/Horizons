@@ -130,3 +130,17 @@
   noticed clipping or turn-around stalls on that route.
 - Closed the warm-cache visual-review task and replaced it with explicit unseen-terrain
   validation whose pre-run cache absence must be proven.
+
+## 2026-08-17 — uncached capture-frontier evidence
+
+- Replaced a self-overlapping cold-cache loop scenario with a one-way 1,600-block route
+  that continues the capture frontier for roughly 1,344 blocks beyond its initial streaming
+  footprint.
+- Added an opt-in post-measurement endpoint cooldown so queue convergence can be observed
+  without changing recorded frame samples or existing benchmark defaults.
+- Completed two independently reset client-cache runs with zero VH game ticks at or above
+  25 ms; worst ticks were 15.790 and 10.950 ms.
+- Kept capture backlog within 20 results / 1.61 MiB / 234 ms and 11 results / 0.89 MiB /
+  62 ms; the cooldown established zero pending capture, mip, render, save, and storage work.
+- Preserved both CSVs and scenario limitations under `bench/results`, including the human
+  correction that compact later legs can overlap coverage produced earlier in the same run.

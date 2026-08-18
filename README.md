@@ -221,6 +221,8 @@ pwsh -File scripts/bench-windows.ps1 -Label moving-rotation `
 The bundled moving route targets active streaming/capture, renderer traversal, far-plane
 stability, and turn-around behavior. Warm-up laps make later measured laps the warmer
 comparison; use the fixed `vhsurvival.txt` route when measurement needs stationary views.
+Use `-Cooldown <seconds>` when a scenario needs the final endpoint held after measurement
+so queue convergence and shutdown-ready telemetry can be observed before completion.
 
 ### Development notes
 

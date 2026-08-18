@@ -1,0 +1,15 @@
+# One-way cold-cache capture-frontier route.
+#
+# Start from an empty isolated Vintage Horizons database and run with no warm-up:
+#
+#   pwsh -NoProfile -File scripts/bench-windows.ps1 `
+#     -Label uncached-frontier -Route bench/routes/uncached-frontier.txt `
+#     -Measure 120 -Laps 1 -WarmupLaps 0 -Cooldown 45
+#
+# The 1,600-block trajectory preserves moving-rotation.txt's 13.3 blocks/s speed and
+# 12 degrees/s camera rotation. After the initial 256-block streaming footprint, roughly
+# 1,344 blocks continue outward instead of looping back through coverage produced by an
+# earlier leg. Empty-cache proof still has to be recorded before every run; this route
+# cannot establish cache state by itself.
+
+east-capture-frontier  512020  230  512010  0  -12  ->  513620  230  512010  1440  -12

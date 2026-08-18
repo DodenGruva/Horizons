@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 11 | 2026-08-17 | 0.2.1 | — | Added a one-way clean-cache capture-frontier route and endpoint cooldown; two runs had no ≥25 ms VH ticks and bounded, convergent backlog. |
 | 10 | 2026-08-17 | 0.2.1 | — | Reclassified the long route as warm-cache traversal; recorded a positive human smoothness/clipping review; made uncached-terrain validation explicit. |
 | 9 | 2026-08-17 | 0.2.1 | — | Ran the full corrected movement/rotation route; bounded capture publication by time/bytes; added result backpressure, epoch rejection, and before/after evidence. |
 | 8 | 2026-08-17 | 0.2.1 | — | Added deterministic moving/rotating benchmark routes; corrected PI-centred camera pitch; narrowed old sky-biased evidence and preserved four mip CSVs. |

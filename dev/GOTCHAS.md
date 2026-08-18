@@ -186,6 +186,18 @@ capture telemetry does not prove the distant cache is being populated for the fi
 start from a clean isolated VH cache or verify every route coordinate is absent before
 launch. Label populated-cache runs as warm-cache traversal even when recapture is active.
 
+### G19 — A clean cache does not keep a compact route cold
+
+**Trigger:** designing a multi-leg or multi-lap capture-frontier benchmark.
+
+**Trap:** an empty database proves pre-launch absence, but the route immediately populates
+coverage around itself. With a 256-block streaming radius, later legs of a 400-block square
+substantially overlap footprints captured by earlier legs in the same run.
+
+**Do:** account for the streaming radius. Use a long one-way trajectory, widely separated
+fresh-cache legs, or reset the cache per leg. Describe the initial settled footprint and
+do not label every later frame cold merely because the database started empty.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

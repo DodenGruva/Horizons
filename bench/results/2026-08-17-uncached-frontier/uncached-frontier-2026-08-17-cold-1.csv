@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+uncached-frontier-2026-08-17-cold-1,east-capture-frontier,512020,230,512010,1,66701,555.8,580.9,190.5,1.80,5.25,0.0,0.0,1946,3911,21.0,0

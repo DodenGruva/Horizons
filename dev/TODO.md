@@ -8,8 +8,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### Documentation and baseline
 
-- Run the corrected movement/rotation route into genuinely uncached terrain, establishing
-  cache absence before launch so first-time capture and publication are measured.
 - Repeat the recorded hardware/settings/config benchmark on the eventual release candidate if its code or sandbox state differs materially.
 
 ### Instrumentation
@@ -45,10 +43,11 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ## Verification debt
 
-- The full corrected movement/rotation route completed before/after capture budgeting with
-  stable aggregate results. A human watched it and reported good, smooth motion with no
-  noticed clipping or turn-around stalls, but all route terrain was already in the VH cache;
-  unseen-terrain traversal remains unverified.
+- Two one-way 1,600-block capture-frontier runs started with zero active VH databases and
+  `0 sections from cache`. Both had zero VH ticks at or above 25 ms; capture backlog stayed
+  within 20 results / 1.61 MiB / 234 ms and converged during the endpoint cooldown. The
+  first run generated server-save terrain and the second reused it, so aggregate FPS is
+  not controlled A/B evidence. No person watched the cold route in motion.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
 - The complete game-backed fast tier passes 900 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Incremental sibling-cache discovery and retry-safe local/server request transitions are source-traced and fixture-tested, but not yet exercised in integrated singleplayer or live server assist.

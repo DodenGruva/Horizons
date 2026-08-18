@@ -10,6 +10,7 @@ param(
     [double]$Measure = 10,
     [int]$Laps = 1,
     [int]$WarmupLaps = 1,
+    [double]$Cooldown = 0,
     [int]$Port = 42425,
     [switch]$ReuseServer,
     [switch]$Watch
@@ -191,6 +192,7 @@ $clientEnvironment = @{
     VHBENCH_MEASURE = $Measure.ToString([Globalization.CultureInfo]::InvariantCulture)
     VHBENCH_LAPS = ([Math]::Max(1, $Laps)).ToString()
     VHBENCH_WARMUP_LAPS = ([Math]::Max(0, $WarmupLaps)).ToString()
+    VHBENCH_COOLDOWN = ([Math]::Max(0, $Cooldown)).ToString([Globalization.CultureInfo]::InvariantCulture)
     VHBENCH_STOP_SERVER = '1'
     VINTAGEHORIZONS_STATS = '1'
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
@@ -207,7 +209,7 @@ Set-Content -LiteralPath $clientPidFile -Value $client.Id
 Write-Host "Test client started: PID $($client.Id), isolated data at $sandbox"
 
 $waypoints = @(Get-Content -LiteralPath $routePath | Where-Object { $_ -notmatch '^\s*(#|$)' }).Count
-$budget = [int]($waypoints * ([Math]::Max(1, $Laps) + [Math]::Max(0, $WarmupLaps)) * ([Math]::Max($Settle, $SettleMax) + $Measure + 15) + 180)
+$budget = [int]($waypoints * ([Math]::Max(1, $Laps) + [Math]::Max(0, $WarmupLaps)) * ([Math]::Max($Settle, $SettleMax) + $Measure + 15) + [Math]::Max(0, $Cooldown) + 180)
 
 try {
     if (-not (Wait-ForFile $done $budget $client)) {
