@@ -22,6 +22,7 @@ param(
     [string]$ServerConfig,
     [string]$RequireServerText,
     [switch]$RequireGenerationComplete,
+    [switch]$RequireMipConvergence,
     [ValidateRange(0, 256)]
     [int]$RequireAssistPeakInFlight = 0,
     [switch]$ReuseServer,
@@ -222,6 +223,61 @@ function Get-ClientAssistRecord {
     return $record
 }
 
+function Get-ClientMipConvergenceRecord {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
+
+    $worldPattern =
+        '(?<line>[^\r\n]*?, (?<pendingColumns>\d+) pending, worker: ' +
+        '(?<pendingCaptures>\d+) captures / (?<pendingMeshes>\d+) meshes / ' +
+        '(?<pendingMips>\d+) mips queued / (?<captureErrors>\d+)\+' +
+        '(?<meshErrors>\d+)\+(?<mipErrors>\d+) errors, ' +
+        '(?<awaitingMip>\d+) awaiting mip \((?<mipInFlight>\d+) in flight\), ' +
+        '(?<renderDirty>\d+) render-dirty, (?<unsaved>\d+) unsaved)'
+    $worldMatches = [regex]::Matches($logText, $worldPattern)
+    if ($worldMatches.Count -eq 0) { return $null }
+    $world = $worldMatches[$worldMatches.Count - 1]
+
+    $captureMatches = [regex]::Matches(
+        $logText,
+        'capture publish budget: \d+ items/[\d.]+ MiB, (?<queued>\d+) queued/')
+    $storageMatches = [regex]::Matches(
+        $logText,
+        'storage thread: (?<backlog>\d+) write backlog, \d+ written, ' +
+        '(?<writeErrors>\d+) write errors, \d+ read, ' +
+        '(?<loadsInFlight>\d+) async loads in flight, (?<readErrors>\d+) read errors')
+
+    return [ordered]@{
+        line = $world.Groups['line'].Value
+        pendingColumns = [int64]$world.Groups['pendingColumns'].Value
+        pendingCaptures = [int64]$world.Groups['pendingCaptures'].Value
+        pendingMeshes = [int64]$world.Groups['pendingMeshes'].Value
+        pendingMips = [int64]$world.Groups['pendingMips'].Value
+        captureErrors = [int64]$world.Groups['captureErrors'].Value
+        meshErrors = [int64]$world.Groups['meshErrors'].Value
+        mipErrors = [int64]$world.Groups['mipErrors'].Value
+        awaitingMip = [int64]$world.Groups['awaitingMip'].Value
+        mipInFlight = [int64]$world.Groups['mipInFlight'].Value
+        renderDirty = [int64]$world.Groups['renderDirty'].Value
+        unsaved = [int64]$world.Groups['unsaved'].Value
+        pendingCaptureResults = if ($captureMatches.Count -gt 0) {
+            [int64]$captureMatches[$captureMatches.Count - 1].Groups['queued'].Value
+        } else { $null }
+        storageWriteBacklog = if ($storageMatches.Count -gt 0) {
+            [int64]$storageMatches[$storageMatches.Count - 1].Groups['backlog'].Value
+        } else { $null }
+        storageWriteErrors = if ($storageMatches.Count -gt 0) {
+            [int64]$storageMatches[$storageMatches.Count - 1].Groups['writeErrors'].Value
+        } else { $null }
+        asyncLoadsInFlight = if ($storageMatches.Count -gt 0) {
+            [int64]$storageMatches[$storageMatches.Count - 1].Groups['loadsInFlight'].Value
+        } else { $null }
+        storageReadErrors = if ($storageMatches.Count -gt 0) {
+            [int64]$storageMatches[$storageMatches.Count - 1].Groups['readErrors'].Value
+        } else { $null }
+    }
+}
+
 function Get-CacheRecord {
     param([string]$Directory)
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return @() }
@@ -249,6 +305,12 @@ if ($ServerCache -ne 'Any' -and -not $ServerMod) {
 }
 if ($RequireGenerationComplete -and -not $ServerMod) {
     throw '-RequireGenerationComplete requires -ServerMod.'
+}
+if ($RequireMipConvergence -and $DisableStats) {
+    throw '-RequireMipConvergence requires stats so the final pipeline state is observable.'
+}
+if ($RequireMipConvergence -and $Cooldown -lt 30) {
+    throw '-RequireMipConvergence requires at least 30 seconds of cooldown for a final stats sample.'
 }
 if ($RequireAssistPeakInFlight -gt 0 -and -not $ServerMod) {
     throw '-RequireAssistPeakInFlight requires -ServerMod.'
@@ -421,6 +483,7 @@ try {
     $reportedServerLine = Get-LastLogLineContaining $serverOut $RequireServerText
     $generationRecord = Get-CompletedGenerationRecord
     $assistRecord = Get-ClientAssistRecord
+    $mipConvergenceRecord = Get-ClientMipConvergenceRecord
     $scenarioRecord = [ordered]@{
         label = $Label
         route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
@@ -437,6 +500,8 @@ try {
         reportedServerLine = $reportedServerLine
         requireGenerationComplete = [bool]$RequireGenerationComplete
         generation = $generationRecord
+        requireMipConvergence = [bool]$RequireMipConvergence
+        mipConvergence = $mipConvergenceRecord
         requiredAssistPeakInFlight = $RequireAssistPeakInFlight
         assist = $assistRecord
         settleSeconds = $Settle
@@ -485,6 +550,34 @@ try {
         if ($generationRecord.checkedAbsent -le 0 -or
             $generationRecord.preservedAbsent -ne $generationRecord.checkedAbsent) {
             throw "Generation did not prove that sampled absent positions remained absent. See $scenario"
+        }
+    }
+    if ($RequireMipConvergence) {
+        if ($null -eq $mipConvergenceRecord -or
+            $null -eq $mipConvergenceRecord.pendingCaptureResults -or
+            $null -eq $mipConvergenceRecord.storageWriteBacklog) {
+            throw "The client log did not contain a complete pipeline-convergence record. See $scenario and $clientMainLog"
+        }
+
+        $notConverged = @(
+            $mipConvergenceRecord.pendingColumns,
+            $mipConvergenceRecord.pendingCaptures,
+            $mipConvergenceRecord.pendingCaptureResults,
+            $mipConvergenceRecord.captureErrors,
+            $mipConvergenceRecord.meshErrors,
+            $mipConvergenceRecord.pendingMips,
+            $mipConvergenceRecord.mipErrors,
+            $mipConvergenceRecord.awaitingMip,
+            $mipConvergenceRecord.mipInFlight,
+            $mipConvergenceRecord.unsaved,
+            $mipConvergenceRecord.storageWriteBacklog,
+            $mipConvergenceRecord.storageWriteErrors,
+            $mipConvergenceRecord.asyncLoadsInFlight,
+            $mipConvergenceRecord.storageReadErrors
+        ) | Where-Object { $_ -ne 0 }
+
+        if ($notConverged.Count -gt 0) {
+            throw "The final sampled client pipeline did not converge cleanly. See $scenario and $clientMainLog"
         }
     }
     if ($RequireAssistPeakInFlight -gt 0) {

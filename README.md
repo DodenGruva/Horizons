@@ -223,6 +223,10 @@ stability, and turn-around behavior. Warm-up laps make later measured laps the w
 comparison; use the fixed `vhsurvival.txt` route when measurement needs stationary views.
 Use `-Cooldown <seconds>` when a scenario needs the final endpoint held after measurement
 so queue convergence and shutdown-ready telemetry can be observed before completion.
+Add `-RequireMipConvergence` with at least a 30-second cooldown to make the run fail unless
+the final sampled client state has no capture input/results, mip queue/in-flight work,
+worker errors, unsaved sections, asynchronous loads, or storage backlog/errors. The
+scenario JSON preserves the parsed final state.
 Pass `-ServerMod` to install Vintage Horizons on the isolated server as well, which makes
 sweep and server-assist phases available to the run. `-AutoCommand "/vhgen start 8"` can
 start a bounded generation scenario after join. Stats and managed-allocation sampling are

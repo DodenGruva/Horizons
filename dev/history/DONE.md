@@ -205,3 +205,18 @@
 - During a 17.481 ms reader call, owning-thread assist service peaked at 0.989 ms, proving
   the database wait no longer blocks that thread. A separate 32.450 ms service outlier
   occurred with sub-0.2 ms reads and remains a different attribution target.
+
+## 2026-08-18 — mip convergence soak and restart proof
+
+- Added a Windows-runner guard that requires a fresh semantic client sample with zero
+  capture prerequisites/results, worker errors, mip obligations, unsaved state,
+  asynchronous loads, and storage backlog/errors.
+- Ran a 120-second, 1,600-block warm-cache route that loaded 405 sections, captured 2,401
+  columns, produced no 25 ms Vintage Horizons tick, and converged completely during a
+  45-second cooldown.
+- Restarted with fresh server/client processes against the resulting 29,982,720-byte
+  cache; 601 sections loaded and the guarded pipeline/storage state converged again.
+- Preserved both CSVs, scenario records, context, and limitations under
+  `bench/results/2026-08-18-mip-soak`.
+- Kept active-work interruption and integrated-singleplayer recovery open rather than
+  treating graceful restart as equivalent evidence.

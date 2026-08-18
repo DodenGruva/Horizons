@@ -222,10 +222,14 @@ whose work can outlive the fixed route.
 **Trap:** a database file can belong to another world or contain no sections, and a route
 can produce plausible frame numbers while the named server operation is still running. A
 48-chunk sweep ended with a valid CSV after roughly two minutes but had reached only 10%
-of its load phase.
+of its load phase. Likewise, a completed frame CSV can leave capture, mip, save, load, or
+storage work outstanding; stable frames do not prove durable convergence.
 
 **Do:** validate the active world's reported cache count, require the operation's exact
 terminal state, and preserve both pre-launch state and postcondition beside the result.
+For mip/persistence soaks, require a cooldown long enough for a fresh stats sample and
+fail unless prerequisite capture/load work, mip obligations, unsaved state, and storage
+backlog/errors have drained.
 
 ### G22 — Sweep and generation radii exclude the safety-neighbourhood probes
 

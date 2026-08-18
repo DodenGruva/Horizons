@@ -4,7 +4,7 @@
 #
 #   pwsh -NoProfile -File scripts/bench-windows.ps1 `
 #     -Label uncached-frontier -Route bench/routes/uncached-frontier.txt `
-#     -Measure 120 -Laps 1 -WarmupLaps 0 -Cooldown 45
+#     -Measure 120 -Laps 1 -WarmupLaps 0 -Cooldown 45 -RequireMipConvergence
 #
 # The 1,600-block trajectory preserves moving-rotation.txt's 13.3 blocks/s speed and
 # 12 degrees/s camera rotation. After the initial 256-block streaming footprint, roughly

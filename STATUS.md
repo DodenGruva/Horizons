@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -65,6 +65,10 @@ disconnect event remains the sole owner of real request-queue removal.
 20. Server-assist SQLite blob reads moved to a bounded dedicated read-only connection.
 Session-tagged ordered batches preserve response order, prevent reconnect crossover, and
 retain elevated-rate capacity; packet publication remains on the server thread.
+21. The Windows runner can require a fresh post-route client sample with no pending
+capture prerequisites/results, worker errors, mip obligations, unsaved sections,
+asynchronous loads, or storage backlog/errors, and preserves the parsed proof beside the
+frame CSV.
 
 ## 4. Measured diagnosis and result
 
@@ -135,6 +139,15 @@ tail remains unattributed rather than being assigned to SQLite. The client had n
 the assist phase itself did record that 32.450 ms outlier. Queues drained and shutdown was
 graceful.
 
+A later 120-second, 1,600-block movement run started from a proven 405-section warm
+client cache, captured 2,401 columns, and recorded no Vintage Horizons tick at or above
+25 ms. A 45-second cooldown ended with zero capture input/results, worker errors, mip
+queue/in-flight/dirty work, unsaved sections, asynchronous loads, and storage
+backlog/errors. The resulting cache grew from 20,672,512 to 29,982,720 bytes. Fresh server
+and client processes then reported 601 cached sections and reached the same guarded zero
+state. This establishes graceful sustained-work convergence and persisted restart in
+separate processes, not interruption while work is active or integrated singleplayer.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -151,15 +164,17 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 - Dirty sections leave `SaveDirty` when queued rather than after a storage acknowledgement. Failed writes do not automatically restore the exact dirty revision.
 - Shutdown can encounter dirty state after the storage enqueue cap is full; save revisions/acknowledgements remain open work.
-- Asynchronous mip propagation still needs long soak, interrupted restart, and integrated-server validation beyond its regression checks and two short routes.
+- Asynchronous mip propagation now has one longer warm-cache movement/capture run and a
+  clean fresh-process restart. Interruption while propagation is active and
+  integrated-singleplayer validation remain open.
 - Incremental sibling-cache discovery and retry-safe local misses are harness-tested but
 not yet integrated-game-tested. Live server transfer and owning-thread publication now
 have dedicated-process evidence.
 
 ## 7. Current open work
 
-1. Soak asynchronous mip propagation through long exploration, restart, shutdown, and
-integrated-server load.
+1. Interrupt asynchronous mip propagation while work is active, restart, and prove
+durable `ApplyToParent` convergence; repeat under integrated-singleplayer load.
 2. Time/byte-budget GPU uploads and make traversal/scheduling visibility-aware without
 coupling visibility to residency.
 3. Exercise sibling-cache discovery and retryable local misses in integrated singleplayer.
@@ -191,7 +206,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 234 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- `dev/DocCheck.ps1` passes 238 checks under both Windows PowerShell 5.1 and PowerShell 7.
 - The full game-backed fast tier passes 964 assertions across all 22 suites, including 53 benchmark-route/config/camera-mapping, foreign queue/deferred-palette/failure isolation, assist-reader FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
@@ -212,6 +227,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The repeated off-thread-reader CSV and semantic proof are tracked under
   `bench/results/2026-08-18-assist-reader`. It transferred the same 395 sections and
   directly separated a 17.481 ms reader call from 0.989 ms owning-thread assist service.
+- The long warm-cache mip soak and fresh-process restart CSV/scenario proofs are tracked
+  under `bench/results/2026-08-18-mip-soak`. Both passed semantic capture/mip/save/load/
+  storage convergence; the long run captured 2,401 columns and the restart loaded 601
+  cached sections.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Human-tested
@@ -233,6 +252,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior
   remain unmeasured.
 - Capture publication's warm-cache follow-up peaked at 9 queued results / 0.70 MiB / 93 ms oldest and 5.732 ms for one admitted result. Unseen terrain, interrupted shutdown, and integrated-server capture remain untested.
+- The mip soak and restart used a warm client cache, graceful convergence before shutdown,
+  and separate dedicated-server/client processes. Active-work interruption,
+  `ApplyToParent` recovery after such an interruption, and integrated-singleplayer load
+  remain untested.
 - Two saturated assist runs measured transfer and publication throughput/backlog before
   and after the server reader change, but they did not isolate client worker-decode cost
   from surrounding cold-client capture/save load. No controlled sibling-cache run exists.
@@ -254,6 +277,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The warm join and completed sweep are single samples. The sweep's server cache had been
   partially populated by the deliberately rejected radius-48 calibration run, so its
   timings are warm-cache cadence evidence rather than a cold-cache throughput baseline.
+- The longer mip route began with 405 cached sections and added new capture work; it is
+  sustained warm-cache convergence evidence, not a controlled cold-cache performance
+  comparison or proof of crash recovery.
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 - The saturated assist runs deliberately raised the serving rate to 64/s. Their queue and
 throughput numbers are stress evidence, not default-rate expectations. The old 68.755 ms

@@ -8,6 +8,15 @@ first.
 
 ## [Unreleased]
 
+**Semantic mip convergence and restart evidence.** The Windows runner can now require a
+post-route client state with no pending capture input/results, worker errors, mip
+queue/in-flight/dirty work, unsaved sections, asynchronous loads, or storage backlog/errors;
+the parsed proof is preserved beside the frame CSV. A 120-second warm-cache movement run
+captured 2,401 columns with no 25 ms Vintage Horizons tick and converged completely during
+cooldown. A fresh client/server process then loaded 601 sections from the resulting cache
+and converged again. These runs establish graceful sustained-work and persisted-restart
+behavior, not active-work interruption or integrated-singleplayer recovery.
+
 **Server-assist database reads no longer block the server thread.** Assist blob requests
 now use a bounded dedicated reader with its own unpooled read-only SQLite connection.
 Player-session tags and ordered in-flight batches preserve response order and prevent a

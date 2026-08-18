@@ -12,7 +12,9 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### P1 fixes
 
-- Soak the new asynchronous mip worker during long exploration, restart, and shutdown; verify stale/failure retries and durable `ApplyToParent` convergence under interruption.
+- Interrupt the asynchronous mip worker with active propagation, restart, and verify
+  durable `ApplyToParent` convergence; repeat under integrated-singleplayer load. A
+  120-second warm-cache route and fresh-process graceful restart now converge cleanly.
 
 ### Renderer scaling
 
@@ -42,7 +44,12 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   within 20 results / 1.61 MiB / 234 ms and converged during the endpoint cooldown. The
   first run generated server-save terrain and the second reused it, so aggregate FPS is
   not controlled A/B evidence. No person watched the cold route in motion.
-- Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
+- Asynchronous mip propagation now has a 120-second warm-cache movement/capture run and a
+  fresh-process restart guarded by semantic pipeline convergence. The long run loaded 405
+  cached sections, captured 2,401 columns, had no 25 ms Vintage Horizons tick, and drained
+  capture, mip, save, load, and storage work with no errors. The next process loaded 601
+  sections from the resulting 29,982,720-byte cache and converged again. Active-work
+  interruption and integrated-singleplayer load remain unverified.
 - The complete game-backed fast tier passes 964 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Live server-assist transfer now exercises network request state end to end. Incremental
   sibling-cache discovery and retry-safe local misses remain unexercised in integrated
