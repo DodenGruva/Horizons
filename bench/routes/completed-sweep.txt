@@ -1,0 +1,14 @@
+# Completed savegame-sweep benchmark.
+#
+# The pinned server configuration examines a radius of 24 chunks, spends a 32-column/s
+# allowance across normal ticks, disables serving/generation noise, and leaves the server
+# cache intact. The runner fails unless the server reaches its exact terminal sweep line;
+# its scenario JSON records the pre-launch server-cache state and matched line.
+#
+#   pwsh -NoProfile -File scripts/bench-windows.ps1 `
+#     -Label completed-sweep -Route bench/routes/completed-sweep.txt `
+#     -ServerMod -ServerConfig bench/configs/completed-sweep.json `
+#     -RequireServerText "Savegame sweep finished:" `
+#     -Settle 60 -SettleMax 90 -Measure 30 -Laps 1 -WarmupLaps 0
+
+completed-sweep  512020  190  512010  0  -8

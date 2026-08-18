@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 13 | 2026-08-18 | 0.2.1 | — | Added cache-state and server-completion benchmark proofs; warm join and a 3,249-position sweep completed without ≥25 ms VH/server ticks. |
 | 12 | 2026-08-17 | 0.2.1 | — | Added server pipeline/sweep/generation/assist telemetry and real stats A/B controls; warmed stationary pairs measured about 0.7% average-FPS overhead. |
 | 11 | 2026-08-17 | 0.2.1 | — | Added a one-way clean-cache capture-frontier route and endpoint cooldown; two runs had no ≥25 ms VH ticks and bounded, convergent backlog. |
 | 10 | 2026-08-17 | 0.2.1 | — | Reclassified the long route as warm-cache traversal; recorded a positive human smoothness/clipping review; made uncached-terrain validation explicit. |

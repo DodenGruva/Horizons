@@ -210,6 +210,31 @@ the per-phase GC allocation counter and could falsely report no overhead.
 orthogonal. Here, only `VINTAGEHORIZONS_STATS=1` enables allocation sampling and continuous
 stats; auto-unpause controls window-focus behavior only.
 
+### G21 — A scenario label does not prove its precondition or completion
+
+**Trigger:** benchmarking warm/cold joins, sweeps, transient generation, or any operation
+whose work can outlive the fixed route.
+
+**Trap:** a database file can belong to another world or contain no sections, and a route
+can produce plausible frame numbers while the named server operation is still running. A
+48-chunk sweep ended with a valid CSV after roughly two minutes but had reached only 10%
+of its load phase.
+
+**Do:** validate the active world's reported cache count, require the operation's exact
+terminal state, and preserve both pre-launch state and postcondition beside the result.
+
+### G22 — Sweep and generation radii exclude the safety-neighbourhood probes
+
+**Trigger:** sizing a sweep or transient-generation benchmark by configured chunk radius.
+
+**Trap:** the configured radius describes the load/generation square. Existence probing
+extends four chunks farther on every side so frontier decisions have a complete
+neighbourhood. Radius 48 therefore means 11,025 probes, not 9,409, and can make an
+apparently short completion scenario several minutes long.
+
+**Do:** budget probe work as `(2 * (radius + LodColumnMap.SafeNeighbourhood) + 1)^2`, then
+calibrate load/generation time separately from measured evidence.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

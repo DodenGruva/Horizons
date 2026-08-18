@@ -230,6 +230,18 @@ enabled by default; use otherwise identical runs with and without `-DisableStats
 measure their overhead. The portable `scripts/bench.sh` runner exposes the equivalent
 `--server-mods` and `--no-stats` controls.
 
+For a warm-cache join, use `bench/routes/warm-cache-join.txt`, no warm-up lap, and
+`-ClientCache Warm`. The runner refuses to start without a sandbox database, verifies the
+active world reports more than zero cached sections at level finalization, and writes the
+proof to `<label>-scenario.json` beside the CSV. `-ClientCache Cold` provides the inverse
+non-destructive guard for a cache that was moved aside manually.
+
+For a completed sweep, combine `bench/routes/completed-sweep.txt`, `-ServerMod`, and
+`-ServerConfig bench/configs/completed-sweep.json`. `-RequireServerText "Savegame sweep
+finished:"` makes a partial run fail and preserves the matching terminal line plus the
+pre-launch server-cache state in the scenario JSON. A pinned server config requires a
+fresh isolated server; the runner refuses to apply it to `-ReuseServer`.
+
 ### Development notes
 
 - **Shaders must be pure ASCII** (even comments). The engine's OpenTK marshaling

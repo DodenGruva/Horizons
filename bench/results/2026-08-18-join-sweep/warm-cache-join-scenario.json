@@ -1,0 +1,22 @@
+{
+  "label": "warm-cache-join-validation",
+  "route": "bench/routes/warm-cache-join.txt",
+  "clientCacheRequirement": "Warm",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 27668480,
+      "lastWriteUtc": "2026-08-18T02:28:38.8826563Z"
+    }
+  ],
+  "reportedSectionsFromCache": 558,
+  "settleSeconds": 45.0,
+  "settleMaxSeconds": 60.0,
+  "measureSeconds": 15.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 0,
+  "serverMod": false,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T03:05:42.6546325Z"
+}

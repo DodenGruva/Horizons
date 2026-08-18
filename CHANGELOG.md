@@ -8,15 +8,27 @@ first.
 
 ## [Unreleased]
 
+**Reproducible warm-join and completed-sweep evidence.** The Windows isolated runner can
+now require a warm or cold client cache, pin a server configuration on a fresh process,
+require an exact server completion line, and preserve cache/completion provenance beside
+the frame CSV. A warm join adopted 558 cached sections; its first interval reached 11.180
+ms maximum game-tick time and drained 181 background results by 30 seconds, with no tick at
+or above 25 ms. A pinned 24-chunk sweep examined 3,249 dependency-aware positions and
+finished in about 68 seconds: 1,018 existing columns loaded, 377 frontier columns skipped,
+nothing generated, and 256/256 sampled absent positions remained absent. Server pipeline
+ticks peaked at 17.874 ms with no 25 ms hitch. These are single warm-cache isolated
+server/client runs, not integrated-singleplayer, cold-cache, default-radius, or human
+visual evidence.
+
 **Server observability and telemetry cost evidence.** Explicit stats sessions now report
 server capture-pipeline, sweep, transient-generation, and assist phases with p95/p99/max,
 hitch, queue, and managed-allocation context. The isolated runners can install the server
 mod and perform a genuine stats-disabled comparison; auto-unpause no longer implicitly
 turns allocation sampling on. Two warmed stationary on/off pairs measured about a 0.7%
 average-FPS and 1.0% median-FPS cost at roughly 445 uncapped FPS, while inconsistent 1%
-lows support no tail-latency claim. A server-mod smoke emitted pipeline, sweep, and assist
-intervals and shut down gracefully; live assist blob/send work and full sweep/generation
-scenarios remain open.
+lows support no tail-latency claim. A later pinned sweep reached completion with bounded
+reported server ticks. Live assist blob/send work and completed transient generation
+remain open.
 
 **Clean-cache exploration evidence.** A new one-way benchmark follows the active capture
 frontier for 1,600 blocks without looping back through earlier legs. Two independently
@@ -24,8 +36,8 @@ reset client-cache runs had no Vintage Horizons game ticks at or above 25 ms; th
 ticks were 15.790 and 10.950 ms. Capture backlog stayed within 20 results / 1.61 MiB /
 234 ms and 11 results / 0.89 MiB / 62 ms, then converged during an opt-in endpoint cooldown.
 The cooldown holds the final view only after frame measurement and leaves existing route
-behavior unchanged by default. This is client-only evidence on one machine; join, sweep,
-assist, and integrated-server scenarios remain open.
+behavior unchanged by default. This is client-only evidence on one machine; human review
+of cold motion, live assist transfer, and integrated-singleplayer scenarios remain open.
 
 **Smoother capture publication during warm-cache traversal.** A full corrected
 movement/rotation route reproduced capture-result publication at 12.038 ms on the game

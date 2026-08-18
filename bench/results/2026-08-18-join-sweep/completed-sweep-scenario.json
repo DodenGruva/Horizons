@@ -1,0 +1,32 @@
+{
+  "label": "completed-sweep-validation",
+  "route": "bench/routes/completed-sweep.txt",
+  "clientCacheRequirement": "Any",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 27672576,
+      "lastWriteUtc": "2026-08-18T03:13:55.9671811Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 14729216,
+      "lastWriteUtc": "2026-08-18T03:13:56.4840869Z"
+    }
+  ],
+  "reportedSectionsFromCache": 558,
+  "serverConfig": "bench/configs/completed-sweep.json",
+  "requiredServerText": "Savegame sweep finished:",
+  "reportedServerLine": "17.8.2026 22:16:03 [Server Notification] [vintagehorizons] Savegame sweep finished: 1018 columns loaded from terrain that already existed, 377 skipped on the frontier, nothing generated. Verified 256/256 sampled absent positions still absent. Capture continues in the background; the cache is complete once no columns remain queued.",
+  "settleSeconds": 60.0,
+  "settleMaxSeconds": 90.0,
+  "measureSeconds": 30.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 0,
+  "serverMod": true,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T03:16:42.9223217Z"
+}

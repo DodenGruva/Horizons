@@ -157,3 +157,19 @@
   roughly 445 uncapped FPS; inconsistent 1% lows support no tail claim.
 - Completed a server-mod sweep smoke that emitted the new interval lines and shut down
   gracefully; assist blob/send and generation paths remain runtime-unexercised.
+
+## 2026-08-18 — warm-cache join and completed sweep evidence
+
+- Added non-destructive warm/cold client-cache guards, pinned server-config installation,
+  required server terminal-text validation, and portable scenario-provenance JSON to the
+  Windows isolated runner.
+- Added fixed-view warm-join and completed-sweep routes plus a 24-chunk, 32-column/s sweep
+  configuration that excludes assist serving and transient generation.
+- Completed a warm join with 558 cached sections, no 25 ms Vintage Horizons tick, and a
+  181-section / 51.93 MiB background backlog that drained by 30 seconds.
+- Completed a 3,249-position sweep in about 68 seconds: 1,018 existing columns loaded,
+  377 frontier columns skipped, nothing generated, and 256/256 sampled absent positions
+  remained absent. Reported server ticks stayed below 25 ms.
+- Preserved both CSVs, scenario records, context, and evidence limits under
+  `bench/results/2026-08-18-join-sweep`.
+- Expanded the full game-backed fast tier to 911 passing assertions.

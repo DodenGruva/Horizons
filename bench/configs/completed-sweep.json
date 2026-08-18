@@ -1,0 +1,17 @@
+{
+  "EnableCapture": true,
+  "EnableServing": false,
+  "ServeRadiusBlocks": 8192,
+  "MaxSectionsPerSecondPerPlayer": 8,
+  "MaxSectionsPerSecondTotal": 32,
+  "SweepSavegame": true,
+  "SweepRadiusChunks": 24,
+  "SweepColumnsPerSecond": 32,
+  "EnableGenerateCommand": false,
+  "GenerateMaxRadiusChunks": 128,
+  "GenerateDefaultRadiusChunks": 32,
+  "GenerateColumnsPerSecond": 16,
+  "GenerateMaxInFlight": 64,
+  "PregenRadiusChunks": 0,
+  "PregenColumnsPerSecond": 8
+}

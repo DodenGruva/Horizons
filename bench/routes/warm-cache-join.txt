@@ -1,0 +1,13 @@
+# Warm-cache join route.
+#
+# This holds one representative spawn view with no discarded warm-up lap. The Windows
+# runner's -ClientCache Warm guard verifies both a pre-launch database and the active
+# world's exact "sections from cache" report, then preserves that proof beside the CSV.
+# Keep the settle interval at least 30 seconds so both join-time and periodic Vintage
+# Horizons telemetry are present in the client log.
+#
+#   pwsh -NoProfile -File scripts/bench-windows.ps1 `
+#     -Label warm-cache-join -Route bench/routes/warm-cache-join.txt `
+#     -ClientCache Warm -Settle 45 -Measure 15 -Laps 1 -WarmupLaps 0
+
+warm-cache-join  512020  190  512010  0  -8

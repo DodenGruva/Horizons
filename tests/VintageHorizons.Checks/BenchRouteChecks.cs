@@ -1,4 +1,5 @@
 using VintageHorizonsBench;
+using System.Text.Json;
 
 namespace VintageHorizons.Checks;
 
@@ -12,6 +13,36 @@ public static class BenchRouteChecks
         c.Eq(5, fixedRoute.Waypoints.Count, "legacy fixed-view route still loads");
         c.False(fixedRoute.Waypoints.Any(wp => wp.HasTrajectory),
             "legacy fixed-view entries remain stationary");
+
+        BenchRoute warmJoinRoute = BenchRoute.Load(Path.Combine(routeDir, "warm-cache-join.txt"));
+        c.Eq(1, warmJoinRoute.Waypoints.Count, "warm-cache join route has one measured view");
+        c.Eq("warm-cache-join", warmJoinRoute.Waypoints[0].Name,
+            "warm-cache join route keeps its scenario identity");
+        c.False(warmJoinRoute.Waypoints[0].HasTrajectory,
+            "warm-cache join does not mix startup with movement");
+
+        BenchRoute completedSweepRoute = BenchRoute.Load(Path.Combine(routeDir, "completed-sweep.txt"));
+        c.Eq(1, completedSweepRoute.Waypoints.Count,
+            "completed-sweep route has one measured view");
+        c.Eq("completed-sweep", completedSweepRoute.Waypoints[0].Name,
+            "completed-sweep route keeps its scenario identity");
+        c.False(completedSweepRoute.Waypoints[0].HasTrajectory,
+            "completed sweep does not mix server cadence with client movement");
+
+        string sweepConfigPath = Path.Combine(
+            GameAssemblies.RepoRoot, "bench", "configs", "completed-sweep.json");
+        using JsonDocument sweepConfig = JsonDocument.Parse(File.ReadAllText(sweepConfigPath));
+        JsonElement sweepRoot = sweepConfig.RootElement;
+        c.True(sweepRoot.GetProperty("SweepSavegame").GetBoolean(),
+            "completed-sweep config enables savegame sweeping");
+        c.Eq(24, sweepRoot.GetProperty("SweepRadiusChunks").GetInt32(),
+            "completed-sweep config pins a non-trivial radius");
+        c.Eq(32, sweepRoot.GetProperty("SweepColumnsPerSecond").GetInt32(),
+            "completed-sweep config pins the measured tick allowance");
+        c.False(sweepRoot.GetProperty("EnableServing").GetBoolean(),
+            "completed-sweep config excludes assist-transfer work");
+        c.Eq(0, sweepRoot.GetProperty("PregenRadiusChunks").GetInt32(),
+            "completed-sweep config excludes startup generation");
 
         BenchRoute movingRoute = BenchRoute.Load(Path.Combine(routeDir, "moving-rotation.txt"));
         c.Eq(4, movingRoute.Waypoints.Count, "moving route loads all four legs");

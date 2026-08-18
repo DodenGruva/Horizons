@@ -2,7 +2,7 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-17
+**Status date:** 2026-08-18
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `34` C# files under `VintageHorizons/src`
@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, a one-way clean-cache capture-frontier route with optional endpoint cooldown, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs and capture publication, and storage-owned foreign structural decode. The isolated runners can install the server mod and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, a pinned completed-sweep scenario, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs and capture publication, and storage-owned foreign structural decode. The Windows runner can prove client cache state, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -51,6 +51,9 @@ Mip jobs carry a world epoch, child identity, and content revision. The child re
 17. Server stats distinguish capture-pipeline phases, sweep probe publication/load issue,
 generation probe/work issue, and assist service/blob/send/offer costs. They also report
 assist request depth/oldest age and opt-in per-phase managed allocations.
+18. The Windows runner snapshots client/server cache provenance, validates active-world
+warm/cold cache state, installs pinned configuration only on fresh isolated servers, and
+can fail a run whose server operation never reaches its required terminal log line.
 
 ## 4. Measured diagnosis and result
 
@@ -80,6 +83,19 @@ server-mod smoke emitted pipeline, sweep probe/publication, idle assist, queue, 
 allocation telemetry and shut down gracefully. No assist section request arrived, so live
 blob-read/send telemetry remains unexercised.
 
+A proven warm-cache join then launched against a 27,668,480-byte client database and
+reported 558 sections from the active cache. Its first interval reached 11.180 ms maximum
+Vintage Horizons game-tick time with no tick at or above 25 ms. Background-load backlog
+reached 181 sections / 51.93 MiB / 11.531 s old and drained by the 30-second report. The
+settled 15-second sample averaged 438.0 FPS with a 270.1 FPS 1% low and no timeout.
+
+A pinned dedicated-server sweep examined 3,249 dependency-aware positions and finished in
+about 68 seconds. It loaded 1,018 existing columns, skipped 377 frontier columns,
+generated nothing, and verified that 256/256 sampled absent positions remained absent.
+Server pipeline ticks reached 17.874 ms maximum with no tick at or above 25 ms; sweep
+probe/load issue maxima were 3.945/6.004 ms. The connected client also had no 25 ms
+Vintage Horizons tick and its settled sample averaged 437.6 FPS / 302.9 FPS 1% low.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -98,7 +114,7 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Add warm join, completed sweep/generation, and saturated server-assist scenarios.
+1. Add completed transient-generation and saturated server-assist scenarios.
 2. Time/byte-budget GPU uploads where measurement warrants.
 3. Measure the initial 2 ms / 512 KiB install policy, foreign publication/decode backlog, and tick-smoothed serving in integrated play; move server blob reads only with safe connection ownership.
 4. Make traversal/scheduling visibility-aware without coupling visibility to residency.
@@ -127,8 +143,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 192 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 900 assertions across all 22 suites, including 23 benchmark-route/camera-mapping, foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 214 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 911 assertions across all 22 suites, including 34 benchmark-route/config/camera-mapping, foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
 - Two full corrected warm-cache-route CSVs and their machine/settings context are tracked under `bench/results/2026-08-17-moving-rotation`. The baseline/follow-up completed all measured legs with zero settle timeouts, zero tick hitches, and graceful isolated shutdown. Large screenshots and sandbox logs remain intentionally ignored.
@@ -137,6 +153,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   `bench/results/2026-08-17-telemetry-overhead`. The warmed pairs measured about 0.7%
   average-FPS stats overhead; the integrated smoke emitted server pipeline/sweep/assist
   telemetry and shut down gracefully.
+- Warm-join and completed-sweep CSVs, scenario proofs, settings, results, and limitations
+  are tracked under `bench/results/2026-08-18-join-sweep`. Both had zero reported 25 ms
+  Vintage Horizons/server ticks and graceful isolated shutdown; the sweep's terminal line
+  proves completion and absence preservation.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Human-tested
@@ -149,11 +169,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 ### Not yet established
 
 - One brief human playtest reported a noticeable subjective improvement after off-thread foreign decode; it was not a controlled or thorough comparison.
-- No person has watched the clean-cache frontier route in motion; join, sweep, and assist soaks also remain untested.
+- No person has watched the clean-cache frontier, warm-join, or completed-sweep routes in
+  motion; long join/sweep and assist soaks remain untested.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
-- One short integrated sweep run measured probe-phase cadence and server pipeline costs,
-  but it did not reach sweep completion or any assist section transfer. Install backlog
-  age and temporary coarseness under the initial client budgets remain unmeasured.
+- The completed sweep ran in separate dedicated-server/client processes with a warm
+  server cache, a calibrated 24-chunk radius, serving disabled, and generation disabled.
+  Integrated-singleplayer cadence, cold-cache throughput, default-radius behavior, and
+  live assist transfer remain unmeasured.
 - Capture publication's warm-cache follow-up peaked at 9 queued results / 0.70 MiB / 93 ms oldest and 5.732 ms for one admitted result. Unseen terrain, interrupted shutdown, and integrated-server capture remain untested.
 - No controlled assist or sibling-cache run has separated foreign worker decode, owning-thread publication, backlog age, or throughput.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
@@ -171,6 +193,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The first clean-cache frontier run generated server-save terrain and the second reused it. Both client caches were empty, but FPS and upload-volume differences between them combine client and server-save state and are not causal comparisons.
 - The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
 - Per-phase allocation counters identify managed bytes attributed to the current owning thread; they do not attribute native allocations or prove that a later GC pause belongs to one phase.
+- The warm join and completed sweep are single samples. The sweep's server cache had been
+  partially populated by the deliberately rejected radius-48 calibration run, so its
+  timings are warm-cache cadence evidence rather than a cold-cache throughput baseline.
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 
 ## 10. Documentation map
