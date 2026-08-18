@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 8 | 2026-08-17 | 0.2.1 | — | Added deterministic moving/rotating benchmark routes; corrected PI-centred camera pitch; narrowed old sky-biased evidence and preserved four mip CSVs. |
 | 7 | 2026-08-17 | 0.2.1 | — | Moved foreign inflation/structural decode to the storage owner; retained request state until publication; added opt-in per-phase allocation telemetry. |
 | 6 | 2026-08-17 | 0.2.1 | — | Smoothed sweep/generation/assist allowances across ticks; time/byte-bounded owning-thread installs with FIFO progress and queue telemetry. |
 | 5 | 2026-08-17 | 0.2.1 | — | Cached opaque/water mesh bounds; made steady far-distance calculation O(1); stabilized projection with quantized growth and delayed shrink. |

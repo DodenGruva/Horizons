@@ -8,6 +8,18 @@ first.
 
 ## [Unreleased]
 
+**Reproducible moving-camera performance route.** The isolated benchmark can now follow
+deterministic harness-owned trajectories as well as hold fixed viewpoints. A bundled
+1,600-block loop moves continuously while rotating the camera through four full turns,
+targeting streaming/capture, traversal, projection stability, and turn-around behavior
+without measurement-time teleport commands. Legacy routes retain their original behavior,
+and focused checks cover parsing, interpolation, angle preservation, engine pitch mapping,
+and loop continuity. The harness also now translates its conventional zero-degree horizon
+to Vintage Story's PI-centred camera pitch and pins both mouse axes. Earlier route
+screenshots were sky-biased; their capture/mip tick comparison remains useful, but they
+are not renderer-load or visual evidence. A corrected terrain-facing trajectory smoke
+completed cleanly; a longer controlled run and clipping review are still pending.
+
 **Smoother adoption of server-assisted and singleplayer-cache terrain.** Compressed
 foreign sections are now inflated and structurally parsed by the storage worker instead
 of on the game tick. The owning thread still performs the live block lookup, terrain

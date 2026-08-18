@@ -112,6 +112,10 @@ the transient failure.
 
 **Do:** make result artifacts durable, send the graceful server command, then publish the done marker. Never compensate with broad process termination.
 
+The Windows runner requires PowerShell 7: it uses `ConvertFrom-Json -AsHashtable` and
+`Start-Process -Environment`, neither of which Windows PowerShell 5.1 supports. Keep the
+explicit `#Requires` guard and invoke it through `pwsh`.
+
 ### G13 — SQLite disposal does not defeat connection pooling
 
 **Trigger:** replacing or directly editing a SQLite fixture file and then reopening it in the same process.
@@ -154,6 +158,18 @@ is still pending or has failed.
 
 **Do:** retain the foreign fallback until revisioned storage acknowledgements can prove the
 local row durable. Do not infer persistence from RAM installation or save enqueue.
+
+### G17 — Vintage Story camera pitch is PI-centred
+
+**Trigger:** changing benchmark camera control or route pitch conventions.
+
+**Trap:** route files describe a conventional zero-degree horizon with negative angles
+looking down, but Vintage Story's mouse/camera pitch is centred at PI radians and clamps
+around PI/2 through 3PI/2. Passing route radians directly, or merely flipping their sign,
+looks into the sky while producing plausible frame-time CSVs.
+
+**Do:** map route pitch to `PI - routePitch`, pin both `MousePitch` and `CameraPitch`, and
+visually inspect a rendered screenshot before accepting route evidence.
 
 ## Reversals and disproved claims
 

@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../../VintageHorizons/VintageHorizons.csproj" />
+    <Compile Include="../../bench/VintageHorizonsBench/src/BenchRoute.cs" Link="Bench/BenchRoute.cs" />
   </ItemGroup>
 
   <!--

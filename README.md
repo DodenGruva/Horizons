@@ -208,6 +208,20 @@ continue without window focus), `VINTAGEHORIZONS_AUTOEXPLORE=1` and
 `VINTAGEHORIZONS_EXPLORE_HOP=<blocks>` (teleport along a spiral so that fresh chunks
 stream in).
 
+The Windows benchmark runner requires PowerShell 7 and uses the same isolated
+client/server setup. Fixed route entries hold one position and camera angle; trajectory
+entries add `->` plus an end position and angle, which drives deterministic continuous
+movement during the measure interval. For example:
+
+```powershell
+pwsh -File scripts/bench-windows.ps1 -Label moving-rotation `
+  -Route bench/routes/moving-rotation.txt -Measure 30 -Laps 2
+```
+
+The bundled moving route targets active streaming/capture, renderer traversal, far-plane
+stability, and turn-around behavior. Warm-up laps make later measured laps the warmer
+comparison; use the fixed `vhsurvival.txt` route when measurement needs stationary views.
+
 ### Development notes
 
 - **Shaders must be pure ASCII** (even comments). The engine's OpenTK marshaling

@@ -8,14 +8,13 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### Documentation and baseline
 
-- Preserve the four short active-exploration CSV runs and summarized telemetry when preparing a reviewable commit; the raw `.testdata` sandbox remains intentionally ignored.
-- Add a longer continuous-movement/rotation route that does not rely only on teleports.
+- Run and preserve the deterministic movement/rotation route at its documented 30-second leg speed with warm-up and multiple measured laps; visually check clipping and turn-around behavior.
 - Record hardware, graphics settings, view distance, save, and mod configuration beside a release-candidate benchmark.
 
 ### Instrumentation
 
 - Add equivalent phase telemetry for sweep, generation, and server-assist serving.
-- Add moving-camera, warm-cache join, sweep, and server-assist benchmark scenarios.
+- Add warm-cache join, sweep, and server-assist benchmark scenarios.
 - Measure the overhead of enabled versus disabled instrumentation in a steady stationary scenario.
 
 ### P1 fixes
@@ -48,9 +47,9 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 - The short active-exploration harness reproduced and attributed the largest game-tick spike, but it is teleport-driven and not a substitute for a human continuous-movement playtest.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
-- The complete game-backed fast tier passes 877 assertions across 21 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The complete game-backed fast tier passes 900 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Incremental sibling-cache discovery and retry-safe local/server request transitions are source-traced and fixture-tested, but not yet exercised in integrated singleplayer or live server assist.
-- Cached bounds and projection hysteresis pass 30 isolated assertions, but the prior 2–19 live resets came from a teleport-driven route; the fix still needs a dedicated moving-camera run and visual clipping check.
+- Cached bounds and projection hysteresis pass 30 isolated assertions. A corrected terrain-facing five-second-per-leg trajectory smoke completed with no mod errors or tick hitches, but it was not a controlled long run and did not establish a clipping verdict. The earlier route screenshots were sky-biased by an incorrect zero-centred camera-pitch assumption.
 - Server-assist and savegame-sweep spike cadence has not yet been profiled in integrated singleplayer.
 - Tick-smoothed server work and time/byte-bounded client installs are source-traced and harness-tested, but their frame-time effect and backlog policy have not yet been evaluated in an integrated game process.
 - Storage-owned foreign decode is source-traced and harness-tested. A brief human test

@@ -1,0 +1,23 @@
+# Continuous movement and camera-rotation route.
+#
+# A trajectory line is:
+#
+#   name  startX startY startZ startYaw startPitch -> endX endY endZ endYaw endPitch
+#
+# The harness settles at the start, then interpolates client position and camera to the
+# end over VHBENCH_MEASURE seconds. Angles are intentionally not wrapped: 0 -> 360 is one
+# full counter-clockwise turn. The next leg begins where the previous leg ended, forming
+# a 1,600-block loop without measurement-time teleport commands.
+#
+# Run with a 30-second measure interval for a 13.3-block/s path and two measured laps:
+#
+#   pwsh -File scripts/bench-windows.ps1 -Label moving-rotation -Route bench/routes/moving-rotation.txt -Measure 30 -Laps 2
+#
+# The harness owns the trajectory so it stays deterministic while the game continues its
+# normal streaming and capture work. Warm-up laps turn later measured laps into the warmer
+# comparison. Coordinates share the .testdata sandbox world used by vhsurvival.txt.
+
+east-full-turn    512020  230  512010    0  -12  ->  512420  230  512010  360  -12
+south-full-turn   512420  230  512010   90  -12  ->  512420  230  512410  450  -12
+west-full-turn    512420  230  512410  180  -12  ->  512020  230  512410  540  -12
+north-full-turn   512020  230  512410  270  -12  ->  512020  230  512010  630  -12

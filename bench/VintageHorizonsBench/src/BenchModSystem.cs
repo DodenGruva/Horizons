@@ -28,6 +28,11 @@ namespace VintageHorizonsBench;
 ///   VHBENCH_LAPS    MEASURED laps of the route, aggregated per waypoint (default 1)
 ///   VHBENCH_WARMUP_LAPS  laps walked first and thrown away (default 1)
 ///
+/// A route entry can be a fixed viewpoint or a trajectory. During a trajectory's measure
+/// interval the client position and camera interpolate continuously from the entry's
+/// start to its end. This exercises movement and projection changes without depending on
+/// human input or frame rate; see BenchRoute for the text format.
+///
 /// On settling, and why it is not a fixed sleep. A teleport starts a burst of streaming,
 /// capture, meshing and upload, and how long that burst lasts depends on the mod, the
 /// waypoint and what is already cached. A fixed timer either cuts into the burst or
@@ -171,10 +176,10 @@ public class BenchModSystem : ModSystem, IRenderer
 
         Directory.CreateDirectory(outDir);
         Mod.Logger.Notification(
-            "Bench armed: label '{0}', {1} waypoints x ({2} warm-up + {3} measured) laps, "
+            "Bench armed: label '{0}', {1} route entries ({8} moving) x ({2} warm-up + {3} measured) laps, "
             + "settle {4}-{5}s, measure {6}s, out {7}",
             label, route.Waypoints.Count, warmupLaps, laps, settleSec, settleMaxSec,
-            measureSec, outDir);
+            measureSec, outDir, route.Waypoints.Count(wp => wp.HasTrajectory));
 
         capi.Event.LevelFinalize += OnLevelFinalize;
         capi.Event.RegisterRenderer(this, EnumRenderStage.Done, "vintagehorizonsbench");
@@ -226,6 +231,14 @@ public class BenchModSystem : ModSystem, IRenderer
 
         Mod.Logger.Notification("Bench lap {0}/{1} waypoint {2}/{3} '{4}': settling, {5}-{6}s",
             lap + 1, TotalLaps, waypointIndex + 1, route.Waypoints.Count, wp.Name, settleSec, settleMaxSec);
+
+        if (wp.HasTrajectory)
+        {
+            Mod.Logger.Notification(
+                "Bench trajectory '{0}': ({1:0.##}, {2:0.##}, {3:0.##}) -> "
+                + "({4:0.##}, {5:0.##}, {6:0.##}) over {7:0.##}s",
+                wp.Name, wp.X, wp.Y, wp.Z, wp.EndX, wp.EndY, wp.EndZ, measureSec);
+        }
     }
 
     /// <summary>
@@ -296,15 +309,31 @@ public class BenchModSystem : ModSystem, IRenderer
         }
     }
 
-    /// <summary>Camera is re-pinned every frame: mouse input and physics both fight it.</summary>
-    void PinCamera(BenchWaypoint wp)
+    /// <summary>
+    /// View is re-pinned every frame: mouse input and physics both fight it. Trajectory
+    /// positions are deliberately harness-owned. They provide a deterministic path while
+    /// the normal game continues streaming chunks and publishing player position.
+    /// </summary>
+    void PinView(BenchWaypoint wp, double progress)
     {
         IClientPlayer player = capi.World.Player;
-        player.CameraYaw = wp.Yaw;
-        player.CameraPitch = wp.Pitch;
-        capi.Input.MouseYaw = wp.Yaw;
-        player.Entity.Pos.Yaw = wp.Yaw;
-        player.Entity.Pos.Pitch = wp.Pitch;
+        float yaw = wp.YawAt(progress);
+        float pitch = wp.CameraPitchAt(progress);
+
+        if (wp.HasTrajectory)
+        {
+            player.Entity.Pos.SetPos(wp.XAt(progress), wp.YAt(progress), wp.ZAt(progress));
+            player.Entity.Pos.Motion.X = 0;
+            player.Entity.Pos.Motion.Y = 0;
+            player.Entity.Pos.Motion.Z = 0;
+        }
+
+        player.CameraYaw = yaw;
+        player.CameraPitch = pitch;
+        capi.Input.MouseYaw = yaw;
+        capi.Input.MousePitch = pitch;
+        player.Entity.Pos.Yaw = yaw;
+        player.Entity.Pos.Pitch = pitch;
     }
 
     public void OnRenderFrame(float deltaTime, EnumRenderStage stage)
@@ -317,9 +346,11 @@ public class BenchModSystem : ModSystem, IRenderer
         CloseBlockingDialogs();
 
         BenchWaypoint wp = route.Waypoints[waypointIndex];
-        PinCamera(wp);
-
         double elapsed = nowSec - phaseStartedAt;
+        double progress = phase == Phase.Measuring && wp.HasTrajectory && measureSec > 0
+            ? Math.Clamp(elapsed / measureSec, 0, 1)
+            : 0;
+        PinView(wp, progress);
 
         if (phase == Phase.Settling)
         {

@@ -20,7 +20,7 @@ These are the new baseline, not work to reimplement. At plan approval, they did 
 
 ## Measured re-prioritization — 2026-08-17
 
-Phase 1 telemetry changed the implementation order. On two short active-exploration route runs against 0.2.1, total game-tick p95/p99 reached 22.5–27.5 / 32.5–40 ms and the synchronous mip phase reached 20–22.5 / 32.5–35 ms, with a 103.1 ms maximum. Renderer phases remained below the 25 ms hitch threshold. That made versioned mip work the first runtime fix rather than Phase 6 chronologically.
+Phase 1 telemetry changed the implementation order. On two short active-exploration route runs against 0.2.1, total game-tick p95/p99 reached 22.5–27.5 / 32.5–40 ms and the synchronous mip phase reached 20–22.5 / 32.5–35 ms, with a 103.1 ms maximum. That made versioned mip work the first runtime fix rather than Phase 6 chronologically. The route's camera pitch was later proven to be incorrectly zero-centred, so its render-phase timings were sky-biased and do not validate terrain-rendering cost; the teleport/capture pipeline attribution and same-route mip comparison remain applicable.
 
 The initial asynchronous mip implementation is now locally complete and measured twice on the same route. Boundary sorting and merge construction run on a dedicated bounded worker; owning-thread results are world-epoch and content-revision validated. Across the five waypoints, the mean worst-1%-frame time from two before and two after runs changed as follows:
 
@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and assist/background-install queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work. Moving-camera, server sweep/assist, broader queue-age, allocation, and disabled-overhead scenarios remain open.
+**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and assist/background-install queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. A deterministic continuous movement/rotation route and corrected terrain-facing smoke now exist; longer moving-camera, server sweep/assist, broader queue-age, allocation, and disabled-overhead scenarios remain open.
 
 ### Client instrumentation
 
@@ -169,8 +169,9 @@ Instrumentation should be cheap when disabled and available through an explicit 
 water mesh footprints maintain a cached world-space rectangle; ordinary frames compute the
 required distance in O(1). The applied projection rounds upward to 512-block steps, grows
 immediately, and shrinks after a stable five-second cooldown. Thirty isolated assertions
-cover bounds, caps, quantization, hysteresis, and reset. A continuous moving-camera run and
-visual clipping check remain open before runtime acceptance.
+cover bounds, caps, quantization, hysteresis, and reset. A corrected short moving-camera
+smoke now exists; a controlled long run and visual clipping check remain open before
+runtime acceptance.
 
 ### Work
 

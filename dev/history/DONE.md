@@ -84,3 +84,21 @@
   to 877 passing assertions across 21 suites.
 - Built a local test ZIP; a brief human playtest reported a noticeable subjective
   improvement, without a controlled before/after measurement.
+
+## 2026-08-17 — continuous benchmark route and camera correction
+
+- Extended the benchmark route format with elapsed-time position and camera trajectories
+  while preserving fixed-waypoint compatibility.
+- Added a four-leg, 1,600-block continuous movement route with one full camera turn per
+  leg and regression checks for interpolation, angle mapping, and loop continuity.
+- Corrected the harness from a false zero-centred pitch assumption to Vintage Story's
+  PI-centred camera representation and pinned both mouse axes.
+- Reclassified old sky-biased route evidence: its capture/pipeline/mip comparison remains
+  useful, but its render load, screenshots, and visual claims do not.
+- Completed corrected terrain-facing static and moving integration smokes with graceful
+  isolated shutdown and no mod errors or tick hitches.
+- Preserved the four short mip before/after CSVs under `bench/results` with their evidence
+  limits and kept the large reproducible sandbox ignored.
+- Made the Windows runner's PowerShell 7 requirement explicit.
+- Added 23 benchmark-route assertions and expanded the full fast tier to 900 assertions
+  across 22 suites.

@@ -22,6 +22,7 @@ public static class Program
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),
         ("pure", "far distance", FarDistanceChecks.Run),
+        ("pure", "benchmark routes", BenchRouteChecks.Run),
         ("pure", "mesher", MesherChecks.Run),
         ("pure", "server config", ConfigChecks.Run),
         ("pure", "lod mod deferral", DeferralChecks.Run),

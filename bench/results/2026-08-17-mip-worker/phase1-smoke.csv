@@ -1,0 +1,6 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+phase1-smoke,spawn-horizon,512020,190,512010,1,1278,425.2,630.4,33.7,2.35,29.72,0.0,0.0,1749,3403,3.0,0
+phase1-smoke,spawn-look-south,512020,190,512010,1,2657,885.6,917.9,390.8,1.13,2.56,0.0,0.0,1607,3501,3.0,0
+phase1-smoke,ridge-east,512900,200,512010,1,1093,364.2,649.6,30.7,2.75,32.61,0.0,0.0,1957,3568,3.0,0
+phase1-smoke,valley-north,512020,175,512900,1,2353,784.1,923.9,83.2,1.28,12.01,0.0,0.0,1782,3651,3.0,0
+phase1-smoke,high-overlook,512450,260,512450,1,2033,677.4,1037.8,46.4,1.48,21.53,0.0,0.0,1716,3788,3.0,0

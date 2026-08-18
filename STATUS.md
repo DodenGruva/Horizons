@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, expanded performance/allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs, and storage-owned foreign structural decode. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, expanded performance/allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs, and storage-owned foreign structural decode. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -43,10 +43,11 @@ Mip jobs carry a world epoch, child identity, and content revision. The child re
 11. Sweep and transient-generation load issuance use fractional 50 ms allowances, 1 ms deadlines, 16-probe per-tick publication caps, and the existing 256-probe in-flight ceiling. Delayed ticks discard catch-up credit without reducing ordinary long-run rates.
 12. Server assist uses fair per-player/global tick allowances and a 2 ms serving deadline. Client foreign/background install paths stop at 2 ms or 512 KiB, retain FIFO request state until actual publication, guarantee oldest-item progress, and report queue bytes/age.
 13. Network and sibling-cache foreign blobs transfer to separately bounded storage-owner queues for inflation and structural parsing. The owning thread performs live resolution, recolouring, filtering, stale/local-win rejection, publication, and persistence scheduling.
+14. Benchmark routes can interpolate deterministic position and camera trajectories. Route pitch uses a conventional zero-degree horizon and is translated to Vintage Story's PI-centred camera representation while both mouse axes are pinned.
 
 ## 4. Measured diagnosis and result
 
-Two short active-exploration route runs on unmodified 0.2.1 showed pipeline time tracking total game-tick time almost exactly. Synchronous mip propagation reached 20–22.5 ms p95, 32.5–35 ms p99, and 103.1 ms maximum. Total game ticks reached 107.9 ms, while every measured render phase stayed below the 25 ms hitch threshold. This established mip propagation as the dominant reproduced owning-thread spike in that scenario.
+Two short active-exploration route runs on unmodified 0.2.1 showed pipeline time tracking total game-tick time almost exactly. Synchronous mip propagation reached 20–22.5 ms p95, 32.5–35 ms p99, and 103.1 ms maximum. Total game ticks reached 107.9 ms. The route's camera pitch was later proven to be incorrectly zero-centred, so its render-phase timings were sky-biased and are not representative terrain-rendering evidence. The owning-thread attribution remains applicable because the route still teleported, captured columns, propagated mips, and measured pipeline time directly.
 
 Two same-route runs after the asynchronous change ended with zero mip errors, zero pending/in-flight mip work, zero unsaved sections, and zero game ticks at or above 25 ms. Mip apply/schedule maxima were 1.93/0.43 ms. Mean worst-1%-frame time across the two runs on each side changed as follows:
 
@@ -58,7 +59,7 @@ Two same-route runs after the asynchronous change ended with zero mip errors, ze
 | valley-north | 10.99 ms | 1.60 ms | 85.5% |
 | high-overlook | 11.79 ms | 2.38 ms | 79.8% |
 
-The route is intentionally short and teleport-driven. It is strong evidence for the isolated spike class, not yet proof of long-session behavior or subjective play quality.
+The route is intentionally short and teleport-driven. Its same-route pipeline/tick comparison is strong evidence for the isolated mip spike class, but its old screenshots and renderer load are invalid because the camera looked mostly sky. It is not proof of long-session behavior, terrain-rendering cost, or subjective play quality.
 
 ## 5. Remaining performance findings
 
@@ -78,7 +79,7 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Add continuous movement/camera-rotation, warm join, sweep, and server-assist scenarios; measure enabled-versus-disabled allocation telemetry overhead.
+1. Run the corrected continuous movement/camera-rotation route with its controlled 30-second legs, warm-up, and multiple measured laps; add warm join, sweep, and server-assist scenarios; measure enabled-versus-disabled allocation telemetry overhead.
 2. Time-budget capture publication and GPU uploads where longer measurement warrants.
 3. Measure the initial 2 ms / 512 KiB install policy, foreign publication/decode backlog, and tick-smoothed serving in integrated play; move server blob reads only with safe connection ownership.
 4. Make traversal/scheduling visibility-aware without coupling visibility to residency.
@@ -104,10 +105,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 182 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 877 assertions across all 21 suites, including foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 187 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 900 assertions across all 22 suites, including 23 benchmark-route/camera-mapping, foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
-- Four isolated route artifacts exist locally: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors.
+- Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased. A corrected terrain-facing static smoke and four-leg trajectory smoke completed cleanly with isolated graceful shutdown; their large sandbox artifacts remain intentionally ignored.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Not yet established
@@ -116,7 +117,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - No long continuous-movement, rotation, join, sweep, or assist soak has been compared before/after.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
 - No integrated sweep or assist run has yet measured the smoothed server cadence, install backlog age, or temporary coarseness under the initial client budgets.
-- No moving-camera game process has yet measured projection-reset frequency or visually checked the cached-bounds far plane for clipping.
+- A corrected five-second-per-leg moving-camera smoke rendered terrain and reported zero to two projection resets per 15-second telemetry interval. It was too short and fast for a clipping verdict or projection-policy acceptance.
 - No controlled assist or sibling-cache run has separated foreign worker decode, owning-thread publication, backlog age, or throughput.
 - Enabled-versus-disabled allocation-telemetry overhead has not been measured in a steady stationary game scenario.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
@@ -124,10 +125,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 ## 9. Known uncertainty
 
 - The reported recurring spikes may have multiple CPU and GPU causes. The current route proves one major synchronous source, not exclusivity.
-- Teleport-driven exploration emphasizes capture/propagation and may underrepresent steady traversal, projection, and shader costs.
+- Teleport-driven exploration emphasizes capture/propagation, and the original route's incorrect sky-facing pitch underrepresented terrain traversal, draw, and shader costs.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
-- Cached bounds remove the steady mesh scan by construction, but the 512-block projection step, five-second shrink cooldown, and conservative rectangular overestimate have not yet been evaluated in continuous play.
+- Cached bounds remove the steady mesh scan by construction. The corrected short trajectory exercised continuous movement, but the 512-block projection step, five-second shrink cooldown, conservative rectangular overestimate, and clipping behavior have not yet been evaluated in a controlled long run.
 - The 2 ms / 512 KiB install ceilings are conservative initial policy. Compressed foreign bytes and estimated in-memory background-section bytes are intentionally path-local measures, not directly comparable throughput figures.
 - The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
 - Per-phase allocation counters identify managed bytes attributed to the current owning thread; they do not attribute native allocations or prove that a later GC pause belongs to one phase.
