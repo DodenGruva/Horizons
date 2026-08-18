@@ -158,15 +158,21 @@ public class LodStorageThread : IDisposable
     // Includes pending and executing writes. A pending same-key replacement does not
     // increase it, which is the memory bound coalescing is meant to preserve.
     long saveOutstanding;
-    readonly string? interruptMipMarker =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER");
-    readonly string? interruptMipRelease =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
+    readonly string? interruptMipMarker;
+    readonly string? interruptMipRelease;
     int interruptMipMarked;
 
-    public LodStorageThread(LodStore store, Action<LodSaveSnapshot>? saveAction = null)
+    public LodStorageThread(LodStore store, Action<LodSaveSnapshot>? saveAction = null,
+        bool enableMipInterruptionHook = true)
     {
         this.store = store;
+        if (enableMipInterruptionHook)
+        {
+            interruptMipMarker =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER");
+            interruptMipRelease =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
+        }
         this.saveAction = saveAction ?? (snapshot => store.SaveBlob(
             snapshot.Level, snapshot.SX, snapshot.SZ, LodStore.Serialize(snapshot),
             snapshot.ApplyToParent));

@@ -273,7 +273,11 @@ public class LodPipeline
             Block? block = blockId > 0 ? api.World.GetBlock(blockId) : null;
             return block == null ? ((byte)0, (byte)0) : (LodBlockPolicy.FlagsFor(block), tintSlotFor(block));
         };
-        storageThread = new LodStorageThread(newStore);
+        // In integrated singleplayer both pipelines share one process and therefore one
+        // environment. The guarded crash hook belongs to the client cache only; a server
+        // row winning the marker race would not prove client recovery on restart.
+        storageThread = new LodStorageThread(
+            newStore, enableMipInterruptionHook: string.IsNullOrEmpty(suffix));
 
         // Background reloads for the render path. The loader runs on the storage
         // thread; results are installed on the world thread in Tick.

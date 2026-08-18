@@ -1,0 +1,25 @@
+{
+  "label": "integrated-mip-interrupt-accepted",
+  "route": "bench/routes/uncached-frontier.txt",
+  "intentionalClientInterruption": true,
+  "interruptionTrigger": "persisted ApplyToParent row",
+  "persistedMipWrite": "0,7999,8002,2026-08-18T18:19:34.6976515Z",
+  "durableObligationRetained": true,
+  "integratedSingleplayer": true,
+  "worldName": "vhbench-integrated",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "455f6d7c-7144-4285-812c-8994868b7973.db",
+      "bytes": 4071424,
+      "lastWriteUtc": "2026-08-18T18:18:41.7010068Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "455f6d7c-7144-4285-812c-8994868b7973-server.db",
+      "bytes": 2072576,
+      "lastWriteUtc": "2026-08-18T18:16:03.0304974Z"
+    }
+  ],
+  "interruptedUtc": "2026-08-18T18:19:35.1660667Z"
+}

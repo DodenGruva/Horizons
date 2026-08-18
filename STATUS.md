@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -116,6 +116,10 @@ with bounded delay, and shutdown repeatedly exposes and drains remaining dirty r
 large route processed 94,285 snapshot/upload items with bounded queues and no 25 ms
 renderer phase; a separate acknowledged-persistence run wrote 138 revisions and converged
 to zero unsaved/backlog/errors.
+28. Integrated-singleplayer validation uses its own nested sandbox. A clean-cache command-
+generation run discovered 211 sibling keys, forced one exact-key retryable miss, installed
+that key plus 62 others, and converged. A client-scoped hard interruption recovered one
+persisted mip obligation; a third fresh integrated process required zero obligations.
 
 ## 4. Measured diagnosis and result
 
@@ -202,8 +206,7 @@ sections, and reached zero pending capture input/results, worker errors, mip que
 in-flight/dirty work, unsaved sections, asynchronous loads, and storage backlog/errors.
 A third fresh server/client process opened the resulting 29,999,104-byte cache with zero
 persisted mip obligations and reached the same clean state. This establishes durable
-client-cache recovery from a hard process interruption in dedicated server/client mode;
-integrated singleplayer remains separate verification debt.
+client-cache recovery from a hard process interruption in dedicated server/client mode.
 
 A dedicated visibility-traversal route then exercised a 601-section warm client cache
 through full turns at four waypoints. In a controlled same-cache pair, early subtree
@@ -238,6 +241,15 @@ shutdown. Deterministic checks separately injected a failed first write and succ
 retry, rejected a stale acknowledgement after repeated mutation, coalesced a superseded
 pending snapshot, drained 300 keys, and reopened SQLite to read the newest revision.
 
+An integrated-singleplayer clean-cache run then completed radius-12 command generation:
+625 positions produced 414 transient columns and 211 frontier skips with no timeout or
+height-map failure. The client discovered 211 sibling keys. A guarded hook forced key
+`2,2000,2001` through the real retry cooldown; that exact key later reached owning-thread
+installation. Sixty-three sibling sections installed in total, zero remained wanted, and
+all client convergence fields reached zero. A later hard interruption retained client
+level-0 obligation `7999,8002`; recovery loaded one obligation and converged, and a third
+fresh integrated process required zero persisted obligations and converged again.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -263,20 +275,18 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
   forced in a game process.
 - Asynchronous mip propagation now has a longer movement/capture convergence run,
   graceful restart, deliberate interruption after a durable `ApplyToParent` write,
-  successful recovery, and a fresh-process zero-obligation postcheck.
-- Integrated-singleplayer interruption and sibling-cache interaction remain open.
-- Incremental sibling-cache discovery and retry-safe local misses are harness-tested but
-not yet integrated-game-tested. Live server transfer and owning-thread publication now
-have dedicated-process evidence.
+  successful recovery, and fresh-process zero-obligation postchecks in both dedicated and
+  integrated process layouts.
+- Incremental sibling-cache discovery and retry-safe local misses now have an integrated
+  command-generation run with exact-key retry/installation proof. Natural miss frequency
+  and default-sweep behavior remain unmeasured.
 
 ## 7. Current open work
 
 1. Complete human in-motion review of clipping, turn-around behavior, and visual mesh
 replacement on the thousands-section build.
-2. Repeat mip interruption/recovery and exercise sibling-cache discovery/retryable local
-misses in integrated singleplayer.
-3. Isolate the remaining server-assist service/send/GC tail if it reproduces.
-4. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+2. Isolate the remaining server-assist service/send/GC tail if it reproduces.
+3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
 warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
@@ -314,16 +324,19 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Exact render-dirty membership feeds only new-key deltas into a nearest-first heap on
   ordinary frames. Camera-cell and detail-policy changes plus world clears own full
   reindexing; stale and busy heap entries cannot clear exact membership.
+- Integrated client and server storage workers share one process environment; the guarded
+  mip interruption marker is enabled only for the unsuffixed client pipeline, while the
+  local-offer miss hook requires an explicit sandbox marker and exact-key install proof.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 278 checks under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 1,050 assertions across all 25 suites, including 44
+- `dev/DocCheck.ps1` passes 305 checks under Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 1,056 assertions across all 25 suites, including 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
   53 benchmark-route/config/camera-mapping, the durable-mip
-  interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader
+  client-scoped interruption marker, exact-key sibling retry, foreign queue/deferred-palette/failure isolation, assist-reader
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
   accounting, 15 tick-allowance, 23 drain-budget, 30 cached-bounds/far-plane, SQLite
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
@@ -367,7 +380,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   rows to 3,132, processed 94,285 snapshot/upload items with bounded queues, and had no
   25 ms renderer phase. The persistence follow-up reopened all 3,132 rows, wrote 138
   revisions, and ended with zero unsaved sections, write backlog, or write errors.
-- The corrected Windows harness completed client and server shutdown without force termination.
+- Integrated sibling retry, interruption, recovery, and fresh-process postcheck evidence
+  is tracked under `bench/results/2026-08-18-integrated-singleplayer`. The client
+  discovered 211 sibling keys, installed the exact forced-miss key plus 62 others, loaded
+  one interrupted obligation on recovery, and loaded zero obligations in the postcheck;
+  every accepted completed run converged all guarded fields.
+- The corrected Windows harness completed dedicated and integrated shutdown without force
+  termination except for the deliberate PID-verified interruption phases.
 
 ### Human-tested
 
@@ -382,7 +401,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - No person has watched the clean-cache frontier, warm-join, completed-sweep,
   completed-generation, or saturated-assist routes in motion; long join/sweep/assist
   soaks remain untested.
-- No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
+- Integrated command generation now exercises sibling discovery and an injected exact-key
+  retry through installation. Natural sibling misses and retryable live server responses
+  remain unobserved.
 - Visibility-aware subtree traversal and independent mesh residency have source, harness,
   controlled 601-section evidence, and automated 3,132-section scaling. No human has
   watched the thousands-section build for clipping or subjective turn-around quality.
@@ -402,9 +423,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior
   remain unmeasured.
 - Capture publication's warm-cache follow-up peaked at 9 queued results / 0.70 MiB / 93 ms oldest and 5.732 ms for one admitted result. Unseen terrain, interrupted shutdown, and integrated-server capture remain untested.
-- The mip soak and interruption/recovery runs used a warm client cache and separate
-  dedicated-server/client processes. Integrated-singleplayer interruption and
-  sibling-cache interaction remain untested.
+- Dedicated and integrated interruption/recovery each used one guarded warm client cache.
+  Integrated default-sweep interaction and repeated/long interruption soaks remain
+  untested.
 - Two saturated assist runs measured transfer and publication throughput/backlog before
   and after the server reader change, but they did not isolate client worker-decode cost
   from surrounding cold-client capture/save load. No controlled sibling-cache run exists.

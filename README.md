@@ -236,6 +236,15 @@ client while leaving its isolated server available. The second run uses `-ReuseS
 must load one or more persisted mip obligations and converge every ordinary pipeline and
 storage guard to zero before stopping the server normally.
 
+Pass `-IntegratedSingleplayer` to launch a named world without a separate server process.
+Integrated runs use `.testdata/integrated`, so their save, caches, logs, pidfiles, and
+single-instance pipe remain separate from both ordinary game data and dedicated-process
+benchmarks. `-WorldName` selects the sandbox world. The interruption run needs no
+`-ReuseServer`; recovery reopens the same world, and `-RequireNoPersistedMips` guards a
+third fresh-process postcheck. `-RequireLocalOfferRetry` enables one sandbox-only transient
+sibling-cache miss and requires that exact section to install later. A pinned
+`-ServerConfig` is copied into the integrated data path.
+
 Pass `-ServerMod` to install Vintage Horizons on the isolated server as well, which makes
 sweep and server-assist phases available to the run. `-AutoCommand "/vhgen start 8"` can
 start a bounded generation scenario after join. Stats and managed-allocation sampling are

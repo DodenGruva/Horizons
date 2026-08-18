@@ -133,7 +133,7 @@ Instrumentation should be cheap when disabled and available through an explicit 
 
 ## 5. Phase 2 — incremental key discovery and request correctness
 
-**Implementation status:** Complete locally. Sibling-cache SQL enumeration runs on a dedicated read-only connection and publishes bounded deltas; network manifests publish each chunk once; local and server failure paths preserve explicit retryable or terminal state with cooldown. The full fast tier covers these transitions, and a saturated live-assist run now covers successful request/publication state. Integrated singleplayer and live retryable-response validation remain open.
+**Implementation status:** Complete locally. Sibling-cache SQL enumeration runs on a dedicated read-only connection and publishes bounded deltas; network manifests publish each chunk once; local and server failure paths preserve explicit retryable or terminal state with cooldown. The full fast tier covers these transitions, a saturated live-assist run covers successful request/publication state, and an integrated command-generation run forced one sibling miss and proved that exact key later installed. A natural live miss and retryable server response remain unobserved.
 
 ### Local sibling cache
 
@@ -201,7 +201,9 @@ telemetry and one-item progress. Completed generation and saturated assist now h
 dedicated-process evidence. Server blob reads now run on a bounded dedicated read-only
 connection with ordered owning-thread publication. A repeated saturated run transferred
 395/395 sections; one 17.481 ms reader call coincided with only 0.989 ms maximum assist
-service, directly proving separation. Integrated-singleplayer acceptance remains open.
+service, directly proving separation. Integrated command generation and sibling adoption
+now have guarded runtime evidence; default savegame-sweep cadence in integrated
+singleplayer remains open.
 
 ### Sweep and generation
 
@@ -253,8 +255,9 @@ evidence. Content revisions, world epochs, bounded in-flight jobs, a dedicated w
 stale/failure retry, parent pins, owning-thread palette remap/publication, telemetry,
 regression checks, controlled before/after routes, a long convergence soak, graceful
 restart, deliberate interruption after a durable `ApplyToParent` write, recovery, and a
-fresh-process zero-obligation postcheck are complete. Integrated-singleplayer interruption
-and any further optimization of the owning-thread publication tail remain open.
+fresh-process zero-obligation postcheck are complete in both dedicated and integrated
+process layouts. Any further optimization of the owning-thread publication tail remains
+open.
 
 ### Revision model
 
@@ -295,8 +298,8 @@ sections. The same-cache pair reduced selected nodes 64.2%, weighted average tra
 evictions. Aggregate FPS was unchanged within run noise and is not claimed. Incremental
 render-dirty priority scheduling is source-, harness-, and functional-smoke-complete at
 601 cached sections. Mesh-snapshot and GPU-upload boundary budgets are source-, build-,
-and harness-complete. A thousands-section scale run, runtime queue/timing evidence, and
-human clipping/turn-around review remain open.
+and harness-complete. A 3,132-section scale run now supplies runtime queue/timing evidence;
+human clipping/turn-around review remains open.
 
 ### Traversal
 

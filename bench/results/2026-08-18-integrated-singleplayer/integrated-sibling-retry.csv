@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+integrated-sibling-retry,spawn-horizon,512020,190,512010,1,4351,435.0,433.0,333.3,2.30,3.00,0.0,0.0,2467,5149,30.0,0

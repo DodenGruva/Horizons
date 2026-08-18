@@ -295,3 +295,18 @@
   errors to zero, and shut down both isolated processes normally.
 - Preserved route CSV/scenario evidence and limitations under
   `bench/results/2026-08-18-renderer-budgets-large-cache`.
+
+## 2026-08-18 — integrated sibling retry and mip recovery
+
+- Added a separate Windows integrated-singleplayer sandbox and guarded world launch while
+  retaining exact PID/command-line interruption safety.
+- Forced one transient sibling-cache miss, discovered 211 offered keys, accepted and
+  installed 63 sections, and proved exact key `2,2000,2001` retried to installation with
+  no wanted request or client convergence work left.
+- Scoped the durable mip marker to the client storage worker so the integrated server
+  cannot win the shared-environment race.
+- Interrupted one durable client obligation, recovered one obligation to clean
+  convergence, and required a third fresh process to load zero persisted obligations.
+- Added exact zero-obligation and sibling-retry runner guards, two deterministic checks,
+  and preserved accepted evidence under
+  `bench/results/2026-08-18-integrated-singleplayer`; 1,056 Release assertions pass.

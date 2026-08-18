@@ -31,6 +31,9 @@ public sealed class LodLocalOfferSource : IDisposable
     readonly AutoResetEvent scanSignal = new(false);
     readonly Thread scanThread;
     readonly Dictionary<long, long> blobRetryNotBefore = new();
+    readonly string? testMissMarker =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER");
+    long? testMissKey;
     volatile bool running = true;
 
     /// <summary>
@@ -195,6 +198,18 @@ public sealed class LodLocalOfferSource : IDisposable
             return null;
         }
 
+        // Isolated integration-test hook. A real row miss is timing-dependent: the key
+        // scan can race a growing sibling cache, but a reliable recovery test must force
+        // that state transition once. The hook has no path and no behaviour unless the
+        // runner supplies a private marker inside its sandbox.
+        if (testMissKey == null && !string.IsNullOrEmpty(testMissMarker))
+        {
+            testMissKey = key;
+            blobRetryNotBefore[key] = now + BlobMissRetryMs;
+            File.WriteAllText(testMissMarker, DescribeKey(key));
+            return null;
+        }
+
         try
         {
             using SqliteCommand cmd = conn.CreateCommand();
@@ -220,6 +235,9 @@ public sealed class LodLocalOfferSource : IDisposable
             return null;
         }
     }
+
+    internal static string DescribeKey(long key) =>
+        $"{LodWorld.KeyLevel(key)},{LodWorld.KeySx(key)},{LodWorld.KeySz(key)}";
 
     public void Dispose()
     {

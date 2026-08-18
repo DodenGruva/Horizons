@@ -324,6 +324,21 @@ diagnostic, never as result evidence.
 
 **Found:** renderer-budget runtime validation, Session 21.
 
+### G28 — Integrated client and server test hooks share one environment
+
+**Trigger:** using an environment-controlled storage, persistence, or interruption hook
+inside integrated singleplayer.
+
+**Trap:** client and server pipelines live in one process and inherit the same environment.
+Whichever storage worker reaches a process-global marker first can appear to prove the
+other database's behavior. A durable server `ApplyToParent` row therefore cannot establish
+that the client cache will recover.
+
+**Do:** scope the hook at pipeline construction, preserve the database-side identity in
+the scenario, and add a check that the excluded owner cannot publish the marker.
+
+**Found:** integrated mip interruption/recovery, Session 22.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

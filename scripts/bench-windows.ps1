@@ -24,18 +24,24 @@ param(
     [switch]$RequireGenerationComplete,
     [switch]$RequireMipConvergence,
     [switch]$RequireMipRecovery,
+    [switch]$RequireNoPersistedMips,
     [switch]$InterruptWhenPersistedMip,
     [ValidateRange(10, 1800)]
     [int]$InterruptTimeout = 180,
     [ValidateRange(0, 256)]
     [int]$RequireAssistPeakInFlight = 0,
+    [switch]$IntegratedSingleplayer,
+    [ValidatePattern('^[A-Za-z0-9_-]+$')]
+    [string]$WorldName = 'vhbench-integrated',
+    [switch]$RequireLocalOfferRetry,
     [switch]$ReuseServer,
     [switch]$Watch
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$sandbox = Join-Path $repoRoot '.testdata'
+$sandboxRoot = Join-Path $repoRoot '.testdata'
+$sandbox = if ($IntegratedSingleplayer) { Join-Path $sandboxRoot 'integrated' } else { $sandboxRoot }
 $game = if ($env:VINTAGE_STORY) { $env:VINTAGE_STORY } else { Join-Path $env:APPDATA 'Vintagestory' }
 $routePath = if ($Route) { [IO.Path]::GetFullPath($Route) } else { Join-Path $repoRoot 'bench/routes/vhsurvival.txt' }
 $serverConfigPath = if ($ServerConfig) { [IO.Path]::GetFullPath($ServerConfig) } else { $null }
@@ -46,7 +52,9 @@ $serverMods = Join-Path $serverData 'Mods'
 $clientPidFile = Join-Path $sandbox 'test-instance.pid'
 $serverPidFile = Join-Path $serverData 'server.pid'
 $clientCacheDir = Join-Path $sandbox 'ModData\vintagehorizons'
-$serverCacheDir = Join-Path $serverData 'ModData\vintagehorizons'
+$serverCacheDir = if ($IntegratedSingleplayer) { $clientCacheDir } else {
+    Join-Path $serverData 'ModData\vintagehorizons'
+}
 $clientMainLog = Join-Path $sandbox 'Logs\client-main.log'
 
 function Assert-UnderSandbox {
@@ -132,7 +140,19 @@ function Close-ClientGracefully {
 
 function Get-ClientCacheFiles {
     if (-not (Test-Path -LiteralPath $clientCacheDir -PathType Container)) { return @() }
-    return @(Get-ChildItem -LiteralPath $clientCacheDir -Filter '*.db' -File -ErrorAction Stop)
+    return @(Get-ChildItem -LiteralPath $clientCacheDir -Filter '*.db' -File -ErrorAction Stop |
+        Where-Object { -not $_.BaseName.EndsWith('-server', [StringComparison]::OrdinalIgnoreCase) })
+}
+
+function Get-ServerCacheFiles {
+    if (-not (Test-Path -LiteralPath $serverCacheDir -PathType Container)) { return @() }
+    $files = @(Get-ChildItem -LiteralPath $serverCacheDir -Filter '*.db' -File -ErrorAction Stop)
+    if ($IntegratedSingleplayer) {
+        return @($files | Where-Object {
+            $_.BaseName.EndsWith('-server', [StringComparison]::OrdinalIgnoreCase)
+        })
+    }
+    return $files
 }
 
 function Assert-RequestedClientCacheState {
@@ -254,6 +274,27 @@ function Get-ClientAssistRecord {
     return $record
 }
 
+function Get-ClientLocalOfferRecord {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
+    $pattern =
+        'local sibling offers: (?<discovered>\d+) discovered, ' +
+        '(?<misses>\d+) retryable misses, (?<accepted>\d+) accepted, ' +
+        '(?<installed>\d+) installed, (?<remote>\d+) remote-only, (?<wanted>\d+) wanted'
+    $found = [regex]::Matches($logText, $pattern)
+    if ($found.Count -eq 0) { return $null }
+
+    $last = $found[$found.Count - 1]
+    return [ordered]@{
+        discovered = [int64]$last.Groups['discovered'].Value
+        retryableMisses = [int64]$last.Groups['misses'].Value
+        accepted = [int64]$last.Groups['accepted'].Value
+        installed = [int64]$last.Groups['installed'].Value
+        remoteOnly = [int64]$last.Groups['remote'].Value
+        wanted = [int64]$last.Groups['wanted'].Value
+    }
+}
+
 function Get-ClientMipConvergenceRecord {
     if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
     $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
@@ -328,14 +369,20 @@ function Get-LastLogLineContaining {
         Where-Object { $_.Contains($Needle, [StringComparison]::Ordinal) } | Select-Object -Last 1)[0]
 }
 
-if ($serverConfigPath -and -not $ServerMod) {
-    throw '-ServerConfig requires -ServerMod so the pinned settings have a consumer.'
+if ($IntegratedSingleplayer -and $ServerMod) {
+    throw '-ServerMod is implicit in -IntegratedSingleplayer; do not pass both.'
 }
-if ($ServerCache -ne 'Any' -and -not $ServerMod) {
-    throw '-ServerCache requires -ServerMod so an active server cache can be verified.'
+if ($IntegratedSingleplayer -and $ReuseServer) {
+    throw '-ReuseServer is only for a separate dedicated server, not integrated singleplayer.'
 }
-if ($RequireGenerationComplete -and -not $ServerMod) {
-    throw '-RequireGenerationComplete requires -ServerMod.'
+if ($serverConfigPath -and -not ($ServerMod -or $IntegratedSingleplayer)) {
+    throw '-ServerConfig requires -ServerMod or -IntegratedSingleplayer so the pinned settings have a consumer.'
+}
+if ($ServerCache -ne 'Any' -and -not ($ServerMod -or $IntegratedSingleplayer)) {
+    throw '-ServerCache requires a modded dedicated or integrated server.'
+}
+if ($RequireGenerationComplete -and -not ($ServerMod -or $IntegratedSingleplayer)) {
+    throw '-RequireGenerationComplete requires a modded dedicated or integrated server.'
 }
 if ($RequireMipConvergence -and $DisableStats) {
     throw '-RequireMipConvergence requires stats so the final pipeline state is observable.'
@@ -346,6 +393,12 @@ if ($RequireMipConvergence -and $Cooldown -lt 30) {
 if ($RequireMipRecovery -and -not $RequireMipConvergence) {
     throw '-RequireMipRecovery requires -RequireMipConvergence.'
 }
+if ($RequireNoPersistedMips -and -not $RequireMipConvergence) {
+    throw '-RequireNoPersistedMips requires -RequireMipConvergence.'
+}
+if ($RequireMipRecovery -and $RequireNoPersistedMips) {
+    throw '-RequireMipRecovery and -RequireNoPersistedMips are mutually exclusive.'
+}
 if ($InterruptWhenPersistedMip -and $RequireMipConvergence) {
     throw '-InterruptWhenPersistedMip is the pre-restart crash phase and cannot also require final convergence.'
 }
@@ -354,6 +407,9 @@ if ($InterruptWhenPersistedMip -and $ReuseServer) {
 }
 if ($RequireAssistPeakInFlight -gt 0 -and -not $ServerMod) {
     throw '-RequireAssistPeakInFlight requires -ServerMod.'
+}
+if ($RequireLocalOfferRetry -and -not $IntegratedSingleplayer) {
+    throw '-RequireLocalOfferRetry requires -IntegratedSingleplayer.'
 }
 
 $requiredInputs = @(
@@ -384,7 +440,14 @@ $prelaunchCacheRecord = @($prelaunchCacheFiles | ForEach-Object {
         lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
     }
 })
-$prelaunchServerCacheRecord = @(Get-CacheRecord $serverCacheDir)
+$prelaunchServerCacheFiles = @(Get-ServerCacheFiles)
+$prelaunchServerCacheRecord = @($prelaunchServerCacheFiles | ForEach-Object {
+    [ordered]@{
+        name = $_.Name
+        bytes = $_.Length
+        lastWriteUtc = $_.LastWriteTimeUtc.ToString('o')
+    }
+})
 Assert-RequestedServerCacheState $prelaunchServerCacheRecord
 if ($RequireMipRecovery) {
     if ($prelaunchCacheFiles.Count -ne 1) {
@@ -395,6 +458,9 @@ if ($RequireMipRecovery) {
 $existingClient = Get-SandboxProcess $clientPidFile
 if ($null -ne $existingClient) { throw "Sandbox client $($existingClient.Id) is already running." }
 $server = Get-SandboxProcess $serverPidFile
+if ($IntegratedSingleplayer -and $null -ne $server) {
+    throw "Integrated sandbox has an unexpected separate server process $($server.Id)."
+}
 if ($null -ne $server -and -not $ReuseServer) {
     throw "Sandbox server $($server.Id) is already running. Pass -ReuseServer only when intentionally recovering an interrupted benchmark."
 }
@@ -408,7 +474,7 @@ foreach ($modsPath in @($clientMods)) {
     if (Test-Path -LiteralPath $modsPath) { Remove-Item -LiteralPath $modsPath -Recurse -Force }
     New-Item -ItemType Directory -Path $modsPath | Out-Null
 }
-if ($null -eq $server) {
+if (-not $IntegratedSingleplayer -and $null -eq $server) {
     Assert-UnderSandbox $serverMods
     if (Test-Path -LiteralPath $serverMods) { Remove-Item -LiteralPath $serverMods -Recurse -Force }
     New-Item -ItemType Directory -Path $serverMods | Out-Null
@@ -416,11 +482,13 @@ if ($null -eq $server) {
 
 Copy-Item -LiteralPath (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons') -Destination $clientMods -Recurse
 Copy-Item -LiteralPath (Join-Path $repoRoot 'bench/VintageHorizonsBench/bin/Debug/net10.0/Mods/vintagehorizonsbench') -Destination $clientMods -Recurse
-if ($null -eq $server -and $ServerMod) {
+if (-not $IntegratedSingleplayer -and $null -eq $server -and $ServerMod) {
     Copy-Item -LiteralPath (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons') -Destination $serverMods -Recurse
 }
 if ($serverConfigPath) {
-    $serverConfigDir = Join-Path $serverData 'ModConfig'
+    $serverConfigDir = if ($IntegratedSingleplayer) {
+        Join-Path $sandbox 'ModConfig'
+    } else { Join-Path $serverData 'ModConfig' }
     $serverConfigTarget = Join-Path $serverConfigDir 'vintagehorizons-server.json'
     Assert-UnderSandbox $serverConfigTarget
     New-Item -ItemType Directory -Path $serverConfigDir -Force | Out-Null
@@ -456,11 +524,17 @@ $csv = Join-Path $benchOut "$Label.csv"
 $scenario = Join-Path $benchOut "$Label-scenario.json"
 $mipInterruptMarker = Join-Path $benchOut "$Label-mip-persisted"
 $mipInterruptRelease = Join-Path $benchOut "$Label-mip-release"
-foreach ($artifact in @($done, $csv, $scenario, $mipInterruptMarker, $mipInterruptRelease)) {
+$localOfferMissMarker = Join-Path $benchOut "$Label-local-offer-miss"
+$localOfferInstallMarker = Join-Path $benchOut "$Label-local-offer-installed"
+foreach ($artifact in @(
+    $done, $csv, $scenario, $mipInterruptMarker, $mipInterruptRelease,
+    $localOfferMissMarker, $localOfferInstallMarker)) {
     if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force }
 }
 
-$serverOut = Join-Path $serverData 'console.log'
+$serverOut = if ($IntegratedSingleplayer) {
+    Join-Path $sandbox 'Logs\server-main.log'
+} else { Join-Path $serverData 'console.log' }
 $serverErr = Join-Path $serverData 'console.err.log'
 $clientOut = Join-Path $sandbox 'launch.log'
 $clientErr = Join-Path $sandbox 'launch.err.log'
@@ -474,7 +548,7 @@ $serverArgs = @(
     "--withconfig=`"{ Port: $Port, VerifyPlayerAuth: false, WhitelistMode: 'off', AdvertiseServer: false, DefaultRoleCode: 'admin' }`""
 )
 $statsEnabled = if ($DisableStats) { '0' } else { '1' }
-if ($null -eq $server) {
+if (-not $IntegratedSingleplayer -and $null -eq $server) {
     foreach ($log in @($serverOut, $serverErr)) {
         if (Test-Path -LiteralPath $log) { Move-Item -LiteralPath $log -Destination "$log.prev" -Force }
     }
@@ -491,7 +565,7 @@ if ($null -eq $server) {
     if (-not (Wait-ForText $serverOut 'Dedicated Server now running' 180 $server)) {
         throw "Server did not become ready. Inspect $serverOut and $serverErr"
     }
-} else {
+} elseif (-not $IntegratedSingleplayer) {
     Write-Host "Reusing isolated test server: PID $($server.Id), port $Port"
 }
 
@@ -507,7 +581,7 @@ $clientEnvironment = @{
     VHBENCH_LAPS = ([Math]::Max(1, $Laps)).ToString()
     VHBENCH_WARMUP_LAPS = ([Math]::Max(0, $WarmupLaps)).ToString()
     VHBENCH_COOLDOWN = ([Math]::Max(0, $Cooldown)).ToString([Globalization.CultureInfo]::InvariantCulture)
-    VHBENCH_STOP_SERVER = '1'
+    VHBENCH_STOP_SERVER = if ($IntegratedSingleplayer) { '0' } else { '1' }
     VINTAGEHORIZONS_STATS = $statsEnabled
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
 }
@@ -519,19 +593,32 @@ if ($InterruptWhenPersistedMip) {
     $clientEnvironment.VINTAGEHORIZONS_INTERRUPT_MIP_MARKER = $mipInterruptMarker
     $clientEnvironment.VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE = $mipInterruptRelease
 }
+if ($RequireLocalOfferRetry) {
+    $clientEnvironment.VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER = $localOfferMissMarker
+    $clientEnvironment.VINTAGEHORIZONS_TEST_LOCAL_OFFER_INSTALL_MARKER = $localOfferInstallMarker
+}
 $clientArgs = @(
     'Vintagestory.dll',
     "--dataPath `"$sandbox`"",
-    "--addModPath `"$clientMods`"",
-    '-c', "localhost:$Port"
+    "--addModPath `"$clientMods`""
 )
+if ($IntegratedSingleplayer) {
+    $clientArgs += @('-o', $WorldName, '-p', 'preset-surviveandbuild')
+} else {
+    $clientArgs += @('-c', "localhost:$Port")
+}
 $client = Start-Process -FilePath 'dotnet' -ArgumentList $clientArgs -WorkingDirectory $game -PassThru `
     -RedirectStandardOutput $clientOut -RedirectStandardError $clientErr -Environment $clientEnvironment
 Set-Content -LiteralPath $clientPidFile -Value $client.Id
-Write-Host "Test client started: PID $($client.Id), isolated data at $sandbox"
+if ($IntegratedSingleplayer) {
+    Write-Host "Integrated test client started: PID $($client.Id), world $WorldName, isolated data at $sandbox"
+} else {
+    Write-Host "Test client started: PID $($client.Id), isolated data at $sandbox"
+}
 
 $waypoints = @(Get-Content -LiteralPath $routePath | Where-Object { $_ -notmatch '^\s*(#|$)' }).Count
-$budget = [int]($waypoints * ([Math]::Max(1, $Laps) + [Math]::Max(0, $WarmupLaps)) * ([Math]::Max($Settle, $SettleMax) + $Measure + 15) + [Math]::Max(0, $Cooldown) + 180)
+$startupBudget = if ($IntegratedSingleplayer) { 360 } else { 180 }
+$budget = [int]($waypoints * ([Math]::Max(1, $Laps) + [Math]::Max(0, $WarmupLaps)) * ([Math]::Max($Settle, $SettleMax) + $Measure + 15) + [Math]::Max(0, $Cooldown) + $startupBudget)
 
 try {
     if ($InterruptWhenPersistedMip) {
@@ -567,6 +654,8 @@ try {
             interruptionTrigger = 'persisted ApplyToParent row'
             persistedMipWrite = $observedMipWrite
             durableObligationRetained = $true
+            integratedSingleplayer = [bool]$IntegratedSingleplayer
+            worldName = if ($IntegratedSingleplayer) { $WorldName } else { $null }
             prelaunchClientCacheFiles = $prelaunchCacheRecord
             prelaunchServerCacheFiles = $prelaunchServerCacheRecord
             interruptedUtc = [DateTime]::UtcNow.ToString('o')
@@ -575,7 +664,11 @@ try {
 
         Write-Host 'Sandbox client interrupted after a durable mip obligation was written.'
         Write-Host "Scenario proof: $scenario"
-        Write-Host 'The isolated server remains running for the required -ReuseServer recovery phase.'
+        if ($IntegratedSingleplayer) {
+            Write-Host 'The integrated process stopped; recovery must reopen the same isolated world.'
+        } else {
+            Write-Host 'The isolated server remains running for the required -ReuseServer recovery phase.'
+        }
         return
     }
 
@@ -588,11 +681,14 @@ try {
     $reportedServerLine = Get-LastLogLineContaining $serverOut $RequireServerText
     $generationRecord = Get-CompletedGenerationRecord
     $assistRecord = Get-ClientAssistRecord
+    $localOfferRecord = Get-ClientLocalOfferRecord
     $mipConvergenceRecord = Get-ClientMipConvergenceRecord
     $reportedPersistedMipObligations = Get-ReportedPersistedMipObligations
     $scenarioRecord = [ordered]@{
         label = $Label
         route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
+        integratedSingleplayer = [bool]$IntegratedSingleplayer
+        worldName = if ($IntegratedSingleplayer) { $WorldName } else { $null }
         clientCacheRequirement = $ClientCache
         serverCacheRequirement = $ServerCache
         prelaunchClientCacheFiles = $prelaunchCacheRecord
@@ -609,9 +705,18 @@ try {
         requireMipConvergence = [bool]$RequireMipConvergence
         mipConvergence = $mipConvergenceRecord
         requireMipRecovery = [bool]$RequireMipRecovery
+        requireNoPersistedMips = [bool]$RequireNoPersistedMips
         persistedMipObligationsLoaded = $reportedPersistedMipObligations
         requiredAssistPeakInFlight = $RequireAssistPeakInFlight
         assist = $assistRecord
+        requireLocalOfferRetry = [bool]$RequireLocalOfferRetry
+        localOffers = $localOfferRecord
+        localOfferMissKey = if (Test-Path -LiteralPath $localOfferMissMarker) {
+            (Get-Content -LiteralPath $localOfferMissMarker -Raw).Trim()
+        } else { $null }
+        localOfferInstalledKey = if (Test-Path -LiteralPath $localOfferInstallMarker) {
+            (Get-Content -LiteralPath $localOfferInstallMarker -Raw).Trim()
+        } else { $null }
         settleSeconds = $Settle
         settleMaxSeconds = [Math]::Max($Settle, $SettleMax)
         measureSeconds = $Measure
@@ -692,6 +797,10 @@ try {
         ($null -eq $reportedPersistedMipObligations -or $reportedPersistedMipObligations -le 0)) {
         throw "Mip recovery did not load a persisted ApplyToParent obligation. See $scenario and $clientMainLog"
     }
+    if ($RequireNoPersistedMips -and
+        ($null -eq $reportedPersistedMipObligations -or $reportedPersistedMipObligations -ne 0)) {
+        throw "The fresh process still loaded a persisted ApplyToParent obligation. See $scenario and $clientMainLog"
+    }
     if ($RequireAssistPeakInFlight -gt 0) {
         if ($null -eq $assistRecord) {
             throw "The client log did not contain parseable live-assist transfer telemetry. See $scenario and $clientMainLog"
@@ -701,6 +810,28 @@ try {
         }
         if ($assistRecord.received -le 0 -or $assistRecord.installed -le 0) {
             throw "Live assist reached the request guard but did not receive and install a section. See $scenario"
+        }
+    }
+    if ($RequireLocalOfferRetry) {
+        if ($null -eq $localOfferRecord) {
+            throw "The client log did not contain parseable local sibling-offer telemetry. See $scenario and $clientMainLog"
+        }
+        $localOfferComplete = $localOfferRecord.discovered -gt 0 -and
+            $localOfferRecord.retryableMisses -gt 0 -and
+            $localOfferRecord.accepted -gt 0 -and
+            $localOfferRecord.installed -gt 0
+        if (-not $localOfferComplete) {
+            throw "Sibling-cache discovery, retry, acceptance, and installation did not all occur. See $scenario"
+        }
+        $missMarkerExists = Test-Path -LiteralPath $localOfferMissMarker -PathType Leaf
+        $installMarkerExists = Test-Path -LiteralPath $localOfferInstallMarker -PathType Leaf
+        if (-not $missMarkerExists -or -not $installMarkerExists) {
+            throw "The sibling-cache retry markers are incomplete. See $scenario"
+        }
+        $missedKey = (Get-Content -LiteralPath $localOfferMissMarker -Raw).Trim()
+        $installedKey = (Get-Content -LiteralPath $localOfferInstallMarker -Raw).Trim()
+        if (-not $missedKey -or $missedKey -ne $installedKey) {
+            throw "The sibling-cache key that missed was not the exact key later installed. See $scenario"
         }
     }
 
@@ -715,10 +846,12 @@ finally {
     Close-ClientGracefully $client
     if ($client.HasExited) { Remove-Item -LiteralPath $clientPidFile -Force -ErrorAction SilentlyContinue }
 
-    if (-not $InterruptWhenPersistedMip -and -not $server.HasExited) {
+    if ($null -ne $server -and -not $InterruptWhenPersistedMip -and -not $server.HasExited) {
         if (-not $server.WaitForExit(90000)) {
             Write-Warning "Server PID $($server.Id) did not exit after the benchmark's /stop. It was NOT force-killed; the pidfile remains."
         }
     }
-    if ($server.HasExited) { Remove-Item -LiteralPath $serverPidFile -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $server -and $server.HasExited) {
+        Remove-Item -LiteralPath $serverPidFile -Force -ErrorAction SilentlyContinue
+    }
 }

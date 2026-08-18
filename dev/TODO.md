@@ -18,11 +18,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - Measure whether regional buffers or multi-draw are warranted after CPU fixes.
 - Select a practical default far cap only from benchmark and playtest evidence.
 
-### Integrated validation
-
-- Repeat durable mip interruption/recovery under integrated-singleplayer load.
-- Exercise sibling-cache discovery and retryable local misses in that process.
-
 ## Flagged decisions awaiting human evidence
 
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
@@ -39,12 +34,13 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - Asynchronous mip propagation now has a 120-second movement/capture convergence soak,
   graceful restart, deliberate interruption after a durable `ApplyToParent` write,
   successful recovery of one persisted obligation, and a third fresh process reporting
-  zero obligations. Dedicated client/server durability is established;
-  integrated-singleplayer interruption remains unverified.
-- The complete game-backed fast tier passes 1,050 assertions across 25 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
-- Live server-assist transfer now exercises network request state end to end. Incremental
-  sibling-cache discovery and retry-safe local misses remain unexercised in integrated
-  singleplayer.
+  zero obligations. Both dedicated client/server and integrated-singleplayer durability
+  are established for the guarded routes.
+- The complete game-backed fast tier passes 1,056 assertions across 25 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- Live server-assist transfer exercises network request state end to end. An integrated
+  command-generation run discovered 211 sibling keys, forced one retryable miss, and
+  installed that exact key plus 62 others. Natural miss frequency and default-sweep
+  sibling-cache behavior remain unmeasured.
 - Cached bounds and projection hysteresis pass 30 isolated assertions. The corrected long
   warm-cache route completed with five projection resets and no tick hitches, and human
   review found motion smooth with no noticed clipping. The earlier route screenshots were
@@ -56,8 +52,8 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   is not a controlled comparison and human motion review remains.
 - Incremental render-dirty scheduling passes 20 focused assertions and a functional
   601-section moving/rotation route that settled every waypoint and converged all guarded
-  queues. It has no controlled old/new timing comparison, no thousands-section scale
-  evidence, and no human review of this build.
+  queues. A later 3,132-section route supplied functional scaling evidence, but there is
+  no controlled old/new scheduler comparison or human review of this build.
 - Mesh snapshot/upload budgets pass deterministic accounting/progress checks and a
   zero-warning Release build. A 12,800-block cache-growth route processed 94,285
   snapshots/uploads, bounded sampled queues to 18/four items, measured direct GL upload
@@ -75,7 +71,8 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - A warm-cache join adopted 558 sections with an 11.180 ms worst Vintage Horizons tick
   and no 25 ms hitch. Background-load backlog reached 181 sections / 51.93 MiB / 11.531 s
   old and drained by 30 seconds. This is one client-only warm sample, not a cold/warm A/B
-  or integrated-singleplayer join.
+  comparison. Integrated recovery/postcheck processes later loaded 168 sections and
+  converged, but they were correctness routes rather than join-performance evidence.
 - A pinned dedicated-server sweep examined 3,249 dependency-aware positions, loaded 1,018
   existing columns, skipped 377 frontier columns, generated nothing, and verified 256/256
   sampled absent positions. Server pipeline ticks peaked at 17.874 ms with no 25 ms hitch;
@@ -83,7 +80,9 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   savegame-sweep cadence remains unprofiled in integrated singleplayer.
 - Completed transient generation produced 289/289 columns with zero timeouts or unusable
   height maps and preserved 256/256 sampled absences. This is one radius-8 dedicated-server
-  run, not a long/default-radius or integrated-singleplayer soak.
+  absence-preservation run. A radius-12 integrated run separately generated 414 columns
+  with no timeout/height-map failure and fed live sibling adoption, but all absence samples
+  were excluded near the player; neither is a long/default-radius soak.
 - The repeated 64/s saturated-assist run again requested, received, and installed 395
   sections with zero declines. One 17.481 ms background read coincided with a 0.989 ms
   owning-thread assist maximum, proving separation. A later interval had a 32.450 ms

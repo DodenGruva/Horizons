@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+integrated-mip-postcheck,warm-cache-join,512020,190,512010,1,2190,437.8,436.6,290.6,2.28,3.44,0.0,0.0,2425,3841,10.0,1

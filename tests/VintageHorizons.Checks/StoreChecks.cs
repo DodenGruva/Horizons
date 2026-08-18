@@ -19,6 +19,7 @@ public static class StoreChecks
         AFailedLookupIsNotRemembered(c);
         AColourlessCacheIsRepaired(c);
         DisposingTheOfferReaderReleasesItsFileHandle(c);
+        LocalOfferMissHookRetriesTheSameBlob(c);
         AssistBlobReaderIsBoundedOrderedAndReadOnly(c);
         BackgroundForeignDecodeIsBoundedAndIsolated(c);
         InterruptionMarkerFollowsDurableMipWrite(c);
@@ -365,12 +366,76 @@ public static class StoreChecks
             });
             c.True(restoredObligation,
                 "the row named by the interruption marker carries ApplyToParent on disk");
+
+            File.Delete(marker);
+            using var serverStore = new LodStore(new CaptureLogger());
+            c.True(serverStore.Open(Path.Combine(dir, "server-cache.db")),
+                "the integrated-server interruption fixture opens");
+            using var serverWorker = new LodStorageThread(
+                serverStore, enableMipInterruptionHook: false);
+            serverWorker.Enqueue(Fixtures.Snapshot(Fixtures.SolidSection(),
+                level: 0, sx: 10, sz: 11, applyToParent: true));
+            serverWorker.Drain();
+            c.False(File.Exists(marker),
+                "an integrated-server write cannot win the client interruption marker race");
         }
         finally
         {
             Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER", oldMarker);
             Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE", oldRelease);
             try { File.WriteAllText(release, "cleanup"); } catch { }
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+    }
+
+    static void LocalOfferMissHookRetriesTheSameBlob(Check c)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vh-offer-miss-check-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string clientDb = Path.Combine(dir, "world.db");
+        string serverDb = Path.Combine(dir, "world-server.db");
+        string marker = Path.Combine(dir, "miss.marker");
+        string? oldMarker = Environment.GetEnvironmentVariable(
+            "VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER");
+
+        try
+        {
+            var writer = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = serverDb,
+                Pooling = false,
+            };
+            using (var connection = new Microsoft.Data.Sqlite.SqliteConnection(writer.ToString()))
+            {
+                connection.Open();
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText =
+                    "CREATE TABLE Section (Detail INTEGER, SX INTEGER, SZ INTEGER, "
+                    + "Data BLOB, ApplyToParent INTEGER, ModifiedMs INTEGER);"
+                    + "INSERT INTO Section VALUES (0, 11, 12, x'010203', 0, 0);";
+                cmd.ExecuteNonQuery();
+            }
+
+            Environment.SetEnvironmentVariable(
+                "VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER", marker);
+            using LodLocalOfferSource? offers = LodLocalOfferSource.TryOpen(clientDb, new CaptureLogger());
+            c.True(offers != null, "the forced-miss sibling fixture opens");
+            if (offers == null) return;
+
+            long key = LodWorld.SectionKey(0, 11, 12);
+            c.True(offers.Blob(key) == null,
+                "the integration hook forces exactly one retryable sibling-cache miss");
+            c.Eq(LodLocalOfferSource.DescribeKey(key), File.ReadAllText(marker).Trim(),
+                "the miss marker identifies the exact section that must retry");
+
+            Thread.Sleep(1100);
+            c.SeqEq(new byte[] { 1, 2, 3 }, offers.Blob(key) ?? Array.Empty<byte>(),
+                "the same sibling-cache key succeeds after the normal retry cooldown");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(
+                "VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER", oldMarker);
             try { Directory.Delete(dir, recursive: true); } catch { }
         }
     }

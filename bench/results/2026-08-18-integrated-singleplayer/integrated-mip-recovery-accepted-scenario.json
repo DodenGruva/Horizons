@@ -1,0 +1,73 @@
+{
+  "label": "integrated-mip-recovery-accepted",
+  "route": "bench/routes/warm-cache-join.txt",
+  "integratedSingleplayer": true,
+  "worldName": "vhbench-integrated",
+  "clientCacheRequirement": "Warm",
+  "serverCacheRequirement": "Any",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "455f6d7c-7144-4285-812c-8994868b7973.db",
+      "bytes": 4071424,
+      "lastWriteUtc": "2026-08-18T18:18:41.7010068Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "455f6d7c-7144-4285-812c-8994868b7973-server.db",
+      "bytes": 2072576,
+      "lastWriteUtc": "2026-08-18T18:16:03.0304974Z"
+    }
+  ],
+  "reportedSectionsFromCache": 168,
+  "reportedServerSectionsFromCache": null,
+  "serverConfig": "bench/configs/integrated-sibling.json",
+  "requiredServerText": null,
+  "reportedServerLine": null,
+  "requireGenerationComplete": false,
+  "generation": null,
+  "requireMipConvergence": true,
+  "mipConvergence": {
+    "line": "18.8.2026 13:21:13 [Notification] [vintagehorizons] Stats: 151 sections resident [L0:103 L1:26 L2:10 L3:4 L4:4 L5:4 L6:0] (0 RAM-evicted, 168 from cache), 120 meshes (0 evicted), 70 selected [L0:70 L1:0 L2:0 L3:0 L4:0 L5:0 L6:0] minus 0 draw-culled (24 subtrees traversal-culled), 425 columns captured, 0 pending, worker: 0 captures / 0 meshes / 0 mips queued / 0+0+0 errors, 0 awaiting mip (0 in flight), 0 render-dirty, 0 unsaved",
+    "pendingColumns": 0,
+    "pendingCaptures": 0,
+    "pendingMeshes": 0,
+    "pendingMips": 0,
+    "captureErrors": 0,
+    "meshErrors": 0,
+    "mipErrors": 0,
+    "awaitingMip": 0,
+    "mipInFlight": 0,
+    "renderDirty": 0,
+    "unsaved": 0,
+    "pendingCaptureResults": 0,
+    "storageWriteBacklog": 0,
+    "storageWriteErrors": 0,
+    "asyncLoadsInFlight": 0,
+    "storageReadErrors": 0
+  },
+  "requireMipRecovery": true,
+  "persistedMipObligationsLoaded": 1,
+  "requiredAssistPeakInFlight": 0,
+  "assist": null,
+  "requireLocalOfferRetry": false,
+  "localOffers": {
+    "discovered": 211,
+    "retryableMisses": 0,
+    "accepted": 0,
+    "installed": 0,
+    "remoteOnly": 80,
+    "wanted": 0
+  },
+  "localOfferMissKey": null,
+  "localOfferInstalledKey": null,
+  "settleSeconds": 1.0,
+  "settleMaxSeconds": 15.0,
+  "measureSeconds": 15.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 45,
+  "serverMod": false,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T18:21:18.1082781Z"
+}

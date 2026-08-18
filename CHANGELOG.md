@@ -8,6 +8,17 @@ first.
 
 ## [Unreleased]
 
+**Integrated-singleplayer sibling retry and mip recovery are now guarded end to end.**
+The Windows runner can launch a named world in a separate integrated sandbox, distinguish
+client and `-server` cache files, parse both in-process logs, force one transient local
+offer miss, and require that exact section to install later. A clean-cache `/vhgen` run
+discovered 211 sibling keys and installed 63 sections, including the forced-miss key, then
+converged with no wanted request or client pipeline/storage work left. The client-only mip
+interruption hook can no longer be won by the integrated server's storage worker. A hard
+integrated-process interruption retained one durable client obligation; recovery loaded
+and cleared it, and a third fresh process required zero persisted obligations. Formats
+and protocols are unchanged, and the Release tier now passes 1,056 assertions.
+
 **Cache writes now clear dirty state only after the exact revision is durable.** Frozen
 section snapshots carry runtime-only revisions and the storage worker returns an explicit
 success or failure for every executed write. A stale success cannot erase a newer change,
@@ -64,8 +75,8 @@ client, then require the recovery process to load persisted mip work and converg
 capture, mip, save, load, and storage guards. The interrupted run retained one obligation;
 the recovery process loaded it and drained cleanly, and a third fresh process reopened the
 same 601-section cache with zero persisted obligations. The hook is inert outside an
-explicit benchmark environment. This is dedicated client/server evidence; equivalent
-integrated-singleplayer recovery remains open.
+explicit benchmark environment. This paragraph records the dedicated client/server proof;
+the integrated equivalent is recorded in the newer entry above.
 
 **Semantic mip convergence and restart evidence.** The Windows runner can now require a
 post-route client state with no pending capture input/results, worker errors, mip

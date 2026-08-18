@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 22 | 2026-08-18 | 0.2.1 | — | Proved integrated sibling-cache exact-key retry/adoption and hard mip interruption/recovery through a fresh zero-obligation postcheck; 1,056 checks pass. |
 | 21 | 2026-08-18 | 0.2.1 | — | Proved renderer budgets through 3,132 cached sections; added revision-acknowledged saves, retry/coalescing/shutdown draining, and 1,050 passing checks. |
 | 20 | 2026-08-18 | 0.2.1 | — | Time/byte-budgeted mesh snapshots and GPU uploads; safe mesh replacement and queue/GL telemetry; 1,002 checks pass. |
 | 19 | 2026-08-18 | 0.2.1 | — | Replaced per-frame whole-dirty-set scans with an incremental coarse-cell priority index; 995 checks and a 601-section functional route converged cleanly. |

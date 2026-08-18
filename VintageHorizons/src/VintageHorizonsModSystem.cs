@@ -288,6 +288,11 @@ public class VintageHorizonsModSystem : ModSystem
         {
             if (done.Source == LodForeignSource.ServerAssist)
                 assist?.CompleteInstall(done.Key, done.Installed);
+            else if (done.Source == LodForeignSource.LocalOffer && done.Installed)
+            {
+                localOfferSectionsInstalled++;
+                PublishTestLocalOfferInstall(done.Key);
+            }
         }
 
         if (assist == null || !assist.Available) return;
@@ -345,6 +350,14 @@ public class VintageHorizonsModSystem : ModSystem
     LodLocalOfferSource? localOffers;
     bool loggedLocalOffers;
     int localOfferProbeTicks;
+    int localOfferKeysDiscovered;
+    int localOfferRetryableMisses;
+    int localOfferSectionsAccepted;
+    int localOfferSectionsInstalled;
+    readonly string? testLocalOfferMissMarker =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER");
+    readonly string? testLocalOfferInstallMarker =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_TEST_LOCAL_OFFER_INSTALL_MARKER");
 
     /// <summary>
     /// About 5s at the 50ms tick. The retry usually answers with one failed File.Exists,
@@ -384,6 +397,7 @@ public class VintageHorizonsModSystem : ModSystem
         if (localOffers.TryTakeDiscoveredKeys(out long[] offered))
         {
             pipeline.AddRemoteKeys(offered);
+            localOfferKeysDiscovered += offered.Length;
             if (!loggedLocalOffers)
             {
                 loggedLocalOffers = true;
@@ -424,6 +438,7 @@ public class VintageHorizonsModSystem : ModSystem
             // LodWorld.LoadsInFlight and make a later row permanently invisible.
             if (blob == null || blob.Length == 0)
             {
+                localOfferRetryableMisses++;
                 pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.RetryableMiss);
                 continue;
             }
@@ -432,6 +447,7 @@ public class VintageHorizonsModSystem : ModSystem
                 key, blob, LodForeignSource.LocalOffer);
             if (queued == LodForeignQueueOutcome.Queued)
             {
+                localOfferSectionsAccepted++;
                 pipeline.MarkLocalOfferAccepted(key);
             }
             else if (queued == LodForeignQueueOutcome.Unavailable)
@@ -444,6 +460,20 @@ public class VintageHorizonsModSystem : ModSystem
 
         localOfferItemsProcessed += installBudget.Items;
         localOfferBytesProcessed += installBudget.Bytes;
+    }
+
+    void PublishTestLocalOfferInstall(long key)
+    {
+        if (string.IsNullOrEmpty(testLocalOfferMissMarker)
+            || string.IsNullOrEmpty(testLocalOfferInstallMarker)
+            || !File.Exists(testLocalOfferMissMarker)) return;
+
+        string described = LodLocalOfferSource.DescribeKey(key);
+        if (File.ReadAllText(testLocalOfferMissMarker).Trim() == described
+            && !File.Exists(testLocalOfferInstallMarker))
+        {
+            File.WriteAllText(testLocalOfferInstallMarker, described);
+        }
     }
 
     /// <summary>
@@ -826,6 +856,15 @@ public class VintageHorizonsModSystem : ModSystem
                 assist.InFlight, assist.PeakInFlight, assist.SectionsRefused);
         }
 
+        if (localOffers != null || localOfferKeysDiscovered > 0)
+        {
+            Mod.Logger.Notification(
+                "  local sibling offers: {0} discovered, {1} retryable misses, {2} accepted, "
+                + "{3} installed, {4} remote-only, {5} wanted",
+                localOfferKeysDiscovered, localOfferRetryableMisses, localOfferSectionsAccepted,
+                localOfferSectionsInstalled, pipeline.RemoteOnly.Count, pipeline.RemoteWanted().Length);
+        }
+
         // Repairing means the cache on disk was written without colours, which drew as
         // black ground. Worth saying out loud, and worth being able to watch go to zero.
         if (pipeline.PaletteEntriesRepaired > 0)
@@ -1051,6 +1090,10 @@ public class VintageHorizonsModSystem : ModSystem
         localOffers = null;
         loggedLocalOffers = false;
         localOfferProbeTicks = 0;
+        localOfferKeysDiscovered = 0;
+        localOfferRetryableMisses = 0;
+        localOfferSectionsAccepted = 0;
+        localOfferSectionsInstalled = 0;
         pipeline.Close();
         while (pipeline.Worker.MeshResults.TryDequeue(out _)) { }
         renderer.ClearMeshes();
