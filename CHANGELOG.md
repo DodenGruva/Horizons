@@ -8,6 +8,15 @@ first.
 
 ## [Unreleased]
 
+**Interrupted mip work now has durable restart evidence.** The isolated Windows runner can
+wait until a real `ApplyToParent` row is written, revalidate and terminate only its sandbox
+client, then require the recovery process to load persisted mip work and converge all
+capture, mip, save, load, and storage guards. The interrupted run retained one obligation;
+the recovery process loaded it and drained cleanly, and a third fresh process reopened the
+same 601-section cache with zero persisted obligations. The hook is inert outside an
+explicit benchmark environment. This is dedicated client/server evidence; equivalent
+integrated-singleplayer recovery remains open.
+
 **Semantic mip convergence and restart evidence.** The Windows runner can now require a
 post-route client state with no pending capture input/results, worker errors, mip
 queue/in-flight/dirty work, unsaved sections, asynchronous loads, or storage backlog/errors;

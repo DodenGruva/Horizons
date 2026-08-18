@@ -147,6 +147,11 @@ public class LodStorageThread : IDisposable
     // moment the last item is dequeued, while its write is still in progress.
     long enqueuedCount;
     long completedCount;
+    readonly string? interruptMipMarker =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER");
+    readonly string? interruptMipRelease =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
+    int interruptMipMarked;
 
     public LodStorageThread(LodStore store)
     {
@@ -257,6 +262,23 @@ public class LodStorageThread : IDisposable
         {
             store.SaveBlob(snap.Level, snap.SX, snap.SZ, LodStore.Serialize(snap), snap.ApplyToParent);
             SectionsWritten++;
+
+            // Sandbox-only crash-recovery hook. The marker is published only after a row
+            // carrying the durable propagation flag has been written. Pausing this one
+            // writer prevents a later clearing snapshot from overtaking the runner before
+            // it interrupts the exact pidfile-verified client. Ordinary processes have no
+            // marker path and never enter this branch.
+            if (snap.ApplyToParent && !string.IsNullOrEmpty(interruptMipMarker)
+                && Interlocked.CompareExchange(ref interruptMipMarked, 1, 0) == 0)
+            {
+                File.WriteAllText(interruptMipMarker,
+                    $"{snap.Level},{snap.SX},{snap.SZ},{DateTime.UtcNow:o}\n");
+                while (running && !string.IsNullOrEmpty(interruptMipRelease)
+                    && !File.Exists(interruptMipRelease))
+                {
+                    Thread.Sleep(25);
+                }
+            }
         }
         catch (Exception e)
         {

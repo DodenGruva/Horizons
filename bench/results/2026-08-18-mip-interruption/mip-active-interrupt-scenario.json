@@ -1,0 +1,23 @@
+{
+  "label": "mip-active-interrupt",
+  "route": "bench/routes/uncached-frontier.txt",
+  "intentionalClientInterruption": true,
+  "interruptionTrigger": "persisted ApplyToParent row",
+  "persistedMipWrite": "0,8004,8000,2026-08-18T14:22:29.1364146Z",
+  "durableObligationRetained": true,
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 29995008,
+      "lastWriteUtc": "2026-08-18T13:42:10.3934625Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 21422080,
+      "lastWriteUtc": "2026-08-18T13:01:47.2009543Z"
+    }
+  ],
+  "interruptedUtc": "2026-08-18T14:22:29.5884541Z"
+}

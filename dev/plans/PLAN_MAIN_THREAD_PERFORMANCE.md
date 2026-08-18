@@ -248,7 +248,13 @@ service, directly proving separation. Integrated-singleplayer acceptance remains
 
 ## 9. Phase 6 — versioned asynchronous mip work
 
-**Implementation status:** The first complete runtime slice is implemented locally ahead of the original phase order. Content revisions, world epochs, bounded in-flight jobs, a dedicated worker, stale/failure retry, parent pins, owning-thread palette remap/publication, telemetry, regression checks, and two before/after route runs are complete. Longer soak/restart interruption testing and any further optimization of the owning-thread publication tail remain open.
+**Implementation status:** The runtime slice is complete for dedicated client/server
+evidence. Content revisions, world epochs, bounded in-flight jobs, a dedicated worker,
+stale/failure retry, parent pins, owning-thread palette remap/publication, telemetry,
+regression checks, controlled before/after routes, a long convergence soak, graceful
+restart, deliberate interruption after a durable `ApplyToParent` write, recovery, and a
+fresh-process zero-obligation postcheck are complete. Integrated-singleplayer interruption
+and any further optimization of the owning-thread publication tail remain open.
 
 ### Revision model
 

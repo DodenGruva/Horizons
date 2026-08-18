@@ -301,7 +301,8 @@ public class LodPipeline
             World.InstallStoredKey(level, sx, sz, applyToParent);
         });
         Active = true;
-        logger.Notification("LOD cache: {0}", dbPath);
+        logger.Notification("LOD cache: {0} ({1} persisted mip obligations)",
+            dbPath, World.MipDirty.Count);
     }
 
     /// <summary>

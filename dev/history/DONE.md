@@ -220,3 +220,15 @@
   `bench/results/2026-08-18-mip-soak`.
 - Kept active-work interruption and integrated-singleplayer recovery open rather than
   treating graceful restart as equivalent evidence.
+
+## 2026-08-18 — active mip interruption and durable recovery
+
+- Added an opt-in storage marker emitted only after a row with `ApplyToParent=1` is
+  durable, plus a writer hold that prevents the clearing snapshot from racing the runner.
+- Added PID-verified client interruption and restart guards to the Windows isolated runner.
+- Interrupted one durable level-0 obligation, restarted against the same cache, loaded one
+  persisted obligation, and converged all capture/mip/save/load/storage fields to zero.
+- Reopened the cache in a third fresh server/client process; it reported zero persisted mip
+  obligations and again passed semantic convergence.
+- Preserved scenario records, CSVs, context, and limitations under
+  `bench/results/2026-08-18-mip-interruption` and expanded the fast tier to 968 assertions.

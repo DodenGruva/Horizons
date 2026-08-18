@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 17 | 2026-08-18 | 0.2.1 | — | Interrupted after a durable mip flag, recovered one obligation to clean convergence, and proved a later fresh process loaded zero obligations. |
 | 16 | 2026-08-18 | 0.2.1 | — | Added semantic mip/persistence convergence proof; a 2,401-column movement run and 601-section fresh restart both drained cleanly. |
 | 15 | 2026-08-18 | 0.2.1 | — | Moved server-assist blobs to an ordered read-only worker; 395 sections transferred and a 17.481 ms read no longer blocked assist service. |
 | 14 | 2026-08-18 | 0.2.1 | — | Added semantic generation/assist scenarios; fixed an early-join request drop; 395 live sections transferred and synchronous server reads reached 68.755 ms. |

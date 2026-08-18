@@ -23,6 +23,10 @@ param(
     [string]$RequireServerText,
     [switch]$RequireGenerationComplete,
     [switch]$RequireMipConvergence,
+    [switch]$RequireMipRecovery,
+    [switch]$InterruptWhenPersistedMip,
+    [ValidateRange(10, 1800)]
+    [int]$InterruptTimeout = 180,
     [ValidateRange(0, 256)]
     [int]$RequireAssistPeakInFlight = 0,
     [switch]$ReuseServer,
@@ -141,6 +145,15 @@ function Get-ReportedCachedSectionCount {
     $found = [regex]::Matches(
         $logText,
         'Level finalized\. LOD capture active \(render distance: [^,]+, (?<count>\d+) sections from cache')
+    if ($found.Count -eq 0) { return $null }
+    return [int64]$found[$found.Count - 1].Groups['count'].Value
+}
+
+function Get-ReportedPersistedMipObligations {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
+    $found = [regex]::Matches(
+        $logText, '\[vintagehorizons\] LOD cache: [^\r\n]+ \((?<count>\d+) persisted mip obligations\)')
     if ($found.Count -eq 0) { return $null }
     return [int64]$found[$found.Count - 1].Groups['count'].Value
 }
@@ -312,6 +325,15 @@ if ($RequireMipConvergence -and $DisableStats) {
 if ($RequireMipConvergence -and $Cooldown -lt 30) {
     throw '-RequireMipConvergence requires at least 30 seconds of cooldown for a final stats sample.'
 }
+if ($RequireMipRecovery -and -not $RequireMipConvergence) {
+    throw '-RequireMipRecovery requires -RequireMipConvergence.'
+}
+if ($InterruptWhenPersistedMip -and $RequireMipConvergence) {
+    throw '-InterruptWhenPersistedMip is the pre-restart crash phase and cannot also require final convergence.'
+}
+if ($InterruptWhenPersistedMip -and $ReuseServer) {
+    throw '-InterruptWhenPersistedMip must start the isolated server that the recovery run will explicitly reuse.'
+}
 if ($RequireAssistPeakInFlight -gt 0 -and -not $ServerMod) {
     throw '-RequireAssistPeakInFlight requires -ServerMod.'
 }
@@ -327,7 +349,6 @@ if ($serverConfigPath) { $requiredInputs += $serverConfigPath }
 foreach ($required in $requiredInputs) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Required benchmark input is missing: $required" }
 }
-
 $prelaunchCacheFiles = @(Get-ClientCacheFiles)
 Assert-RequestedClientCacheState $prelaunchCacheFiles
 $prelaunchCacheRecord = @($prelaunchCacheFiles | ForEach-Object {
@@ -339,6 +360,11 @@ $prelaunchCacheRecord = @($prelaunchCacheFiles | ForEach-Object {
 })
 $prelaunchServerCacheRecord = @(Get-CacheRecord $serverCacheDir)
 Assert-RequestedServerCacheState $prelaunchServerCacheRecord
+if ($RequireMipRecovery) {
+    if ($prelaunchCacheFiles.Count -ne 1) {
+        throw "Mip recovery requires exactly one prelaunch client cache, found $($prelaunchCacheFiles.Count)."
+    }
+}
 
 $existingClient = Get-SandboxProcess $clientPidFile
 if ($null -ne $existingClient) { throw "Sandbox client $($existingClient.Id) is already running." }
@@ -402,7 +428,11 @@ $settings | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $settingsPath -E
 $done = Join-Path $benchOut "$Label.done"
 $csv = Join-Path $benchOut "$Label.csv"
 $scenario = Join-Path $benchOut "$Label-scenario.json"
-foreach ($artifact in @($done, $csv, $scenario)) { if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force } }
+$mipInterruptMarker = Join-Path $benchOut "$Label-mip-persisted"
+$mipInterruptRelease = Join-Path $benchOut "$Label-mip-release"
+foreach ($artifact in @($done, $csv, $scenario, $mipInterruptMarker, $mipInterruptRelease)) {
+    if (Test-Path -LiteralPath $artifact) { Remove-Item -LiteralPath $artifact -Force }
+}
 
 $serverOut = Join-Path $serverData 'console.log'
 $serverErr = Join-Path $serverData 'console.err.log'
@@ -459,6 +489,10 @@ if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
 }
+if ($InterruptWhenPersistedMip) {
+    $clientEnvironment.VINTAGEHORIZONS_INTERRUPT_MIP_MARKER = $mipInterruptMarker
+    $clientEnvironment.VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE = $mipInterruptRelease
+}
 $clientArgs = @(
     'Vintagestory.dll',
     "--dataPath `"$sandbox`"",
@@ -474,6 +508,51 @@ $waypoints = @(Get-Content -LiteralPath $routePath | Where-Object { $_ -notmatch
 $budget = [int]($waypoints * ([Math]::Max(1, $Laps) + [Math]::Max(0, $WarmupLaps)) * ([Math]::Max($Settle, $SettleMax) + $Measure + 15) + [Math]::Max(0, $Cooldown) + 180)
 
 try {
+    if ($InterruptWhenPersistedMip) {
+        $deadline = [DateTime]::UtcNow.AddSeconds($InterruptTimeout)
+        while (-not (Test-Path -LiteralPath $mipInterruptMarker -PathType Leaf)) {
+            if ($client.HasExited) { throw 'Client exited before a persisted mip obligation was observed.' }
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "No persisted mip obligation appeared within $InterruptTimeout seconds."
+            }
+            Start-Sleep -Milliseconds 100
+        }
+
+        $observedMipWrite = (Get-Content -LiteralPath $mipInterruptMarker -Raw).Trim()
+        $verifiedClient = Get-SandboxProcess $clientPidFile
+        if ($null -eq $verifiedClient -or $verifiedClient.Id -ne $client.Id) {
+            throw 'The client PID no longer resolves to the launched sandbox process; refusing interruption.'
+        }
+
+        # This is the one deliberate non-graceful path: interruption recovery cannot be
+        # established by CloseMainWindow. The exact PID has just been checked against the
+        # private sandbox command line, and no process-name search is used.
+        $verifiedClient.Kill()
+        if (-not $verifiedClient.WaitForExit(30000)) {
+            throw "Sandbox client PID $($verifiedClient.Id) did not exit after deliberate interruption."
+        }
+        Set-Content -LiteralPath $mipInterruptRelease -Value 'client interrupted' -Encoding ascii
+        Remove-Item -LiteralPath $clientPidFile -Force -ErrorAction SilentlyContinue
+
+        $scenarioRecord = [ordered]@{
+            label = $Label
+            route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
+            intentionalClientInterruption = $true
+            interruptionTrigger = 'persisted ApplyToParent row'
+            persistedMipWrite = $observedMipWrite
+            durableObligationRetained = $true
+            prelaunchClientCacheFiles = $prelaunchCacheRecord
+            prelaunchServerCacheFiles = $prelaunchServerCacheRecord
+            interruptedUtc = [DateTime]::UtcNow.ToString('o')
+        }
+        $scenarioRecord | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $scenario -Encoding utf8
+
+        Write-Host 'Sandbox client interrupted after a durable mip obligation was written.'
+        Write-Host "Scenario proof: $scenario"
+        Write-Host 'The isolated server remains running for the required -ReuseServer recovery phase.'
+        return
+    }
+
     if (-not (Wait-ForFile $done $budget $client)) {
         throw "Benchmark did not finish within ${budget}s. Inspect $sandbox\Logs\client-main.log and $clientOut"
     }
@@ -484,6 +563,7 @@ try {
     $generationRecord = Get-CompletedGenerationRecord
     $assistRecord = Get-ClientAssistRecord
     $mipConvergenceRecord = Get-ClientMipConvergenceRecord
+    $reportedPersistedMipObligations = Get-ReportedPersistedMipObligations
     $scenarioRecord = [ordered]@{
         label = $Label
         route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
@@ -502,6 +582,8 @@ try {
         generation = $generationRecord
         requireMipConvergence = [bool]$RequireMipConvergence
         mipConvergence = $mipConvergenceRecord
+        requireMipRecovery = [bool]$RequireMipRecovery
+        persistedMipObligationsLoaded = $reportedPersistedMipObligations
         requiredAssistPeakInFlight = $RequireAssistPeakInFlight
         assist = $assistRecord
         settleSeconds = $Settle
@@ -580,6 +662,10 @@ try {
             throw "The final sampled client pipeline did not converge cleanly. See $scenario and $clientMainLog"
         }
     }
+    if ($RequireMipRecovery -and
+        ($null -eq $reportedPersistedMipObligations -or $reportedPersistedMipObligations -le 0)) {
+        throw "Mip recovery did not load a persisted ApplyToParent obligation. See $scenario and $clientMainLog"
+    }
     if ($RequireAssistPeakInFlight -gt 0) {
         if ($null -eq $assistRecord) {
             throw "The client log did not contain parseable live-assist transfer telemetry. See $scenario and $clientMainLog"
@@ -597,10 +683,13 @@ try {
     Get-Content -LiteralPath $csv
 }
 finally {
+    if ($InterruptWhenPersistedMip -and -not (Test-Path -LiteralPath $mipInterruptRelease)) {
+        Set-Content -LiteralPath $mipInterruptRelease -Value 'runner cleanup' -Encoding ascii
+    }
     Close-ClientGracefully $client
     if ($client.HasExited) { Remove-Item -LiteralPath $clientPidFile -Force -ErrorAction SilentlyContinue }
 
-    if (-not $server.HasExited) {
+    if (-not $InterruptWhenPersistedMip -and -not $server.HasExited) {
         if (-not $server.WaitForExit(90000)) {
             Write-Warning "Server PID $($server.Id) did not exit after the benchmark's /stop. It was NOT force-killed; the pidfile remains."
         }

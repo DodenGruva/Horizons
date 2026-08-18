@@ -21,6 +21,7 @@ public static class StoreChecks
         DisposingTheOfferReaderReleasesItsFileHandle(c);
         AssistBlobReaderIsBoundedOrderedAndReadOnly(c);
         BackgroundForeignDecodeIsBoundedAndIsolated(c);
+        InterruptionMarkerFollowsDurableMipWrite(c);
         Rejection(c);
         PurgeKeepsMatchingData(c);
     }
@@ -323,6 +324,54 @@ public static class StoreChecks
         finally
         {
             try { Directory.Delete(dir, recursive: true); } catch { /* temp dir; best effort */ }
+        }
+    }
+
+    static void InterruptionMarkerFollowsDurableMipWrite(Check c)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vh-mip-interrupt-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "cache.db");
+        string marker = Path.Combine(dir, "persisted.marker");
+        string release = Path.Combine(dir, "release.marker");
+        string? oldMarker = Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER");
+        string? oldRelease = Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
+
+        try
+        {
+            Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER", marker);
+            Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE", release);
+
+            using var store = new LodStore(new CaptureLogger());
+            c.True(store.Open(path), "the interruption fixture cache opens");
+            using var worker = new LodStorageThread(store);
+            worker.Enqueue(Fixtures.Snapshot(Fixtures.SolidSection(),
+                level: 0, sx: 7, sz: 9, applyToParent: true));
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (!File.Exists(marker) && clock.ElapsedMilliseconds < 5000) Thread.Sleep(10);
+            c.True(File.Exists(marker),
+                "the storage worker publishes its interruption marker after a flagged row write");
+            c.Eq(1L, worker.Backlog,
+                "the marked write stays outstanding until the harness releases it");
+
+            File.WriteAllText(release, "release");
+            worker.Drain();
+
+            bool restoredObligation = false;
+            store.LoadAllKeys((level, sx, sz, applyToParent) =>
+            {
+                if (level == 0 && sx == 7 && sz == 9) restoredObligation = applyToParent;
+            });
+            c.True(restoredObligation,
+                "the row named by the interruption marker carries ApplyToParent on disk");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER", oldMarker);
+            Environment.SetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE", oldRelease);
+            try { File.WriteAllText(release, "cleanup"); } catch { }
+            try { Directory.Delete(dir, recursive: true); } catch { }
         }
     }
 

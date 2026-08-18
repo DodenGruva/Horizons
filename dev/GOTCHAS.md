@@ -257,6 +257,19 @@ received and installed sections.
 disconnect event own real queue cleanup, and require transfer postconditions rather than
 inferring success from a handshake or a saturated request counter.
 
+### G24 — Graceful restart and timed termination do not prove crash recovery
+
+**Trigger:** validating persisted asynchronous mip or save obligations across interruption.
+
+**Trap:** graceful close runs the shutdown drain, while a fixed-delay termination can hit
+a moment with no durable obligation. Even observing a flagged row can race a later clearing
+write and turn the intended crash test into another clean restart.
+
+**Do:** publish a test marker only after the flagged database write succeeds, prevent the
+clearing writer from overtaking orchestration, verify the exact isolated PID before
+termination, require the restart to report persisted work, and use a later fresh process
+to prove the cleared state reached disk.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

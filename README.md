@@ -227,6 +227,15 @@ Add `-RequireMipConvergence` with at least a 30-second cooldown to make the run 
 the final sampled client state has no capture input/results, mip queue/in-flight work,
 worker errors, unsaved sections, asynchronous loads, or storage backlog/errors. The
 scenario JSON preserves the parsed final state.
+
+Crash recovery is a guarded two-run variant. The first run uses
+`-InterruptWhenPersistedMip`; its storage worker publishes a marker only after writing an
+`ApplyToParent` row, and the runner then terminates only the pidfile-verified sandbox
+client while leaving its isolated server available. The second run uses `-ReuseServer`,
+`-RequireMipRecovery`, `-RequireMipConvergence`, and a cooldown of at least 30 seconds. It
+must load one or more persisted mip obligations and converge every ordinary pipeline and
+storage guard to zero before stopping the server normally.
+
 Pass `-ServerMod` to install Vintage Horizons on the isolated server as well, which makes
 sweep and server-assist phases available to the run. `-AutoCommand "/vhgen start 8"` can
 start a bounded generation scenario after join. Stats and managed-allocation sampling are

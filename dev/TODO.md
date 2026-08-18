@@ -10,12 +10,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 - Repeat the recorded hardware/settings/config benchmark on the eventual release candidate if its code or sandbox state differs materially.
 
-### P1 fixes
-
-- Interrupt the asynchronous mip worker with active propagation, restart, and verify
-  durable `ApplyToParent` convergence; repeat under integrated-singleplayer load. A
-  120-second warm-cache route and fresh-process graceful restart now converge cleanly.
-
 ### Renderer scaling
 
 - Frustum-test subtrees before traversal while keeping residency independent of visibility.
@@ -31,6 +25,11 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - Coalesce superseded snapshots for the same section.
 - Make shutdown drain existing backlog and then persist remaining dirty revisions.
 
+### Integrated validation
+
+- Repeat durable mip interruption/recovery under integrated-singleplayer load.
+- Exercise sibling-cache discovery and retryable local misses in that process.
+
 ## Flagged decisions awaiting human evidence
 
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
@@ -44,13 +43,12 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   within 20 results / 1.61 MiB / 234 ms and converged during the endpoint cooldown. The
   first run generated server-save terrain and the second reused it, so aggregate FPS is
   not controlled A/B evidence. No person watched the cold route in motion.
-- Asynchronous mip propagation now has a 120-second warm-cache movement/capture run and a
-  fresh-process restart guarded by semantic pipeline convergence. The long run loaded 405
-  cached sections, captured 2,401 columns, had no 25 ms Vintage Horizons tick, and drained
-  capture, mip, save, load, and storage work with no errors. The next process loaded 601
-  sections from the resulting 29,982,720-byte cache and converged again. Active-work
-  interruption and integrated-singleplayer load remain unverified.
-- The complete game-backed fast tier passes 964 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- Asynchronous mip propagation now has a 120-second movement/capture convergence soak,
+  graceful restart, deliberate interruption after a durable `ApplyToParent` write,
+  successful recovery of one persisted obligation, and a third fresh process reporting
+  zero obligations. Dedicated client/server durability is established;
+  integrated-singleplayer interruption remains unverified.
+- The complete game-backed fast tier passes 968 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Live server-assist transfer now exercises network request state end to end. Incremental
   sibling-cache discovery and retry-safe local misses remain unexercised in integrated
   singleplayer.
