@@ -66,11 +66,13 @@ the transient failure.
 
 ### G7 — Async section work needs revision validation
 
-**Trigger:** moving mip generation, decode, save, or mesh preparation off-thread.
+**Trigger:** moving mip generation, capture publication, decode, save, or mesh preparation off-thread.
 
 **Trap:** a worker snapshot can finish after capture or another child update changed the section. Publishing it unconditionally overwrites newer truth.
 
-**Do:** carry section identity and revision, reject stale results, and requeue when a newer revision still needs work.
+**Do:** carry world identity plus section identity/revision where same-world mutation can
+race, reject stale results, and requeue when a newer revision still needs work. Queue
+clearing is not sufficient: an in-progress worker job may publish after the clear.
 
 ### G8 — Visibility and eviction are not the same signal
 

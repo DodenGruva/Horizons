@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+moving-rotation-2026-08-17-long-1,east-full-turn,512020,230,512010,2,14301,475.2,479.5,281.3,2.10,3.56,0.3,4.5,2132,3937,21.0,0
+moving-rotation-2026-08-17-long-1,south-full-turn,512420,230,512010,2,13721,456.9,456.3,270.5,2.19,3.70,0.1,1.1,2034,3927,21.0,0
+moving-rotation-2026-08-17-long-1,west-full-turn,512420,230,512410,2,13034,434.1,434.0,280.9,2.30,3.56,0.1,0.8,2371,3985,21.0,0
+moving-rotation-2026-08-17-long-1,north-full-turn,512020,230,512410,2,14740,489.8,481.0,301.9,2.04,3.31,0.3,3.1,2232,3928,21.0,0

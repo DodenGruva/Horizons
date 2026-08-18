@@ -8,8 +8,8 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### Documentation and baseline
 
-- Run and preserve the deterministic movement/rotation route at its documented 30-second leg speed with warm-up and multiple measured laps; visually check clipping and turn-around behavior.
-- Record hardware, graphics settings, view distance, save, and mod configuration beside a release-candidate benchmark.
+- Human-watch the corrected movement/rotation route for transient clipping and turn-around stalls; the full automated route and endpoint screenshots cannot establish motion quality.
+- Repeat the recorded hardware/settings/config benchmark on the eventual release candidate if its code or sandbox state differs materially.
 
 ### Instrumentation
 
@@ -20,7 +20,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 ### P1 fixes
 
 - Soak the new asynchronous mip worker during long exploration, restart, and shutdown; verify stale/failure retries and durable `ApplyToParent` convergence under interruption.
-- Time-budget capture-result publication if the newly exposed 11–14 ms maximum reproduces in longer movement runs.
 
 ### Renderer scaling
 
@@ -45,11 +44,12 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ## Verification debt
 
-- The short active-exploration harness reproduced and attributed the largest game-tick spike, but it is teleport-driven and not a substitute for a human continuous-movement playtest.
+- The full corrected movement/rotation route completed before/after capture budgeting with stable aggregate results, but it was automated and is not a substitute for a human-watched movement/turn-around playtest.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
 - The complete game-backed fast tier passes 900 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Incremental sibling-cache discovery and retry-safe local/server request transitions are source-traced and fixture-tested, but not yet exercised in integrated singleplayer or live server assist.
-- Cached bounds and projection hysteresis pass 30 isolated assertions. A corrected terrain-facing five-second-per-leg trajectory smoke completed with no mod errors or tick hitches, but it was not a controlled long run and did not establish a clipping verdict. The earlier route screenshots were sky-biased by an incorrect zero-centred camera-pitch assumption.
+- Cached bounds and projection hysteresis pass 30 isolated assertions. The corrected long route completed with five projection resets and no tick hitches; terrain-facing endpoints showed no obvious near-camera cutoff, but no human watched motion for a clipping verdict. The earlier route screenshots were sky-biased by an incorrect zero-centred camera-pitch assumption.
+- Capture publication is source-bounded and passed a same-route before/after run: its maximum fell from 12.038 to 5.732 ms and backlog peaked at 9 results / 0.70 MiB / 93 ms. One admitted result remains non-preemptible, and interrupted shutdown was not exercised.
 - Server-assist and savegame-sweep spike cadence has not yet been profiled in integrated singleplayer.
 - Tick-smoothed server work and time/byte-bounded client installs are source-traced and harness-tested, but their frame-time effect and backlog policy have not yet been evaluated in an integrated game process.
 - Storage-owned foreign decode is source-traced and harness-tested. A brief human test

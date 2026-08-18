@@ -42,6 +42,7 @@ public class SectionSnapshot
 
 public class CaptureJob
 {
+    public long Epoch;
     public int Cx, Cz;
     public required IWorldChunk?[] Chunks; // indexed by chunkY
     public required ushort[] RainMap;      // copied on the main thread
@@ -50,9 +51,12 @@ public class CaptureJob
 /// <summary>Runs carry raw BLOCK ids (not palette ids); the main thread remaps on apply.</summary>
 public class CaptureResult
 {
+    public long Epoch;
     public long SectionKey;
     public int Cx, Cz;
     public required ulong[]?[] RunsByColumn; // GridSize² entries, only this chunk column's 16×16 filled
+    public long EstimatedBytes;
+    public long ReadyAtMilliseconds;
 }
 
 public class MeshJob
@@ -92,9 +96,10 @@ public class LodWorker : IDisposable
     readonly ConcurrentQueue<CaptureJob> captureJobs = new();
     readonly ConcurrentQueue<MeshJob> meshJobs = new();
     readonly ConcurrentQueue<MipJob> mipJobs = new();
-    public readonly ConcurrentQueue<CaptureResult> CaptureResults = new();
+    readonly ConcurrentQueue<CaptureResult> captureResults = new();
     public readonly ConcurrentQueue<MeshResult> MeshResults = new();
     public readonly ConcurrentQueue<MipResult> MipResults = new();
+    int activeCaptures;
 
     /// <summary>Wakes the capture thread. One job, one thread, so auto-reset is right.</summary>
     readonly AutoResetEvent captureSignal = new(false);
@@ -125,7 +130,15 @@ public class LodWorker : IDisposable
 
     public int MeshThreads => meshThreads.Length;
 
-    public int PendingCaptures => captureJobs.Count;
+    // Include the job currently owned by the worker so producer backpressure cannot
+    // briefly admit a 25th retained capture while that job is between the two queues.
+    public int PendingCaptures => captureJobs.Count + Volatile.Read(ref activeCaptures);
+    public int PendingCaptureResults => captureResults.Count;
+    public long PendingCaptureResultBytes =>
+        captureResults.Sum(result => result.EstimatedBytes);
+    public long OldestCaptureResultAgeMs => captureResults.TryPeek(out CaptureResult? oldest)
+        ? Math.Max(0, Environment.TickCount64 - oldest.ReadyAtMilliseconds)
+        : 0;
     public int PendingMeshes => meshJobs.Count;
     public int PendingMips => mipJobs.Count;
 
@@ -190,6 +203,16 @@ public class LodWorker : IDisposable
         mipSignal.Set();
     }
 
+    public bool TryPeekCaptureResult(out CaptureResult result) =>
+        captureResults.TryPeek(out result!);
+
+    public bool TryTakeCaptureResult(out CaptureResult result)
+    {
+        return captureResults.TryDequeue(out result!);
+    }
+
+    public void ClearCaptureResults() => captureResults.Clear();
+
     /// <summary>
     /// Drop queued/results from the world being closed. A job already executing may
     /// still publish later; its epoch makes the next world reject it.
@@ -212,16 +235,21 @@ public class LodWorker : IDisposable
             while (captureJobs.TryDequeue(out CaptureJob? job))
             {
                 didWork = true;
+                Interlocked.Increment(ref activeCaptures);
                 try
                 {
                     CaptureResult? result = Capture(job);
-                    if (result != null) CaptureResults.Enqueue(result);
+                    if (result != null) captureResults.Enqueue(result);
                 }
                 catch (Exception e)
                 {
                     // Chunk disposed mid-read or similar; the column re-enqueues on its next ChunkDirty.
                     Interlocked.Increment(ref CaptureErrors);
                     Interlocked.CompareExchange(ref FirstCaptureError, e.ToString(), null);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref activeCaptures);
                 }
             }
 
@@ -301,6 +329,7 @@ public class LodWorker : IDisposable
         var batch = new ulong[]?[LodSection.GridSize * LodSection.GridSize];
         var runs = new List<ulong>(24);
         bool anyColumn = false;
+        long estimatedBytes = 0;
 
         // Rain map values can sit at/above map height on freshly streamed columns
         // (uninitialized sentinel) - clamp so the y walk stays inside the chunk stack.
@@ -344,7 +373,9 @@ public class LodWorker : IDisposable
                 if (!complete) continue;
                 if (currentBlock != 0) runs.Add(LodSection.PackRun(currentBlock, runTop, 1));
 
-                batch[LodSection.ColumnIndex(colOffsetX + cx, colOffsetZ + cz)] = runs.ToArray();
+                ulong[] capturedRuns = runs.ToArray();
+                batch[LodSection.ColumnIndex(colOffsetX + cx, colOffsetZ + cz)] = capturedRuns;
+                estimatedBytes += capturedRuns.LongLength * sizeof(ulong);
                 anyColumn = true;
             }
         }
@@ -353,10 +384,13 @@ public class LodWorker : IDisposable
 
         return new CaptureResult
         {
+            Epoch = job.Epoch,
             SectionKey = LodWorld.SectionKey(0, sectionX, sectionZ),
             Cx = job.Cx,
             Cz = job.Cz,
             RunsByColumn = batch,
+            EstimatedBytes = estimatedBytes,
+            ReadyAtMilliseconds = Environment.TickCount64,
         };
     }
 

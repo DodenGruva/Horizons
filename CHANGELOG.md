@@ -8,6 +8,16 @@ first.
 
 ## [Unreleased]
 
+**Smoother capture publication during continuous exploration.** A full corrected
+movement/rotation route reproduced capture-result publication at 12.038 ms on the game
+tick. Publication now stops at result boundaries after 2 ms or 512 KiB, retains the
+existing item ceiling, and applies backpressure across queued/in-progress jobs and
+completed/deferred results. One oldest result always progresses, and cross-world results are rejected by
+world epoch. The same full route reduced the measured capture maximum to 5.732 ms while
+holding backlog to 9 results / 0.70 MiB / 93 ms old, with average FPS within 0.2%, improved
+1% lows at all four waypoints, and no ticks at or above 25 ms. One admitted result remains
+non-preemptible, and integrated/human-watched validation is still pending.
+
 **Reproducible moving-camera performance route.** The isolated benchmark can now follow
 deterministic harness-owned trajectories as well as hold fixed viewpoints. A bundled
 1,600-block loop moves continuously while rotating the camera through four full turns,
@@ -17,8 +27,9 @@ and focused checks cover parsing, interpolation, angle preservation, engine pitc
 and loop continuity. The harness also now translates its conventional zero-degree horizon
 to Vintage Story's PI-centred camera pitch and pins both mouse axes. Earlier route
 screenshots were sky-biased; their capture/mip tick comparison remains useful, but they
-are not renderer-load or visual evidence. A corrected terrain-facing trajectory smoke
-completed cleanly; a longer controlled run and clipping review are still pending.
+are not renderer-load or visual evidence. A corrected terrain-facing long route completed
+with five projection resets and no tick hitches; human-watched clipping review remains
+pending.
 
 **Smoother adoption of server-assisted and singleplayer-cache terrain.** Compressed
 foreign sections are now inflated and structurally parsed by the storage worker instead
@@ -55,8 +66,8 @@ tiny changes. The renderer now maintains the outer world-space bounds as meshes 
 leave, so the steady calculation takes constant work however large the explored cache is.
 The camera projection grows immediately in safe 512-block steps and waits five seconds
 before shrinking to a stable lower step. The `.vhfar` cap behaves as before. Isolated
-checks cover the bounds and projection policy; continuous moving-camera playtesting is
-still pending.
+checks and a full automated moving-camera route cover the bounds and projection policy;
+human-watched clipping and turn-around review is still pending.
 
 **Fixed: a temporary section miss no longer leaves that distant terrain stuck for the
 session.** A local singleplayer-cache read that missed could stop being wanted while still

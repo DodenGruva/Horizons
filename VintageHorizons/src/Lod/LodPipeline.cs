@@ -136,6 +136,15 @@ public class LodPipeline
     public int PendingForeignResults => storageThread?.PendingForeignResults ?? 0;
     public long PendingForeignResultBytes => storageThread?.PendingForeignResultBytes ?? 0;
     public long OldestForeignResultAgeMs => storageThread?.OldestForeignResultAgeMs ?? 0;
+    public int CaptureApplyItems { get; private set; }
+    public long CaptureApplyBytes { get; private set; }
+    public int PendingCaptureResults => Worker.PendingCaptureResults + deferredCaptures.Count;
+    public long PendingCaptureResultBytes => Worker.PendingCaptureResultBytes
+        + deferredCaptures.Sum(result => result.EstimatedBytes);
+    public long OldestCaptureResultAgeMs => Math.Max(Worker.OldestCaptureResultAgeMs,
+        deferredCaptures.Count > 0
+            ? Math.Max(0, Environment.TickCount64 - deferredCaptures[0].ReadyAtMilliseconds)
+            : 0);
 
     readonly Queue<LodForeignInstallCompletion> foreignInstallCompletions = new();
 
@@ -173,6 +182,8 @@ public class LodPipeline
         LoadInstallBytes = 0;
         ForeignInstallItems = 0;
         ForeignInstallBytes = 0;
+        CaptureApplyItems = 0;
+        CaptureApplyBytes = 0;
     }
 
     /// <summary>Note a chunk column as needing (re)capture. Safe from any thread.</summary>
@@ -205,6 +216,7 @@ public class LodPipeline
 
         Worker.EnqueueCapture(new CaptureJob
         {
+            Epoch = worldEpoch,
             Cx = cx,
             Cz = cz,
             Chunks = refs,
@@ -214,11 +226,12 @@ public class LodPipeline
     }
 
     /// <summary>
-    /// True when the capture thread is at its backlog. A producer that can throttle
-    /// itself (chunk generation) must stop at the source: every queued job holds a
-    /// whole unpacked chunk column in memory until the capture thread drains it.
+    /// Combined capture jobs and completed/deferred results retained by the pipeline.
+    /// A producer that can throttle itself (chunk generation) must stop at the source:
+    /// jobs hold unpacked chunk columns, while results retain their converted run arrays.
     /// </summary>
-    public bool CaptureBacklogFull => Worker.PendingCaptures >= MaxWorkerCaptureBacklog;
+    public int CaptureBacklog => Worker.PendingCaptures + PendingCaptureResults;
+    public bool CaptureBacklogFull => CaptureBacklog >= MaxWorkerCaptureBacklog;
 
     /// <summary>
     /// Open (or create) the LOD cache for the current world and adopt its key set.
@@ -527,11 +540,13 @@ public class LodPipeline
 
     void ScheduleCaptures()
     {
-        if (Worker.PendingCaptures >= MaxWorkerCaptureBacklog) return;
+        int capacity = MaxWorkerCaptureBacklog - CaptureBacklog;
+        if (capacity <= 0) return;
 
         int chunkYCount = api.World.BlockAccessor.MapSizeY / ChunkSize;
 
-        for (int n = 0; n < CaptureSchedulesPerTick && pendingColumns.TryDequeue(out long key); n++)
+        int scheduleBudget = Math.Min(CaptureSchedulesPerTick, capacity);
+        for (int n = 0; n < scheduleBudget && pendingColumns.TryDequeue(out long key); n++)
         {
             queuedColumns.TryRemove(key, out _);
             int cx = (int)(key & 0xFFFFFFFF);
@@ -549,6 +564,7 @@ public class LodPipeline
 
             Worker.EnqueueCapture(new CaptureJob
             {
+                Epoch = worldEpoch,
                 Cx = cx,
                 Cz = cz,
                 Chunks = chunks,
@@ -570,20 +586,29 @@ public class LodPipeline
 
     void ApplyCaptureResults()
     {
-        int budget = CaptureAppliesPerTick;
+        int remaining = CaptureAppliesPerTick;
+        var drain = new LodDrainBudget();
 
         // Results waiting on a reload get first refusal, so a section that has come back
         // is merged before anything newer touches it.
-        for (int i = 0; i < deferredCaptures.Count && budget > 0;)
+        for (int i = 0; i < deferredCaptures.Count && remaining > 0;)
         {
             if (!World.EnsureResident(deferredCaptures[i].SectionKey)) { i++; continue; }
+            if (!drain.TryStart(deferredCaptures[i].EstimatedBytes)) break;
             ApplyOneCaptureResult(deferredCaptures[i]);
             deferredCaptures.RemoveAt(i);
-            budget--;
+            remaining--;
         }
 
-        while (budget-- > 0 && Worker.CaptureResults.TryDequeue(out CaptureResult? result))
+        while (remaining > 0 && Worker.TryPeekCaptureResult(out CaptureResult result))
         {
+            if (result.Epoch != worldEpoch)
+            {
+                if (!Worker.TryTakeCaptureResult(out _)) break;
+                remaining--;
+                continue;
+            }
+
             // An evicted section has to come back from disk before capture may merge into
             // it, or the merge writes into an empty section that then overwrites the
             // stored row. That was solved for mip propagation and not here, so this path
@@ -602,15 +627,25 @@ public class LodPipeline
                 // for that reason, and the bound is enforced from its head.
                 if (deferredCaptures.Count >= MaxDeferredCaptures)
                 {
+                    if (!drain.TryStart(deferredCaptures[0].EstimatedBytes)) break;
+                    if (!Worker.TryTakeCaptureResult(out result)) break;
                     ApplyOneCaptureResult(deferredCaptures[0]);
                     deferredCaptures.RemoveAt(0);
                 }
+                else if (!Worker.TryTakeCaptureResult(out result)) break;
                 deferredCaptures.Add(result);
+                remaining--;
                 continue;
             }
 
+            if (!drain.TryStart(result.EstimatedBytes)) break;
+            if (!Worker.TryTakeCaptureResult(out result)) break;
             ApplyOneCaptureResult(result);
+            remaining--;
         }
+
+        CaptureApplyItems += drain.Items;
+        CaptureApplyBytes += drain.Bytes;
     }
 
     void ApplyOneCaptureResult(CaptureResult result)
@@ -746,7 +781,7 @@ public class LodPipeline
         foreignInstallCompletions.Clear();
         // Results for the world we are leaving must not be applied to the next one.
         // Both queues, or a result held back for a reload would cross worlds.
-        while (Worker.CaptureResults.TryDequeue(out _)) { }
+        Worker.ClearCaptureResults();
         Worker.ClearMipWork();
         deferredCaptures.Clear();
         World.Clear();

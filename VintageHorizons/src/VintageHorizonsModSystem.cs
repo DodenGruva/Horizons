@@ -942,6 +942,12 @@ public class VintageHorizonsModSystem : ModSystem
                 pipeline.SaveSnapshotCost.P95Us, pipeline.SaveSnapshotCost.P99Us, pipeline.SaveSnapshotCost.MaxUs);
 
             Mod.Logger.Notification(
+                "  capture publish budget: {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms",
+                pipeline.CaptureApplyItems, pipeline.CaptureApplyBytes / (1024.0 * 1024.0),
+                pipeline.PendingCaptureResults, pipeline.PendingCaptureResultBytes / (1024.0 * 1024.0),
+                pipeline.OldestCaptureResultAgeMs);
+
+            Mod.Logger.Notification(
                 "  install budgets: assist input {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
                 + "local input {5} items/{6:0.00} MiB | foreign publish {7} items/{8:0.00} MiB, "
                 + "{9} queued/{10:0.00} MiB, oldest {11}ms | background {12} items/{13:0.00} MiB, "

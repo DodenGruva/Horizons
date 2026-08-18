@@ -102,3 +102,20 @@
 - Made the Windows runner's PowerShell 7 requirement explicit.
 - Added 23 benchmark-route assertions and expanded the full fast tier to 900 assertions
   across 22 suites.
+
+## 2026-08-17 — continuous route evidence and bounded capture publication
+
+- Ran and preserved the corrected 30-second-leg movement/rotation route with one warm-up
+  and two measured laps, including hardware, graphics, view-distance, mod-config, and CSV
+  context.
+- Reproduced capture publication at 12.038 ms maximum and established it as essentially
+  the whole worst measured game tick on that route.
+- Time/byte-bounded capture publication at result boundaries under the shared 2 ms /
+  512 KiB policy while retaining the eight-result ceiling and oldest-item progress.
+- Counted queued/in-progress capture jobs plus completed/deferred results under one
+  24-item backpressure cap and made ordinary scheduling respect the exact remaining capacity.
+- Added result item/byte/age telemetry, worker-side raw-run byte estimates, and world-epoch
+  rejection for results published after teardown.
+- Repeated the full route: capture maximum fell to 5.732 ms, backlog stayed within 9
+  results / 0.70 MiB / 93 ms, and zero ticks reached 25 ms.
+- Preserved both full-route CSVs and their evidence limitations under `bench/results`.

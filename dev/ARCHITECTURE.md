@@ -60,7 +60,13 @@ The owning game thread is the sole mutator of `LodWorld` and live `LodSection` s
 
 ### Capture worker
 
-The capture worker reads chunk references supplied by the owning thread and produces raw block-id runs. Chunk lifetime is controlled by the engine, so capture tolerates disposal races and records failures rather than mutating game state.
+The capture worker reads chunk references supplied by the owning thread and produces raw
+block-id runs. Jobs/results carry a world epoch; the owning thread rejects a result from
+a job that completed after world teardown. Publication is bounded at result boundaries
+by elapsed time, estimated run bytes, and item count. Queued/in-progress jobs, completed
+results, and reload-deferred results share one backpressure limit. Chunk lifetime is controlled by the
+engine, so capture tolerates disposal races and records failures rather than mutating game
+state.
 
 ### Mesh workers
 
@@ -167,6 +173,9 @@ The server must answer every accepted section request, including explicit refusa
 13. **Foreign decode acceptance is not publication.** Request responsibility and source
     fallback survive background decode until the owning thread installs or terminally
     rejects the exact result. Local observed data still wins the race.
+14. **Capture publication is boundary-budgeted.** The owning thread stops after its
+    elapsed-time, raw-run-byte, or item ceiling. One admitted result remains atomic and
+    may exceed a ceiling; later results wait under combined job/result backpressure.
 
 ## Concurrency invariants
 
@@ -176,6 +185,8 @@ The server must answer every accepted section request, including explicit refusa
 - Queue backpressure is applied before retaining large chunk, mesh, or section snapshots.
 - Dirty state is cleared only when responsibility for that exact revision has transferred safely.
 - A stale result cannot overwrite a newer section revision.
+- Every worker result carries a world epoch or an equivalent teardown identity; clearing
+  a queue alone cannot stop an in-progress job from publishing afterward.
 - Shutdown either persists acknowledged work or reports exactly what remained.
 - Diagnostics must not be capable of killing a worker thread.
 
