@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+assist-offthread-batched,saturated-assist,512020,190,512010,1,13405,446.8,445.1,370.3,2.24,2.70,0.0,0.0,1527,3529,51.0,0

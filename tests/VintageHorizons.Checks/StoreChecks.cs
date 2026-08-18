@@ -1,3 +1,5 @@
+using VintageHorizons.Net;
+
 namespace VintageHorizons.Checks;
 
 /// <summary>
@@ -17,6 +19,7 @@ public static class StoreChecks
         AFailedLookupIsNotRemembered(c);
         AColourlessCacheIsRepaired(c);
         DisposingTheOfferReaderReleasesItsFileHandle(c);
+        AssistBlobReaderIsBoundedOrderedAndReadOnly(c);
         BackgroundForeignDecodeIsBoundedAndIsolated(c);
         Rejection(c);
         PurgeKeepsMatchingData(c);
@@ -349,6 +352,126 @@ public static class StoreChecks
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Server assist must never borrow the writable LodStore connection on the owning
+    /// thread. Its dedicated reader owns one unpooled read-only connection, preserves
+    /// FIFO result order, and counts completed blobs against the same bounded allowance
+    /// as queued and executing reads.
+    /// </summary>
+    static void AssistBlobReaderIsBoundedOrderedAndReadOnly(Check c)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vh-assist-reader-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "server.db");
+        try
+        {
+            var writerOptions = new Microsoft.Data.Sqlite.SqliteConnectionStringBuilder
+            {
+                DataSource = path,
+                Pooling = false,
+            };
+            using (var writer = new Microsoft.Data.Sqlite.SqliteConnection(writerOptions.ToString()))
+            {
+                writer.Open();
+                using var create = writer.CreateCommand();
+                create.CommandText =
+                    "CREATE TABLE Section (Detail INTEGER NOT NULL, SX INTEGER NOT NULL, "
+                    + "SZ INTEGER NOT NULL, Data BLOB NOT NULL, PRIMARY KEY (Detail, SX, SZ));";
+                create.ExecuteNonQuery();
+
+                for (int i = 0; i < LodAssistBlobReader.MaxOutstanding; i++)
+                {
+                    using var insert = writer.CreateCommand();
+                    insert.CommandText =
+                        "INSERT INTO Section (Detail, SX, SZ, Data) VALUES (0, @x, 7, @data)";
+                    insert.Parameters.AddWithValue("@x", i + 1);
+                    insert.Parameters.AddWithValue("@data", new byte[] { (byte)(i + 1), 0x5a });
+                    insert.ExecuteNonQuery();
+                }
+            }
+
+            var logger = new CaptureLogger();
+            using (var reader = new LodAssistBlobReader(path, logger, trackAllocations: true))
+            {
+                var expected = new List<long>();
+                for (int i = 0; i < LodAssistBlobReader.MaxOutstanding; i++)
+                {
+                    long key = LodWorld.SectionKey(0, i + 1, 7);
+                    expected.Add(key);
+                    c.True(reader.TryEnqueue(new LodAssistBlobReadRequest(
+                        i % 2 == 0 ? "alice" : "bob", 4, key, Environment.TickCount64)),
+                        "a read within the total outstanding cap is accepted");
+                }
+
+                c.False(reader.TryEnqueue(new LodAssistBlobReadRequest(
+                    "carol", 9, LodWorld.SectionKey(0, 99, 7), Environment.TickCount64)),
+                    "queued and completed reads together enforce the outstanding cap");
+
+                LodAssistBlobReadResult[] results = WaitForAssistReadResults(
+                    reader, LodAssistBlobReader.MaxOutstanding);
+                c.Eq(LodAssistBlobReader.MaxOutstanding, results.Length,
+                    "every accepted read publishes one result");
+                c.SeqEq(expected, results.Select(result => result.Key).ToArray(),
+                    "the single reader publishes results in request order");
+                c.True(results.All(result => !result.ReadFailed),
+                    "ordinary reads do not report failures");
+                c.True(results.Select((result, i) =>
+                        result.Blob.SequenceEqual(new byte[] { (byte)(i + 1), 0x5a })).All(ok => ok),
+                    "each result carries the exact stored blob");
+                c.Eq(0, reader.Outstanding,
+                    "taking every result releases the complete outstanding allowance");
+
+                long missing = LodWorld.SectionKey(0, 999, 7);
+                c.True(reader.TryEnqueue(new LodAssistBlobReadRequest(
+                    "alice", 4, missing, Environment.TickCount64)),
+                    "a later read is accepted after results release the cap");
+                LodAssistBlobReadResult[] miss = WaitForAssistReadResults(reader, 1);
+                c.Eq(1, miss.Length, "a missing row still publishes one terminal result");
+                c.Eq(0, miss[0].Blob.Length, "a missing row is represented by an empty blob");
+                c.False(miss[0].ReadFailed, "an ordinary row miss is not a database failure");
+            }
+
+            using (var failedReader = new LodAssistBlobReader(
+                Path.Combine(dir, "absent.db"), logger, trackAllocations: false))
+            {
+                long key = LodWorld.SectionKey(0, 1, 7);
+                c.True(failedReader.TryEnqueue(new LodAssistBlobReadRequest(
+                    "alice", 4, key, Environment.TickCount64)),
+                    "a read is accepted before a lazy connection failure is known");
+                LodAssistBlobReadResult[] failed = WaitForAssistReadResults(failedReader, 1);
+                c.Eq(1, failed.Length, "a database failure still publishes one result");
+                c.True(failed[0].ReadFailed, "a database failure is explicit and retryable upstream");
+                c.Eq(1, failedReader.ReadErrors, "the reader counts the failed query");
+                c.True(failedReader.FirstReadError != null,
+                    "the reader retains the first failure for diagnostics");
+            }
+
+            if (OperatingSystem.IsLinux())
+            {
+                c.False(ProcessHoldsHandleTo(path),
+                    "disposing the assist reader closes rather than pools its file handle");
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { /* temp dir */ }
+        }
+    }
+
+    static LodAssistBlobReadResult[] WaitForAssistReadResults(
+        LodAssistBlobReader reader, int count)
+    {
+        var results = new List<LodAssistBlobReadResult>(count);
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (results.Count < count && timeout.ElapsedMilliseconds < 5000)
+        {
+            while (reader.TryTakeResult(out LodAssistBlobReadResult result))
+                results.Add(result);
+            if (results.Count < count) Thread.Sleep(10);
+        }
+        return results.ToArray();
     }
 
     /// <summary>

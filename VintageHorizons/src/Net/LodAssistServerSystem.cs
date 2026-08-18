@@ -19,8 +19,10 @@ public class LodAssistServerSystem : ModSystem
     IServerNetworkChannel channel = null!;
     bool allocationTelemetryEnabled;
 
-    /// <summary>Owning-thread assist costs since the last server telemetry report.</summary>
+    /// <summary>Assist costs since the last server telemetry report.</summary>
     public LodPhaseCost ServeCost, BlobReadCost, SectionSendCost, OfferCost;
+    LodAssistBlobReader? blobReader;
+    string? blobReaderPath;
 
     public override bool ShouldLoad(EnumAppSide forSide) => forSide == EnumAppSide.Server;
 
@@ -168,6 +170,8 @@ public class LodAssistServerSystem : ModSystem
         ledger.Forget(player.PlayerUID);
         pendingByPlayer.Remove(player.PlayerUID);
         serveAllowanceByPlayer.Remove(player.PlayerUID);
+        sessionByPlayer.Remove(player.PlayerUID);
+        readInFlightByPlayer.Remove(player.PlayerUID);
     }
 
     /// <summary>
@@ -175,11 +179,15 @@ public class LodAssistServerSystem : ModSystem
     /// inline so the per-second cap has something to meter, and so a player who asks for a
     /// hundred sections gets them steadily instead of in one spike.
     /// </summary>
-    readonly record struct PendingSection(long Key, long ReadyMs);
+    readonly record struct PendingSection(long Key, long ReadyMs, long Session);
+    readonly record struct InFlightReadBatch(long Session, int Count);
     readonly Dictionary<string, Queue<PendingSection>> pendingByPlayer = new();
     readonly Dictionary<string, LodTickAllowance> serveAllowanceByPlayer = new();
+    readonly Dictionary<string, long> sessionByPlayer = new();
+    readonly Dictionary<string, InFlightReadBatch> readInFlightByPlayer = new();
     readonly LodTickAllowance globalServeAllowance = new();
     const double ServeWorkBudgetMs = 2.0;
+    long nextSession;
 
     void OnSectionRequest(IServerPlayer fromPlayer, AssistSectionRequest msg)
     {
@@ -191,6 +199,9 @@ public class LodAssistServerSystem : ModSystem
         string uid = fromPlayer.PlayerUID;
         sapi.Event.EnqueueMainThreadTask(() =>
         {
+            if (!sessionByPlayer.TryGetValue(uid, out long session))
+                sessionByPlayer[uid] = session = ++nextSession;
+
             if (!pendingByPlayer.TryGetValue(uid, out Queue<PendingSection>? queue))
             {
                 pendingByPlayer[uid] = queue = new Queue<PendingSection>();
@@ -198,9 +209,12 @@ public class LodAssistServerSystem : ModSystem
 
             // Bounded: the client is supposed to limit itself, but a server must not
             // depend on a client behaving.
-            int room = Math.Max(0, MaxQueuedPerPlayer - queue.Count);
+            int held = queue.Count + (readInFlightByPlayer.TryGetValue(
+                uid, out InFlightReadBatch batch) ? batch.Count : 0);
+            int room = Math.Max(0, MaxQueuedPerPlayer - held);
             long readyMs = sapi.World.ElapsedMilliseconds;
-            foreach (long key in keys.Take(room)) queue.Enqueue(new PendingSection(key, readyMs));
+            foreach (long key in keys.Take(room))
+                queue.Enqueue(new PendingSection(key, readyMs, session));
 
             // Anything past the cap is refused OUT LOUD. This used to drop silently,
             // with a comment saying the client would re-ask - it cannot. A client marks
@@ -229,7 +243,8 @@ public class LodAssistServerSystem : ModSystem
 
     /// <summary>
     /// Serve pending requests under continuously accrued per-player and global rates.
-    /// A small elapsed-time ceiling also stops after an unexpectedly slow blob read.
+    /// Blob reads execute on their dedicated reader; this tick only publishes completed
+    /// results and admits more FIFO work under a small elapsed-time ceiling.
     /// </summary>
     void MeasureServePending()
     {
@@ -242,11 +257,16 @@ public class LodAssistServerSystem : ModSystem
     {
         LodServerCaptureSystem? capture = sapi.ModLoader.GetModSystem<LodServerCaptureSystem>();
         LodServerConfig config = capture?.Config ?? new LodServerConfig();
+        LodAssistBlobReader? reader = EnsureBlobReader(capture);
+        var tickBudget = new LodWorkBudget(ServeWorkBudgetMs);
+
+        PublishBlobResults(capture, tickBudget);
+        if (tickBudget.Expired) return;
+
         long now = sapi.World.ElapsedMilliseconds;
         int globalBudget = globalServeAllowance.Available(now, config.MaxSectionsPerSecondTotal);
         if (pendingByPlayer.Count == 0 || globalBudget == 0) return;
-        bool serving = capture?.Capturing == true && config.EnableServing;
-        var tickBudget = new LodWorkBudget(ServeWorkBudgetMs);
+        bool serving = capture?.Capturing == true && config.EnableServing && reader != null;
 
         // Round-robin from a rotating start, so the global budget below cannot be
         // monopolised by whichever player happens to sort first in the dictionary.
@@ -274,20 +294,38 @@ public class LodAssistServerSystem : ModSystem
                 continue;
             }
 
+            // A player's responses stay in request order. Do not let a later refusal or
+            // fast read overtake the one SQLite read already accepted for this player.
+            if (readInFlightByPlayer.ContainsKey(uid)) continue;
+
             if (!serveAllowanceByPlayer.TryGetValue(uid, out LodTickAllowance? playerAllowance))
                 serveAllowanceByPlayer[uid] = playerAllowance = new LodTickAllowance();
             int playerBudget = playerAllowance.Available(now, config.MaxSectionsPerSecondPerPlayer);
             int playerSpent = 0;
+            int readsQueued = 0;
             while (playerSpent < playerBudget && globalSpent < globalBudget
                 && queue.Count > 0 && !tickBudget.Expired)
             {
-                long key = queue.Dequeue().Key;
+                PendingSection pending = queue.Peek();
+                long key = pending.Key;
+
+                if (!sessionByPlayer.TryGetValue(uid, out long session)
+                    || session != pending.Session)
+                {
+                    // This belongs to a connection that has already gone away. Its
+                    // disconnect owns cleanup, and a new player with the same uid must
+                    // never receive the stale reply.
+                    queue.Dequeue();
+                    continue;
+                }
 
                 // Refuse gradually rather than clearing every queue in one callback. This
                 // path is reachable during join before the cache opens and when serving is
                 // disabled; every request still receives the explicit terminal response.
                 if (!serving)
                 {
+                    if (readsQueued > 0) break;
+                    queue.Dequeue();
                     Refuse(player, key);
                     playerSpent++;
                     globalSpent++;
@@ -299,6 +337,8 @@ public class LodAssistServerSystem : ModSystem
                 // honoured for somewhere the player has since left.
                 if (!WithinServeRadius(key, player, config.ServeRadiusBlocks))
                 {
+                    if (readsQueued > 0) break;
+                    queue.Dequeue();
                     SendSection(player, new AssistSection { Key = key });
                     sectionsOutsideRadius++;
                     playerSpent++;
@@ -306,27 +346,12 @@ public class LodAssistServerSystem : ModSystem
                     continue;
                 }
 
-                serveClock.Restart();
-                LodPhaseStart blobStart = LodPhaseCost.Start(allocationTelemetryEnabled);
-                byte[] blob = capture!.LoadBlob(key) ?? Array.Empty<byte>();
-                blobReadMs += serveClock.Elapsed.TotalMilliseconds;
-                BlobReadCost.Add(blobStart);
+                if (!reader!.TryEnqueue(new LodAssistBlobReadRequest(
+                    uid, session, key, Environment.TickCount64))) break;
 
-                // Empty blob rather than silence for a miss: the client needs to know to
-                // stop asking, and cannot tell "declined" from "lost" otherwise.
-                //
-                // Flagged retryable when the miss is only "not written yet", which on a
-                // sweeping or generating server is most of them: the manifest carries mip
-                // parents that exist in memory before their row does. A flat refusal there
-                // costs the player the section permanently.
-                SendSection(player, new AssistSection
-                {
-                    Key = key,
-                    Blob = blob,
-                    Retryable = blob.Length == 0 && capture.ExpectsToHave(key),
-                });
-                sectionsServed++;
-                bytesServed += blob.Length;
+                queue.Dequeue();
+                readsQueued++;
+                readInFlightByPlayer[uid] = new InFlightReadBatch(session, readsQueued);
                 playerSpent++;
                 globalSpent++;
             }
@@ -347,6 +372,78 @@ public class LodAssistServerSystem : ModSystem
             Mod.Logger.Notification(
                 "Assist served {0} sections ({1:0.0} MB), blob reads {2:0.00}ms total, {3:0.00}ms avg",
                 sectionsServed, bytesServed / 1e6, blobReadMs, blobReadMs / sectionsServed);
+        }
+    }
+
+    LodAssistBlobReader? EnsureBlobReader(LodServerCaptureSystem? capture)
+    {
+        string? path = capture?.CachePath;
+        if (string.IsNullOrEmpty(path))
+        {
+            blobReader?.Dispose();
+            blobReader = null;
+            blobReaderPath = null;
+            return null;
+        }
+        if (blobReader != null && string.Equals(blobReaderPath, path, StringComparison.Ordinal))
+            return blobReader;
+
+        blobReader?.Dispose();
+        blobReaderPath = path;
+        blobReader = new LodAssistBlobReader(path, Mod.Logger, allocationTelemetryEnabled);
+        return blobReader;
+    }
+
+    void PublishBlobResults(LodServerCaptureSystem? capture, LodWorkBudget tickBudget)
+    {
+        if (blobReader == null) return;
+
+        int processed = 0;
+        while (blobReader.TryPeekResult(out LodAssistBlobReadResult next)
+            && (processed == 0 || !tickBudget.Expired))
+        {
+            bool currentSession = sessionByPlayer.TryGetValue(next.PlayerUid, out long session)
+                && session == next.Session;
+            IServerPlayer? player = sapi.World.PlayerByUid(next.PlayerUid) as IServerPlayer;
+
+            // A valid connection can briefly be absent from the playing set during
+            // transitions. Retain its oldest result until it can be sent. A disconnected
+            // or superseded session is terminal and may be discarded immediately.
+            if (currentSession
+                && (player == null || player.ConnectionState != EnumClientState.Playing)) break;
+            if (!blobReader.TryTakeResult(out LodAssistBlobReadResult result)) break;
+            processed++;
+
+            if (readInFlightByPlayer.TryGetValue(
+                result.PlayerUid, out InFlightReadBatch inFlight)
+                && inFlight.Session == result.Session)
+            {
+                if (inFlight.Count <= 1) readInFlightByPlayer.Remove(result.PlayerUid);
+                else readInFlightByPlayer[result.PlayerUid] = inFlight with
+                {
+                    Count = inFlight.Count - 1,
+                };
+            }
+
+            BlobReadCost.AddSample(result.ElapsedTicks, result.AllocatedBytes);
+            blobReadMs += result.ElapsedTicks * 1000.0
+                / System.Diagnostics.Stopwatch.Frequency;
+
+            if (!currentSession || player == null) continue;
+
+            byte[] blob = result.Blob;
+            // Empty blob rather than silence for a miss: the client needs to know to
+            // stop asking. A read error, or a row advertised before its save completed,
+            // is retryable rather than a permanent loss.
+            SendSection(player, new AssistSection
+            {
+                Key = result.Key,
+                Blob = blob,
+                Retryable = result.ReadFailed
+                    || (blob.Length == 0 && capture?.ExpectsToHave(result.Key) == true),
+            });
+            sectionsServed++;
+            bytesServed += blob.Length;
         }
     }
 
@@ -383,7 +480,6 @@ public class LodAssistServerSystem : ModSystem
         return dx * dx + dz * dz <= (double)radiusBlocks * radiusBlocks;
     }
 
-    readonly System.Diagnostics.Stopwatch serveClock = new();
     long sectionsOutsideRadius;
     uint serveRound;
     long sectionsServed, lastReportedServed, bytesServed;
@@ -406,21 +502,29 @@ public class LodAssistServerSystem : ModSystem
     void LogStats()
     {
         int pending = pendingByPlayer.Values.Sum(queue => queue.Count);
+        int readerOutstanding = blobReader?.Outstanding ?? 0;
         long now = sapi.World.ElapsedMilliseconds;
         long oldestAgeMs = pendingByPlayer.Values
             .Where(queue => queue.Count > 0)
             .Select(queue => Math.Max(0, now - queue.Peek().ReadyMs))
             .DefaultIfEmpty(0)
             .Max();
+        oldestAgeMs = Math.Max(oldestAgeMs, blobReader?.OldestAgeMilliseconds ?? 0);
+        int waitingPlayers = pendingByPlayer.Keys
+            .Concat(readInFlightByPlayer.Keys)
+            .Distinct(StringComparer.Ordinal)
+            .Count();
         Mod.Logger.Notification(
             "Server assist stats p95/p99/max us: serve {0:0}/{1:0}/{2:0} | blob read "
             + "{3:0}/{4:0}/{5:0} | section send {6:0}/{7:0}/{8:0} | offer scan "
-            + "{9:0}/{10:0}/{11:0}; {12} requests queued for {13} players, oldest {14}ms",
+            + "{9:0}/{10:0}/{11:0}; {12} requests queued, {13} reads outstanding "
+            + "for {14} players, oldest {15}ms, {16:0.00} MiB results",
             ServeCost.P95Us, ServeCost.P99Us, ServeCost.MaxUs,
             BlobReadCost.P95Us, BlobReadCost.P99Us, BlobReadCost.MaxUs,
             SectionSendCost.P95Us, SectionSendCost.P99Us, SectionSendCost.MaxUs,
             OfferCost.P95Us, OfferCost.P99Us, OfferCost.MaxUs,
-            pending, pendingByPlayer.Count, oldestAgeMs);
+            pending, readerOutstanding, waitingPlayers, oldestAgeMs,
+            (blobReader?.PendingResultBytes ?? 0) / (1024.0 * 1024.0));
 
         Mod.Logger.Notification(
             "  assist allocation interval MiB/max KiB: serve {0:0.00}/{1:0.0} | blob "
@@ -457,5 +561,13 @@ public class LodAssistServerSystem : ModSystem
 
         Mod.Logger.Debug("VintageHorizons: sent {0} keys to {1} in {2} chunks",
             keys.Length, player.PlayerName, sequence);
+    }
+
+    public override void Dispose()
+    {
+        if (sapi != null) sapi.Event.PlayerDisconnect -= OnPlayerDisconnect;
+        blobReader?.Dispose();
+        blobReader = null;
+        blobReaderPath = null;
     }
 }

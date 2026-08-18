@@ -305,14 +305,6 @@ public class LodPipeline
     }
 
     /// <summary>
-    /// The stored blob for a key, unparsed, for serving over the network. Null when the
-    /// key is not on disk - including when it is resident in RAM but not yet flushed,
-    /// which is why the caller treats a miss as "ask again later" rather than "gone".
-    /// </summary>
-    public byte[]? LoadBlob(long key) => store?.LoadBlob(
-        LodWorld.KeyLevel(key), LodWorld.KeySx(key), LodWorld.KeySz(key));
-
-    /// <summary>
     /// Transfer one foreign compressed blob to the storage-owned decoder. The worker
     /// retains block codes and stored flags only; registry resolution and publication
     /// happen later on this pipeline's owning thread.

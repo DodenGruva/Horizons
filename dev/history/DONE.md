@@ -189,3 +189,19 @@
 - Measured server blob reads at 3.75/17.5/68.755 ms p95/p99/max and preserved before/after
   scenario proofs under `bench/results/2026-08-18-generation-assist`.
 - Expanded the full game-backed fast tier to 933 passing assertions.
+
+## 2026-08-18 — off-thread server-assist blob reads
+
+- Replaced owning-thread server SQLite blob reads with a bounded dedicated reader that
+  owns an unpooled read-only connection and prepared command.
+- Preserved per-player request/send order with session-tagged ordered batches; stale
+  results cannot cross disconnect/reconnect, and failures return explicit retryable state.
+- Removed the shared writable-store blob command and exposed only the server cache path to
+  the assist reader.
+- Added FIFO, cap, exact-byte, miss, failure, and handle-lifetime regression coverage;
+  the full game-backed fast tier increased to 964 passing assertions.
+- Repeated the cold-client/warm-server 64/s scenario: 395 sections were requested,
+  received, and installed with zero declines and all 16 request slots exercised.
+- During a 17.481 ms reader call, owning-thread assist service peaked at 0.989 ms, proving
+  the database wait no longer blocks that thread. A separate 32.450 ms service outlier
+  occurred with sub-0.2 ms reads and remains a different attribution target.

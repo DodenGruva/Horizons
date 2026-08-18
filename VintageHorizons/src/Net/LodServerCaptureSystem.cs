@@ -72,11 +72,8 @@ public class LodServerCaptureSystem : ModSystem
     public long[] SnapshotKeys() =>
         pipeline == null ? Array.Empty<long>() : pipeline.World.HasDataSet.ToArray();
 
-    /// <summary>
-    /// The stored blob for a key, for serving over the network. Main thread only: it
-    /// shares the store connection with the capture that writes it.
-    /// </summary>
-    public byte[]? LoadBlob(long key) => pipeline?.LoadBlob(key);
+    /// <summary>The active server-cache path, used to open the assist's read-only reader.</summary>
+    public string? CachePath => pipeline?.DbPath;
 
     /// <summary>
     /// True when a key we advertised has no stored row YET, as opposed to having none at

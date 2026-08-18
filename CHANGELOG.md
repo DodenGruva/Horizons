@@ -8,6 +8,16 @@ first.
 
 ## [Unreleased]
 
+**Server-assist database reads no longer block the server thread.** Assist blob requests
+now use a bounded dedicated reader with its own unpooled read-only SQLite connection.
+Player-session tags and ordered in-flight batches preserve response order and prevent a
+completed read crossing reconnect; database failures produce explicit retryable replies.
+The repeated 64/s cold-client/warm-server route again requested, received, and installed
+395 sections with zero declines. A 17.481 ms reader call coincided with only 0.989 ms
+maximum owning-thread assist work, directly proving separation. A later 32.450 ms assist
+outlier occurred while reads stayed below 0.2 ms and remains a separate send/GC/scheduling
+tail rather than evidence that SQLite is still on-thread.
+
 **Completed generation/assist evidence and fixed early-join transfer stalls.** The Windows
 runner now proves active server cache state, completed transient generation, and saturated
 assist transfer rather than trusting scenario labels. A radius-8 run generated all 289
@@ -17,8 +27,8 @@ race: all 16 request slots filled before the joining player appeared as `Playing
 50 ms server loop silently removed the queue. Retaining bounded requests until the
 disconnect event reports a real departure let the unchanged rerun request, receive, and
 install 395 sections with no declines and no client 25 ms tick. The run also measured
-synchronous server blob reads at 3.75/17.5/68.755 ms p95/p99/max, making dedicated reader
-ownership the next server-performance target.
+synchronous server blob reads at 3.75/17.5/68.755 ms p95/p99/max, establishing the
+before-change baseline for the dedicated-reader result above.
 
 **Reproducible warm-join and completed-sweep evidence.** The Windows isolated runner can
 now require a warm or cold client cache, pin a server configuration on a fresh process,

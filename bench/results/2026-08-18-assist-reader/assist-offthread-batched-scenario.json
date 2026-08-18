@@ -1,0 +1,42 @@
+{
+  "label": "assist-offthread-batched",
+  "route": "bench/routes/saturated-assist.txt",
+  "clientCacheRequirement": "Cold",
+  "serverCacheRequirement": "Warm",
+  "prelaunchClientCacheFiles": [],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 21422080,
+      "lastWriteUtc": "2026-08-18T12:58:16.4506105Z"
+    }
+  ],
+  "reportedSectionsFromCache": 0,
+  "reportedServerSectionsFromCache": 514,
+  "serverConfig": "bench/configs/saturated-assist.json",
+  "requiredServerText": null,
+  "reportedServerLine": null,
+  "requireGenerationComplete": false,
+  "generation": null,
+  "requiredAssistPeakInFlight": 16,
+  "assist": {
+    "offered": 514,
+    "remoteOnly": 514,
+    "wantedByView": 262,
+    "requested": 395,
+    "received": 395,
+    "installed": 395,
+    "inFlight": 16,
+    "peakInFlight": 16,
+    "declined": 0
+  },
+  "settleSeconds": 45.0,
+  "settleMaxSeconds": 60.0,
+  "measureSeconds": 30.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 0,
+  "serverMod": true,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T13:01:47.5591974Z"
+}

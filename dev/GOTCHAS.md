@@ -90,6 +90,10 @@ clearing is not sufficient: an in-progress worker job may publish after the clea
 
 **Do:** use a dedicated read-only connection owned by the reader thread, or serialize all access through one storage owner.
 
+**Implemented:** Session 15 gives server assist a bounded, unpooled, read-only connection
+created, queried, and disposed by one reader thread. Results retain player session and
+request order until owning-thread packet publication.
+
 ### G10 — Shader source must remain pure ASCII
 
 **Trigger:** editing `.vsh`, `.fsh`, or included shader comments.

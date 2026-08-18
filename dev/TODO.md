@@ -13,9 +13,6 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 ### P1 fixes
 
 - Soak the new asynchronous mip worker during long exploration, restart, and shutdown; verify stale/failure retries and durable `ApplyToParent` convergence under interruption.
-- Move synchronous server-assist blob reads to a dedicated read-only connection with
-  explicit ownership and preserved request/send ordering. A saturated transfer measured
-  3.75/17.5/68.755 ms p95/p99/max for one-at-a-time owning-thread reads.
 
 ### Renderer scaling
 
@@ -46,7 +43,7 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   first run generated server-save terrain and the second reused it, so aggregate FPS is
   not controlled A/B evidence. No person watched the cold route in motion.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
-- The complete game-backed fast tier passes 933 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The complete game-backed fast tier passes 964 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Live server-assist transfer now exercises network request state end to end. Incremental
   sibling-cache discovery and retry-safe local misses remain unexercised in integrated
   singleplayer.
@@ -70,10 +67,11 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - Completed transient generation produced 289/289 columns with zero timeouts or unusable
   height maps and preserved 256/256 sampled absences. This is one radius-8 dedicated-server
   run, not a long/default-radius or integrated-singleplayer soak.
-- Saturated live assist requested, received, and installed 395 sections. Client foreign
-  publication peaked at 2.639 ms and 2 queued / 0.62 MiB / 62 ms old, then drained by 30
-  seconds. Server blob reads reached 68.755 ms maximum; the run used 64/s rather than the
-  default 8/s and no person watched it.
+- The repeated 64/s saturated-assist run again requested, received, and installed 395
+  sections with zero declines. One 17.481 ms background read coincided with a 0.989 ms
+  owning-thread assist maximum, proving separation. A later interval had a 32.450 ms
+  assist outlier while reader calls stayed below 0.2 ms, so packet publication, GC, or
+  process scheduling remains a distinct tail to isolate. No person watched the route.
 - Two warmed steady-stationary on/off pairs measured about 0.7% lower average FPS and
   1.0% lower median FPS with allocation telemetry at roughly 445 uncapped FPS. Their 1%
   lows reversed direction, and ordinary capped-frame-rate overhead remains unmeasured.

@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs, and bounded capture publication are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, and ordered off-thread server-assist blob reads are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client tick/pipeline/render and server pipeline/sweep/generation/assist percentiles, hitch counts, allocation totals, and relevant queue telemetry are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Two warmed stationary A/B pairs measured about 0.7% average-FPS overhead from allocation telemetry. Proven warm-join, completed dedicated-server sweep, completed transient-generation, and saturated live-assist scenarios now exist. Integrated-singleplayer sweep/join remains open; the assist run makes off-thread server blob reads the next measured server slice.
+**Implementation status:** Client tick/pipeline/render and server pipeline/sweep/generation/assist percentiles, hitch counts, allocation totals, and relevant queue telemetry are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Two warmed stationary A/B pairs measured about 0.7% average-FPS overhead from allocation telemetry. Proven warm-join, completed dedicated-server sweep, completed transient-generation, and saturated live-assist scenarios now exist. The repeated assist scenario proves ordered off-thread reads; integrated-singleplayer sweep/join remains open.
 
 ### Client instrumentation
 
@@ -193,14 +193,15 @@ in-motion review of cold coverage arrival remains open before broad runtime acce
 
 ## 7. Phase 4 — smooth periodic server and client work
 
-**Implementation status:** The initial source/harness slice is complete. Sweep and
+**Implementation status:** Complete for the measured dedicated-process slices. Sweep and
 transient generation run on 50 ms fractional allowances with bounded probe issuance;
 server assist uses fair per-player/global allowances and an elapsed deadline. Assist,
 sibling-cache, and background-load installs use FIFO 2 ms / 512 KiB drains with oldest-age
 telemetry and one-item progress. Completed generation and saturated assist now have
-dedicated-process evidence. Client publication drained with no 25 ms tick, but synchronous
-server blob reads reached 68.755 ms maximum; integrated-singleplayer acceptance remains
-open.
+dedicated-process evidence. Server blob reads now run on a bounded dedicated read-only
+connection with ordered owning-thread publication. A repeated saturated run transferred
+395/395 sections; one 17.481 ms reader call coincided with only 0.989 ms maximum assist
+service, directly proving separation. Integrated-singleplayer acceptance remains open.
 
 ### Sweep and generation
 

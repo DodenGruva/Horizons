@@ -30,7 +30,9 @@ Optional server assist adds:
 server cache key manifest
     -> client remote-key skeleton
     -> visibility-driven section requests
-    -> stored compressed section blobs
+    -> bounded dedicated server read-only SQLite reader
+    -> ordered owning-thread packet publication
+    -> stored compressed section blobs on the client
     -> bounded storage-owner inflation and structural decode
     -> owning-thread block-code resolution, recolor, install, and local persistence
 ```
@@ -93,6 +95,16 @@ The integrated-singleplayer sibling-cache scanner exclusively owns its read-only
 connection and its discovered-key set. It never touches `LodWorld`; the owning thread
 applies each published key batch once. Its separate visibility-driven blob connection is
 used only by the owning thread.
+
+### Server-assist blob reader
+
+The assist reader exclusively owns one unpooled read-only SQLite connection and prepared
+blob command. Its single consumer preserves FIFO request order. Queued, executing, and
+completed reads share one bounded outstanding allowance. The server owning thread checks
+current player/radius policy before admission, publishes packets under its serving
+deadline, and turns a reader failure into an explicit retryable response. Per-player
+session identity prevents a completed read from crossing disconnect/reconnect, and an
+ordered in-flight batch prevents a later refusal from overtaking an earlier read.
 
 ### Render thread
 
@@ -182,6 +194,8 @@ The server must answer every accepted section request, including explicit refusa
 - No worker mutates `LodWorld` or a live section.
 - No background task reads the live block registry.
 - Every asynchronous request eventually produces success, explicit failure, cancellation, or retryable state.
+- A completed server-assist read cannot cross player-session identity or reorder a later
+  response ahead of an earlier accepted read.
 - Queue backpressure is applied before retaining large chunk, mesh, or section snapshots.
 - Dirty state is cleared only when responsibility for that exact revision has transferred safely.
 - A stale result cannot overwrite a newer section revision.

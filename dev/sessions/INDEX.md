@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 15 | 2026-08-18 | 0.2.1 | — | Moved server-assist blobs to an ordered read-only worker; 395 sections transferred and a 17.481 ms read no longer blocked assist service. |
 | 14 | 2026-08-18 | 0.2.1 | — | Added semantic generation/assist scenarios; fixed an early-join request drop; 395 live sections transferred and synchronous server reads reached 68.755 ms. |
 | 13 | 2026-08-18 | 0.2.1 | — | Added cache-state and server-completion benchmark proofs; warm join and a 3,249-position sweep completed without ≥25 ms VH/server ticks. |
 | 12 | 2026-08-17 | 0.2.1 | — | Added server pipeline/sweep/generation/assist telemetry and real stats A/B controls; warmed stationary pairs measured about 0.7% average-FPS overhead. |
