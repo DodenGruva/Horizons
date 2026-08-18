@@ -288,6 +288,14 @@ and any further optimization of the owning-thread publication tail remain open.
 
 ## 10. Phase 7 — visibility-aware renderer and bounded uploads
 
+**Implementation status:** Visibility-aware traversal and its separate distance/age mesh
+residency policy are source-, harness-, and controlled-runtime-complete at 601 cached
+sections. The same-cache pair reduced selected nodes 64.2%, weighted average traversal
+19.8%, and weighted average draw submission 9.3%, while retaining 543 meshes with zero
+evictions. Aggregate FPS was unchanged within run noise and is not claimed. A
+thousands-section scale run and human clipping/turn-around review remain open, as do dirty
+scheduling and upload budgets.
+
 ### Traversal
 
 - Frustum-test a node's world-space bounds before descending.

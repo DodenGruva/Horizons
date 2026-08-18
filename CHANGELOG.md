@@ -8,6 +8,17 @@ first.
 
 ## [Unreleased]
 
+**Visibility-aware quadtree traversal has controlled runtime evidence.** The renderer now
+rejects a node's conservative world-height frustum box before descending, so an invisible
+subtree performs no draw selection or mesh demand. Refinement waits only for visible child
+slots. GPU residency uses a separate distance-and-age policy aligned with CPU section
+eviction, so camera direction cannot evict the mesh hierarchy behind the player. In a
+same-cache 601-section dedicated-process comparison, selected nodes fell 64.2%, weighted
+average traversal time fell 19.8%, and weighted average draw-submission time fell 9.3%.
+Both sides retained 543 meshes with zero evictions and zero reported 25 ms game ticks.
+Aggregate FPS was effectively unchanged and is not claimed as an improvement. A
+thousands-section scale run and human in-motion clipping/turn-around review remain open.
+
 **Interrupted mip work now has durable restart evidence.** The isolated Windows runner can
 wait until a real `ApplyToParent` row is written, revalidate and terminate only its sandbox
 client, then require the recovery process to load persisted mip work and converge all

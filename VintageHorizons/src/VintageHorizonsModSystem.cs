@@ -796,7 +796,7 @@ public class VintageHorizonsModSystem : ModSystem
 
         Mod.Logger.Notification(
             "{0}: {1} sections resident [{2}] ({3} RAM-evicted, {4} from cache), {5} meshes ({6} evicted), " +
-            "{7} selected [{8}] minus {9} frustum-culled, {10} columns captured, {11} pending, " +
+            "{7} selected [{8}] minus {9} draw-culled ({22} subtrees traversal-culled), {10} columns captured, {11} pending, " +
             "worker: {12} captures / {13} meshes / {14} mips queued / {15}+{16}+{17} errors, " +
             "{18} awaiting mip ({19} in flight), {20} render-dirty, {21} unsaved",
             prefix, world.Sections.Count, world.DescribeLevels(), world.EvictedSectionsTotal, pipeline.CachedSectionsLoaded,
@@ -804,7 +804,8 @@ public class VintageHorizonsModSystem : ModSystem
             renderer.LastCulledCount, pipeline.ColumnsCaptured, pipeline.PendingColumns,
             worker.PendingCaptures, worker.PendingMeshes, worker.PendingMips,
             worker.CaptureErrors, worker.MeshErrors, worker.MipErrors,
-            world.MipDirty.Count, world.MipInFlightCount, world.RenderDirty.Count, world.SaveDirty.Count);
+            world.MipDirty.Count, world.MipInFlightCount, world.RenderDirty.Count, world.SaveDirty.Count,
+            renderer.LastTraversalCulledCount);
 
         Mod.Logger.Notification(
             "  storage on main thread since last report: snapshot {0} calls, {1:0.00}ms avg, {2:0.00}ms max | " +
@@ -1054,7 +1055,9 @@ public class VintageHorizonsModSystem : ModSystem
                 : TextCommandResult.Success(
                 $"[VintageHorizons] sections: {pipeline.World.Sections.Count} [{pipeline.World.DescribeLevels()}] " +
                 $"({pipeline.CachedSectionsLoaded} from cache), meshes: {renderer.MeshCount}, " +
-                $"drawn: {renderer.LastDrawCount} [{renderer.DescribeDrawnLevels()}], " +
+                $"drawn: {renderer.LastDrawCount} [{renderer.DescribeDrawnLevels()}] " +
+                $"({renderer.LastTraversalCulledCount} subtrees traversal-culled, " +
+                $"{renderer.LastCulledCount} selected nodes draw-culled), " +
                 $"columns captured: {pipeline.ColumnsCaptured}, pending: {pipeline.PendingColumns}, " +
                 $"worker: {pipeline.Worker.PendingCaptures}c/{pipeline.Worker.PendingMeshes}m/{pipeline.Worker.PendingMips}p, " +
                 $"awaiting mip: {pipeline.World.MipDirty.Count} ({pipeline.World.MipInFlightCount} in flight), " +

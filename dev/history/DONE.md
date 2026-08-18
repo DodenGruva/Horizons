@@ -232,3 +232,18 @@
   obligations and again passed semantic convergence.
 - Preserved scenario records, CSVs, context, and limitations under
   `bench/results/2026-08-18-mip-interruption` and expanded the fast tier to 968 assertions.
+
+## 2026-08-18 — visibility-aware traversal and independent residency
+
+- Frustum-tested conservative quadtree node bounds before descent so invisible subtrees
+  no longer select draws, request meshes, or gate refinement on invisible children.
+- Separated mesh retention from visibility with distance/age residency and added focused
+  traversal/residency checks plus explicit subtree-rejection telemetry.
+- Ran a byte-identical 601-section cache comparison: selected nodes fell 64.2%, weighted
+  average traversal time 19.8%, and weighted average draw submission 9.3%.
+- Both sides retained 543 meshes with zero evictions and reported no 25 ms Vintage
+  Horizons tick; aggregate FPS was effectively unchanged and is not claimed as a gain.
+- Preserved the production functional run, controlled frame/scenario results, 28 matched
+  telemetry intervals, method, and limitations under
+  `bench/results/2026-08-18-visibility-traversal`.
+- Expanded the game-backed fast tier to 975 assertions across 23 suites.

@@ -1,0 +1,60 @@
+{
+  "label": "visibility-controlled-off-2026-08-18",
+  "route": "bench/routes/moving-rotation.txt",
+  "clientCacheRequirement": "Warm",
+  "serverCacheRequirement": "Any",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 30015488,
+      "lastWriteUtc": "2026-08-18T15:06:34.8794406Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 21422080,
+      "lastWriteUtc": "2026-08-18T13:01:47.2009543Z"
+    }
+  ],
+  "reportedSectionsFromCache": 601,
+  "reportedServerSectionsFromCache": null,
+  "serverConfig": null,
+  "requiredServerText": null,
+  "reportedServerLine": null,
+  "requireGenerationComplete": false,
+  "generation": null,
+  "requireMipConvergence": true,
+  "mipConvergence": {
+    "line": "18.8.2026 10:18:23 [Notification] [vintagehorizons] Stats: 543 sections resident [L0:362 L1:115 L2:35 L3:13 L4:10 L5:8 L6:0] (0 RAM-evicted, 601 from cache), 543 meshes (0 evicted), 349 selected [L0:315 L1:30 L2:0 L3:0 L4:4 L5:0 L6:0] minus 310 draw-culled (0 subtrees traversal-culled), 3910 columns captured, 0 pending, worker: 0 captures / 0 meshes / 0 mips queued / 0+0+0 errors, 0 awaiting mip (0 in flight), 0 render-dirty, 0 unsaved",
+    "pendingColumns": 0,
+    "pendingCaptures": 0,
+    "pendingMeshes": 0,
+    "pendingMips": 0,
+    "captureErrors": 0,
+    "meshErrors": 0,
+    "mipErrors": 0,
+    "awaitingMip": 0,
+    "mipInFlight": 0,
+    "renderDirty": 0,
+    "unsaved": 0,
+    "pendingCaptureResults": 0,
+    "storageWriteBacklog": 0,
+    "storageWriteErrors": 0,
+    "asyncLoadsInFlight": 0,
+    "storageReadErrors": 0
+  },
+  "requireMipRecovery": false,
+  "persistedMipObligationsLoaded": 0,
+  "requiredAssistPeakInFlight": 0,
+  "assist": null,
+  "settleSeconds": 20.0,
+  "settleMaxSeconds": 90.0,
+  "measureSeconds": 30.0,
+  "measuredLaps": 1,
+  "warmupLaps": 1,
+  "cooldownSeconds": 30,
+  "serverMod": false,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T15:18:28.3884232Z"
+}

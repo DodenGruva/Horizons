@@ -28,6 +28,7 @@ public static class Program
         ("pure", "lod mod deferral", DeferralChecks.Run),
         ("fixture", "blob format", StoreChecks.Run),
         ("fixture", "frustum", FrustumChecks.Run),
+        ("fixture", "visibility traversal", TraversalChecks.Run),
         ("fixture", "block policy", PolicyChecks.Run),
         ("pure", "remote keys", RemoteKeyChecks.Run),
         ("pure", "chunk generation", GenerateChecks.Run),

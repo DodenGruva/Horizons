@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+visibility-traversal-2026-08-18,east-full-turn,512020,230,512010,2,14066,465.3,465.8,273.5,2.15,3.66,0.7,10.2,1909,4060,21.0,0
+visibility-traversal-2026-08-18,south-full-turn,512420,230,512010,2,13451,446.5,444.3,250.5,2.24,3.99,0.4,12.4,2230,4078,21.0,0
+visibility-traversal-2026-08-18,west-full-turn,512420,230,512410,2,13016,432.3,442.0,271.1,2.31,3.69,0.4,0.7,2374,4280,21.0,0
+visibility-traversal-2026-08-18,north-full-turn,512020,230,512410,2,14657,487.4,481.7,281.1,2.05,3.56,0.2,8.0,2034,4292,21.0,0

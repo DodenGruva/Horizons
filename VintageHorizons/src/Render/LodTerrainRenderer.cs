@@ -70,7 +70,10 @@ public class LodTerrainRenderer : IRenderer
     readonly LodMeshBounds meshBounds = new();
     readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
-    readonly Dictionary<long, long> lastSelectedFrame = new();
+    // Visibility is intentionally absent from this state. The camera may stop walking
+    // an off-screen subtree, but distance-based residency still keeps appropriate meshes
+    // warm for a turn-around (G8).
+    readonly Dictionary<long, long> lastResidencyFrame = new();
     readonly List<long> evictBatch = new();
     long frameCounter;
 
@@ -105,6 +108,9 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Sections selected by the walk but skipped this frame as off-screen.</summary>
     public int LastCulledCount { get; private set; }
+
+    /// <summary>Whole quadtree subtrees rejected before descent this frame.</summary>
+    public int LastTraversalCulledCount { get; private set; }
 
     readonly LodFrustum frustum = new();
     int worldHeight = 1024;
@@ -248,7 +254,7 @@ public class LodTerrainRenderer : IRenderer
 
     bool HasAnyMesh(long key) => sectionMeshes.ContainsKey(key) || waterMeshes.ContainsKey(key);
 
-    bool AllChildrenCovered(long key)
+    bool AllVisibleChildrenCovered(long key)
     {
         bool covered = true;
         for (int qz = 0; qz < 2; qz++)
@@ -257,6 +263,8 @@ public class LodTerrainRenderer : IRenderer
             {
                 long ck = LodWorld.ChildKey(key, qx, qz);
                 if (!world.HasDataSet.Contains(ck)) continue;
+                if (!LodTraversalPolicy.NodeInView(frustum, ck,
+                    camPos.X, camPos.Y, camPos.Z, worldHeight)) continue;
 
                 // A resident section with nothing captured will never get a mesh --
                 // RequestMesh refuses it, by design. Counting it as uncovered pins the
@@ -269,13 +277,9 @@ public class LodTerrainRenderer : IRenderer
                     continue;
                 }
 
-                if (HasAnyMesh(ck))
-                {
-                    // Gate meshes are load-bearing even when never drawn (the walk
-                    // descends THROUGH them) - stamp so the evictor spares them.
-                    lastSelectedFrame[ck] = frameCounter;
-                }
-                else
+                // Gate meshes are load-bearing even when never drawn. Residency is
+                // maintained independently by the distance-based eviction sweep.
+                if (!HasAnyMesh(ck))
                 {
                     // Missing gate: re-request (evicted, or never built) so descent
                     // can resume; the parent keeps covering meanwhile.
@@ -289,6 +293,15 @@ public class LodTerrainRenderer : IRenderer
 
     bool CollectDrawNodes(long key)
     {
+        // A rejected parent contains every descendant, so the conservative p-vertex box
+        // test makes it safe to skip all draw selection, mesh demand, and child traversal.
+        if (!LodTraversalPolicy.NodeInView(frustum, key,
+            camPos.X, camPos.Y, camPos.Z, worldHeight))
+        {
+            traversalCulledThisFrame++;
+            return false;
+        }
+
         bool hasMesh = HasAnyMesh(key);
         int level = LodWorld.KeyLevel(key);
         int wanted = LodWorld.WantedLevelForSq(NearestDistanceSqTo(key));
@@ -299,7 +312,7 @@ public class LodTerrainRenderer : IRenderer
         // until the wanted level for their own distance says otherwise.
         if (!hasMesh && level == wanted) RequestMesh(key);
 
-        if (level > 0 && ((level > wanted && AllChildrenCovered(key)) || !hasMesh))
+        if (level > 0 && ((level > wanted && AllVisibleChildrenCovered(key)) || !hasMesh))
         {
             bool anyChildDrew = false;
             for (int qz = 0; qz < 2; qz++)
@@ -316,7 +329,6 @@ public class LodTerrainRenderer : IRenderer
         if (hasMesh)
         {
             drawList.Add(key);
-            lastSelectedFrame[key] = frameCounter;
             return true;
         }
         return false;
@@ -393,7 +405,7 @@ public class LodTerrainRenderer : IRenderer
         evictBatch.Clear();
         foreach ((long key, MeshRef _) in sectionMeshes)
         {
-            if (!lastSelectedFrame.TryGetValue(key, out long last) || frameCounter - last > EvictAfterFrames)
+            if (ShouldEvictMesh(key))
             {
                 evictBatch.Add(key);
             }
@@ -401,7 +413,7 @@ public class LodTerrainRenderer : IRenderer
         foreach ((long key, MeshRef _) in waterMeshes)
         {
             if (!sectionMeshes.ContainsKey(key)
-                && (!lastSelectedFrame.TryGetValue(key, out long last) || frameCounter - last > EvictAfterFrames))
+                && ShouldEvictMesh(key))
             {
                 evictBatch.Add(key);
             }
@@ -410,9 +422,21 @@ public class LodTerrainRenderer : IRenderer
         foreach (long key in evictBatch)
         {
             RemoveMeshes(key);
-            lastSelectedFrame.Remove(key);
+            lastResidencyFrame.Remove(key);
             EvictedTotal++;
         }
+    }
+
+    bool ShouldEvictMesh(long key)
+    {
+        if (LodTraversalPolicy.WithinResidencyBand(key, camPos.X, camPos.Z))
+        {
+            lastResidencyFrame[key] = frameCounter;
+            return false;
+        }
+
+        return !lastResidencyFrame.TryGetValue(key, out long last)
+            || frameCounter - last > EvictAfterFrames;
     }
 
     // ---- Mesh job scheduling + result upload ----
@@ -580,8 +604,9 @@ public class LodTerrainRenderer : IRenderer
             if (!hadMesh && hasMesh) meshBounds.Include(result.Key);
             else if (hadMesh && !hasMesh) meshBounds.Remove(result.Key);
 
-            // Fresh uploads get a grace stamp so they aren't evicted before first selection.
-            lastSelectedFrame[result.Key] = frameCounter;
+            // Fresh uploads get an age grace period. Later retention depends on distance,
+            // never on whether the current camera happens to see the mesh.
+            lastResidencyFrame[result.Key] = frameCounter;
         }
     }
 
@@ -663,23 +688,30 @@ public class LodTerrainRenderer : IRenderer
         FarDistanceCost.Add(phaseStart);
         ApplyZFar();
 
+        // The traversal and draw cull use the exact matrices handed to the shader. This
+        // must happen after ApplyZFar, because that can rebuild the projection matrix.
+        worldHeight = capi.World.BlockAccessor.MapSizeY;
+        frustum.Update(rapi.CurrentProjectionMatrix, rapi.CameraMatrixOriginf);
+        traversalCulledThisFrame = 0;
+        culledThisFrame = 0;
+
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         drawList.Clear();
         foreach (long top in world.TopLevelKeys) CollectDrawNodes(top);
         WalkCost.Add(phaseStart);
         LastDrawCount = drawList.Count;
-        if (drawList.Count == 0) return;
+        LastTraversalCulledCount = traversalCulledThisFrame;
+        if (drawList.Count == 0)
+        {
+            LastCulledCount = 0;
+            return;
+        }
 
         prog.Use();
         rapi.GlDisableCullFace();
 
         prog.UniformMatrix("viewMatrix", rapi.CameraMatrixOriginf);
         prog.UniformMatrix("projectionMatrix", rapi.CurrentProjectionMatrix);
-
-        // Same matrices the shader gets, so the cull can never disagree with the draw.
-        worldHeight = capi.World.BlockAccessor.MapSizeY;
-        frustum.Update(rapi.CurrentProjectionMatrix, rapi.CameraMatrixOriginf);
-        culledThisFrame = 0;
 
         prog.Uniform("sunPosition", capi.World.Calendar.SunPositionNormalized);
         prog.Uniform("sunColor", capi.World.Calendar.SunColor);
@@ -780,6 +812,7 @@ public class LodTerrainRenderer : IRenderer
     }
 
     int culledThisFrame;
+    int traversalCulledThisFrame;
 
     /// <summary>
     /// Whether the neighbouring section holds (or covers) data. Checked at the drawn
@@ -800,7 +833,7 @@ public class LodTerrainRenderer : IRenderer
         appliedZFar = 0;
         EffectiveFarDistance = LodFarDistance.MinimumProjectionDistance;
         meshJobInFlight.Clear();
-        lastSelectedFrame.Clear();
+        lastResidencyFrame.Clear();
     }
 
     public void Dispose()

@@ -5,7 +5,7 @@
 **Status date:** 2026-08-18
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `35` C# files under `VintageHorizons/src`
+**Source files:** `36` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -77,6 +77,11 @@ frame CSV.
 22. A guarded interruption route now waits for a durable `ApplyToParent` write before
 terminating the pidfile-verified sandbox client. Recovery must report persisted mip work
 and converge cleanly; a later fresh process verifies that the cleared state reached disk.
+23. Quadtree traversal rejects conservative off-screen node bounds before descending or
+requesting meshes. Visible refinement gates only on visible children. Mesh residency uses
+an independent distance/age policy with a one-detail-level grace band, so view direction
+does not control eviction. A controlled same-cache route reduced selected nodes 64.2%,
+weighted average traversal time 19.8%, and weighted average draw-submission time 9.3%.
 
 ## 4. Measured diagnosis and result
 
@@ -166,6 +171,17 @@ persisted mip obligations and reached the same clean state. This establishes dur
 client-cache recovery from a hard process interruption in dedicated server/client mode;
 integrated singleplayer remains separate verification debt.
 
+A dedicated visibility-traversal route then exercised a 601-section warm client cache
+through full turns at four waypoints. In a controlled same-cache pair, early subtree
+rejection reduced mean selected nodes from 360.1 to 128.9 (-64.2%), weighted mean
+traversal time from 66.0 to 52.9 microseconds (-19.8%), and weighted mean draw-submission
+time from 107.8 to 97.8 microseconds (-9.3%). Both sides retained 543 meshes with zero
+evictions, reported no 25 ms Vintage Horizons tick, and converged all guarded queues and
+durability state to zero. Mean waypoint average FPS changed from 463.4 to 459.4 and mean
+1% low from 292.4 to 292.3, so no aggregate FPS improvement is claimed from this one
+ordered pair. Static endpoint screenshots showed no obvious new camera-edge holes, but
+they do not replace human review in motion or a thousands-section scaling run.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -174,7 +190,10 @@ integrated singleplayer remains separate verification debt.
 contained a 32.450 ms service outlier in an interval whose reader and individual-send
 maxima were only 0.179/0.249 ms; packet serialization, GC, and process scheduling are not
 yet separately attributed.
-4. Dirty pruning, scheduling, and quadtree work still scale with whole collections; GPU upload remains limited by mesh count rather than time/bytes.
+4. Dirty pruning and scheduling still scale with whole collections; GPU upload remains
+limited by mesh count rather than time/bytes. Visibility-aware traversal now has a
+controlled 601-section runtime reduction, but scaling at thousands of cached sections is
+not established.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -192,8 +211,8 @@ have dedicated-process evidence.
 
 ## 7. Current open work
 
-1. Time/byte-budget GPU uploads and make traversal/scheduling visibility-aware without
-coupling visibility to residency.
+1. Extend visibility-aware traversal validation to a thousands-section cache and human
+in-motion review, replace whole-dirty-set scheduling, and time/byte-budget GPU uploads.
 2. Repeat mip interruption/recovery and exercise sibling-cache discovery/retryable local
 misses in integrated singleplayer.
 3. Add storage save revisions, acknowledgements, retry, and shutdown durability.
@@ -221,11 +240,19 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Capture publication is result-boundary time/byte/item bounded; queued/in-progress jobs and completed/deferred results share backpressure, and cross-world results are rejected by epoch.
 - Server-assist blob SQL exists only in the dedicated read-only reader; the server thread
   admits ordered session-tagged work and publishes completed packets.
+- Quadtree nodes are frustum-tested before descent; invisible subtrees cannot request
+  meshes. Visible-child coverage remains conservative, while eviction uses a separate
+  distance/age residency timestamp that camera visibility never updates.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 247 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 968 assertions across all 22 suites, including 53 benchmark-route/config/camera-mapping, the durable-mip interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
+- `dev/DocCheck.ps1` passes 258 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 975 assertions across all 23 suites, including 7
+  visibility-traversal/residency, 53 benchmark-route/config/camera-mapping, the durable-mip
+  interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader
+  FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
+  accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite
+  discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
 - Two full corrected warm-cache-route CSVs and their machine/settings context are tracked under `bench/results/2026-08-17-moving-rotation`. The baseline/follow-up completed all measured legs with zero settle timeouts, zero tick hitches, and graceful isolated shutdown. Large screenshots and sandbox logs remain intentionally ignored.
@@ -253,6 +280,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   tracked under `bench/results/2026-08-18-mip-interruption`. One durable obligation
   survived termination, loaded and converged after restart, and the next process reported
   zero persisted obligations.
+- The production functional route and controlled same-cache visibility off/on pair are
+  tracked under `bench/results/2026-08-18-visibility-traversal`. Across 14 matched
+  intervals per side, selected nodes fell 64.2%, weighted average traversal time 19.8%,
+  and weighted average draw submission 9.3%; both sides retained 543 meshes with zero
+  evictions and no reported 25 ms Vintage Horizons tick.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Human-tested
@@ -269,6 +301,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   completed-generation, or saturated-assist routes in motion; long join/sweep/assist
   soaks remain untested.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
+- Visibility-aware subtree traversal and independent mesh residency have source, harness,
+  and controlled 601-section dedicated-process evidence. No thousands-section route or
+  human in-motion review has yet established broader scaling, clipping behavior, or
+  subjective turn-around quality.
 - The completed sweep ran in separate dedicated-server/client processes with a warm
   server cache, a calibrated 24-chunk radius, serving disabled, and generation disabled.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior
