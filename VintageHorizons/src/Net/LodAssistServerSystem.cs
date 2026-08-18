@@ -265,7 +265,12 @@ public class LodAssistServerSystem : ModSystem
             if (sapi.World.PlayerByUid(uid) is not IServerPlayer player
                 || player.ConnectionState != EnumClientState.Playing)
             {
-                (emptied ??= new List<string>()).Add(uid);
+                // A section request can arrive during join before PlayerByUid exposes the
+                // player as Playing. The 50 ms serve cadence makes that race much easier to
+                // hit than the old once-per-second callback. Dropping the queue here sends no
+                // reply and strands every client in-flight slot. A real disconnect already
+                // removes the bounded queue in OnPlayerDisconnect, so retain this transient
+                // state and try it again on the next tick.
                 continue;
             }
 

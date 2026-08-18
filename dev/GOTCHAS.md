@@ -235,6 +235,20 @@ apparently short completion scenario several minutes long.
 **Do:** budget probe work as `(2 * (radius + LodColumnMap.SafeNeighbourhood) + 1)^2`, then
 calibrate load/generation time separately from measured evidence.
 
+### G23 — A joining player is not a disconnected player
+
+**Trigger:** servicing a server-assist request queue during connection or world join.
+
+**Trap:** the client can request sections after the assist handshake but before
+`PlayerByUid` exposes it as `Playing`. The 50 ms server loop treated that transient state
+as a departure, removed the bounded queue without a reply, and stranded all 16 client
+request slots. A completed frame CSV hid the failure until the scenario required actual
+received and installed sections.
+
+**Do:** retain the bounded queue through transient join state. Let the server's player
+disconnect event own real queue cleanup, and require transfer postconditions rather than
+inferring success from a handshake or a saturated request counter.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

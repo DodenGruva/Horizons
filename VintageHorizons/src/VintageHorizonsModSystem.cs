@@ -819,10 +819,10 @@ public class VintageHorizonsModSystem : ModSystem
         {
             Mod.Logger.Notification(
                 "  server assist: {0} offered, {1} remote-only, {2} wanted by view, {3} requested, " +
-                "{4} received, {5} installed, {6} in flight, {7} declined",
+                "{4} received, {5} installed, {6} in flight, peak {7}, {8} declined",
                 assist.RemoteKeys.Count, pipeline.RemoteOnly.Count, pipeline.RemoteWanted().Length,
                 assist.SectionsRequested, assist.SectionsReceived, pipeline.ForeignSectionsInstalled,
-                assist.InFlight, assist.SectionsRefused);
+                assist.InFlight, assist.PeakInFlight, assist.SectionsRefused);
         }
 
         // Repairing means the cache on disk was written without colours, which drew as

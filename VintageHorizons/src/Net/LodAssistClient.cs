@@ -187,6 +187,12 @@ public sealed class LodAssistClient
     const int MaxRetriesPerKey = 8;
 
     public int InFlight => inFlight.Count;
+    /// <summary>
+    /// Largest number of request slots held at once in this world. This cumulative high-water
+    /// mark lets an integration benchmark prove that it exercised the protocol's normal
+    /// saturation point even when the server drains all slots before the next stats interval.
+    /// </summary>
+    public int PeakInFlight { get; private set; }
     public int SectionsReceived { get; private set; }
     public int SectionsRefused => refused.Count;
     public int PendingArrivals => Arrived.Count;
@@ -248,6 +254,7 @@ public sealed class LodAssistClient
             if (!RemoteKeys.Contains(key) || refused.Contains(key) || !inFlight.Add(key)) continue;
             (batch ??= new List<long>()).Add(key);
         }
+        PeakInFlight = Math.Max(PeakInFlight, inFlight.Count);
         return batch?.ToArray() ?? Array.Empty<long>();
     }
 
@@ -422,6 +429,7 @@ public sealed class LodAssistClient
         retryNotBeforeByKey.Clear();
         SectionsReceived = 0;
         SectionsRequested = 0;
+        PeakInFlight = 0;
         ResetPumpStats();
         while (manifestChunks.TryDequeue(out _)) { }
         while (Arrived.TryDequeue(out var stale))

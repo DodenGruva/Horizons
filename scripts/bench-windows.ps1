@@ -17,8 +17,13 @@ param(
     [string]$AutoCommand,
     [ValidateSet('Any', 'Warm', 'Cold')]
     [string]$ClientCache = 'Any',
+    [ValidateSet('Any', 'Warm', 'Cold')]
+    [string]$ServerCache = 'Any',
     [string]$ServerConfig,
     [string]$RequireServerText,
+    [switch]$RequireGenerationComplete,
+    [ValidateRange(0, 256)]
+    [int]$RequireAssistPeakInFlight = 0,
     [switch]$ReuseServer,
     [switch]$Watch
 )
@@ -118,6 +123,17 @@ function Assert-RequestedClientCacheState {
     }
 }
 
+function Assert-RequestedServerCacheState {
+    param([object[]]$Files)
+
+    if ($ServerCache -eq 'Warm' -and $Files.Count -eq 0) {
+        throw "Warm server-cache benchmark requested, but $serverCacheDir contains no .db files. Populate the isolated server cache first."
+    }
+    if ($ServerCache -eq 'Cold' -and $Files.Count -ne 0) {
+        throw "Cold server-cache benchmark requested, but $serverCacheDir contains $($Files.Count) .db file(s). Move them to a recoverable sandbox archive first."
+    }
+}
+
 function Get-ReportedCachedSectionCount {
     if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
     $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
@@ -126,6 +142,84 @@ function Get-ReportedCachedSectionCount {
         'Level finalized\. LOD capture active \(render distance: [^,]+, (?<count>\d+) sections from cache')
     if ($found.Count -eq 0) { return $null }
     return [int64]$found[$found.Count - 1].Groups['count'].Value
+}
+
+function Get-ReportedServerCachedSectionCount {
+    if (-not (Test-Path -LiteralPath $serverOut -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $serverOut -Raw -ErrorAction Stop
+    $found = [regex]::Matches(
+        $logText,
+        'Server LOD capture active \((?<count>\d+) sections from cache\)')
+    if ($found.Count -eq 0) { return $null }
+    return [int64]$found[$found.Count - 1].Groups['count'].Value
+}
+
+function Get-CompletedGenerationRecord {
+    if (-not (Test-Path -LiteralPath $serverOut -PathType Leaf)) { return $null }
+    $line = @(Get-Content -LiteralPath $serverOut -ErrorAction Stop |
+        Where-Object { $_.Contains('Generation finished around block ', [StringComparison]::Ordinal) } |
+        Select-Object -Last 1)[0]
+    if (-not $line) { return $null }
+
+    $summaryPattern =
+        'Generation finished around block (?<x>-?\d+),(?<z>-?\d+): (?<total>\d+) columns - ' +
+        '(?<generated>\d+) generated, (?<loaded>\d+) loaded from the savegame, ' +
+        '(?<frontier>\d+) skipped on the frontier, (?<height>\d+) without a height map, ' +
+        '(?<timedOut>\d+) timed out'
+    $summary = [regex]::Match($line, $summaryPattern)
+    $verified = [regex]::Match($line,
+        'Verified (?<preserved>\d+)/(?<checked>\d+) sampled absent positions still absent')
+    if (-not $summary.Success -or -not $verified.Success) { return $null }
+
+    return [ordered]@{
+        line = $line
+        centreBlockX = [int64]$summary.Groups['x'].Value
+        centreBlockZ = [int64]$summary.Groups['z'].Value
+        totalColumns = [int64]$summary.Groups['total'].Value
+        generated = [int64]$summary.Groups['generated'].Value
+        loaded = [int64]$summary.Groups['loaded'].Value
+        skippedFrontier = [int64]$summary.Groups['frontier'].Value
+        withoutHeightMap = [int64]$summary.Groups['height'].Value
+        timedOut = [int64]$summary.Groups['timedOut'].Value
+        preservedAbsent = [int64]$verified.Groups['preserved'].Value
+        checkedAbsent = [int64]$verified.Groups['checked'].Value
+    }
+}
+
+function Get-ClientAssistRecord {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
+    $assistPattern =
+        'server assist: (?<offered>\d+) offered, (?<remote>\d+) remote-only, ' +
+        '(?<wanted>\d+) wanted by view, (?<requested>\d+) requested, ' +
+        '(?<received>\d+) received, (?<installed>\d+) installed, ' +
+        '(?<inFlight>\d+) in flight, peak (?<peak>\d+), (?<declined>\d+) declined'
+    $found = [regex]::Matches($logText, $assistPattern)
+    if ($found.Count -eq 0) { return $null }
+
+    $record = [ordered]@{
+        offered = 0L
+        remoteOnly = 0L
+        wantedByView = 0L
+        requested = 0L
+        received = 0L
+        installed = 0L
+        inFlight = 0L
+        peakInFlight = 0L
+        declined = 0L
+    }
+    foreach ($match in $found) {
+        $record.offered = [Math]::Max($record.offered, [int64]$match.Groups['offered'].Value)
+        $record.remoteOnly = [Math]::Max($record.remoteOnly, [int64]$match.Groups['remote'].Value)
+        $record.wantedByView = [Math]::Max($record.wantedByView, [int64]$match.Groups['wanted'].Value)
+        $record.requested = [Math]::Max($record.requested, [int64]$match.Groups['requested'].Value)
+        $record.received = [Math]::Max($record.received, [int64]$match.Groups['received'].Value)
+        $record.installed = [Math]::Max($record.installed, [int64]$match.Groups['installed'].Value)
+        $record.inFlight = [Math]::Max($record.inFlight, [int64]$match.Groups['inFlight'].Value)
+        $record.peakInFlight = [Math]::Max($record.peakInFlight, [int64]$match.Groups['peak'].Value)
+        $record.declined = [Math]::Max($record.declined, [int64]$match.Groups['declined'].Value)
+    }
+    return $record
 }
 
 function Get-CacheRecord {
@@ -150,6 +244,15 @@ function Get-LastLogLineContaining {
 if ($serverConfigPath -and -not $ServerMod) {
     throw '-ServerConfig requires -ServerMod so the pinned settings have a consumer.'
 }
+if ($ServerCache -ne 'Any' -and -not $ServerMod) {
+    throw '-ServerCache requires -ServerMod so an active server cache can be verified.'
+}
+if ($RequireGenerationComplete -and -not $ServerMod) {
+    throw '-RequireGenerationComplete requires -ServerMod.'
+}
+if ($RequireAssistPeakInFlight -gt 0 -and -not $ServerMod) {
+    throw '-RequireAssistPeakInFlight requires -ServerMod.'
+}
 
 $requiredInputs = @(
     (Join-Path $game 'Vintagestory.dll'),
@@ -173,6 +276,7 @@ $prelaunchCacheRecord = @($prelaunchCacheFiles | ForEach-Object {
     }
 })
 $prelaunchServerCacheRecord = @(Get-CacheRecord $serverCacheDir)
+Assert-RequestedServerCacheState $prelaunchServerCacheRecord
 
 $existingClient = Get-SandboxProcess $clientPidFile
 if ($null -ne $existingClient) { throw "Sandbox client $($existingClient.Id) is already running." }
@@ -313,19 +417,28 @@ try {
     }
 
     $reportedCachedSections = Get-ReportedCachedSectionCount
+    $reportedServerCachedSections = Get-ReportedServerCachedSectionCount
     $reportedServerLine = Get-LastLogLineContaining $serverOut $RequireServerText
+    $generationRecord = Get-CompletedGenerationRecord
+    $assistRecord = Get-ClientAssistRecord
     $scenarioRecord = [ordered]@{
         label = $Label
         route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
         clientCacheRequirement = $ClientCache
+        serverCacheRequirement = $ServerCache
         prelaunchClientCacheFiles = $prelaunchCacheRecord
         prelaunchServerCacheFiles = $prelaunchServerCacheRecord
         reportedSectionsFromCache = $reportedCachedSections
+        reportedServerSectionsFromCache = $reportedServerCachedSections
         serverConfig = if ($serverConfigPath) {
             [IO.Path]::GetRelativePath($repoRoot, $serverConfigPath).Replace('\', '/')
         } else { $null }
         requiredServerText = if ($RequireServerText) { $RequireServerText } else { $null }
         reportedServerLine = $reportedServerLine
+        requireGenerationComplete = [bool]$RequireGenerationComplete
+        generation = $generationRecord
+        requiredAssistPeakInFlight = $RequireAssistPeakInFlight
+        assist = $assistRecord
         settleSeconds = $Settle
         settleMaxSeconds = [Math]::Max($Settle, $SettleMax)
         measureSeconds = $Measure
@@ -347,8 +460,43 @@ try {
     if ($ClientCache -eq 'Cold' -and $reportedCachedSections -ne 0) {
         throw "Cold-cache benchmark requested, but the active world reported $reportedCachedSections sections from cache. See $scenario"
     }
+    if ($ServerCache -ne 'Any' -and $null -eq $reportedServerCachedSections) {
+        throw "The server log did not report Vintage Horizons' active cache count; server cache-state proof failed. See $scenario"
+    }
+    if ($ServerCache -eq 'Warm' -and $reportedServerCachedSections -le 0) {
+        throw "Warm server-cache benchmark requested, but the active world reported 0 sections from cache. See $scenario"
+    }
+    if ($ServerCache -eq 'Cold' -and $reportedServerCachedSections -ne 0) {
+        throw "Cold server-cache benchmark requested, but the active world reported $reportedServerCachedSections sections from cache. See $scenario"
+    }
     if ($RequireServerText -and $null -eq $reportedServerLine) {
         throw "The server log did not contain the required completion text '$RequireServerText'. See $scenario and $serverOut"
+    }
+    if ($RequireGenerationComplete) {
+        if ($null -eq $generationRecord) {
+            throw "The server log did not contain a parseable generation completion record. See $scenario and $serverOut"
+        }
+        if ($generationRecord.generated -le 0) {
+            throw "Generation completed without transiently generating any absent columns. See $scenario"
+        }
+        if ($generationRecord.timedOut -ne 0 -or $generationRecord.withoutHeightMap -ne 0) {
+            throw "Generation completed with timeouts or unusable height maps. See $scenario"
+        }
+        if ($generationRecord.checkedAbsent -le 0 -or
+            $generationRecord.preservedAbsent -ne $generationRecord.checkedAbsent) {
+            throw "Generation did not prove that sampled absent positions remained absent. See $scenario"
+        }
+    }
+    if ($RequireAssistPeakInFlight -gt 0) {
+        if ($null -eq $assistRecord) {
+            throw "The client log did not contain parseable live-assist transfer telemetry. See $scenario and $clientMainLog"
+        }
+        if ($assistRecord.peakInFlight -lt $RequireAssistPeakInFlight) {
+            throw "Live assist peaked at $($assistRecord.peakInFlight) in-flight sections, below the required $RequireAssistPeakInFlight. See $scenario"
+        }
+        if ($assistRecord.received -le 0 -or $assistRecord.installed -le 0) {
+            throw "Live assist reached the request guard but did not receive and install a section. See $scenario"
+        }
     }
 
     Write-Host "Benchmark complete: $csv"

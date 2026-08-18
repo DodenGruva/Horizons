@@ -44,6 +44,60 @@ public static class BenchRouteChecks
         c.Eq(0, sweepRoot.GetProperty("PregenRadiusChunks").GetInt32(),
             "completed-sweep config excludes startup generation");
 
+        BenchRoute completedGenerationRoute = BenchRoute.Load(
+            Path.Combine(routeDir, "completed-generation.txt"));
+        c.Eq(1, completedGenerationRoute.Waypoints.Count,
+            "completed-generation route has one measured view");
+        c.Eq("completed-generation", completedGenerationRoute.Waypoints[0].Name,
+            "completed-generation route keeps its scenario identity");
+        c.False(completedGenerationRoute.Waypoints[0].HasTrajectory,
+            "completed generation does not mix server worldgen with client movement");
+
+        string generationConfigPath = Path.Combine(
+            GameAssemblies.RepoRoot, "bench", "configs", "completed-generation.json");
+        using JsonDocument generationConfig = JsonDocument.Parse(File.ReadAllText(generationConfigPath));
+        JsonElement generationRoot = generationConfig.RootElement;
+        c.False(generationRoot.GetProperty("SweepSavegame").GetBoolean(),
+            "completed-generation config excludes sweep work");
+        c.False(generationRoot.GetProperty("EnableServing").GetBoolean(),
+            "completed-generation config excludes assist-transfer work");
+        c.True(generationRoot.GetProperty("EnableGenerateCommand").GetBoolean(),
+            "completed-generation config enables command generation");
+        c.Eq(8, generationRoot.GetProperty("GenerateMaxRadiusChunks").GetInt32(),
+            "completed-generation config pins the command radius");
+        c.Eq(32, generationRoot.GetProperty("GenerateColumnsPerSecond").GetInt32(),
+            "completed-generation config pins a non-trivial tick allowance");
+        c.Eq(0, generationRoot.GetProperty("PregenRadiusChunks").GetInt32(),
+            "completed-generation config excludes startup generation");
+
+        BenchRoute saturatedAssistRoute = BenchRoute.Load(
+            Path.Combine(routeDir, "saturated-assist.txt"));
+        c.Eq(1, saturatedAssistRoute.Waypoints.Count,
+            "saturated-assist route has one measured view");
+        c.Eq("saturated-assist", saturatedAssistRoute.Waypoints[0].Name,
+            "saturated-assist route keeps its scenario identity");
+        c.False(saturatedAssistRoute.Waypoints[0].HasTrajectory,
+            "saturated assist does not mix transfer work with client movement");
+
+        string assistConfigPath = Path.Combine(
+            GameAssemblies.RepoRoot, "bench", "configs", "saturated-assist.json");
+        using JsonDocument assistConfig = JsonDocument.Parse(File.ReadAllText(assistConfigPath));
+        JsonElement assistRoot = assistConfig.RootElement;
+        c.True(assistRoot.GetProperty("EnableServing").GetBoolean(),
+            "saturated-assist config enables live transfer");
+        c.Eq(0, assistRoot.GetProperty("ServeRadiusBlocks").GetInt32(),
+            "saturated-assist config excludes radius refusals");
+        c.Eq(64, assistRoot.GetProperty("MaxSectionsPerSecondPerPlayer").GetInt32(),
+            "saturated-assist config raises the per-player serving rate");
+        c.Eq(64, assistRoot.GetProperty("MaxSectionsPerSecondTotal").GetInt32(),
+            "saturated-assist config raises the global serving rate");
+        c.False(assistRoot.GetProperty("SweepSavegame").GetBoolean(),
+            "saturated-assist config excludes sweep work");
+        c.False(assistRoot.GetProperty("EnableGenerateCommand").GetBoolean(),
+            "saturated-assist config excludes command generation");
+        c.Eq(0, assistRoot.GetProperty("PregenRadiusChunks").GetInt32(),
+            "saturated-assist config excludes startup generation");
+
         BenchRoute movingRoute = BenchRoute.Load(Path.Combine(routeDir, "moving-rotation.txt"));
         c.Eq(4, movingRoute.Waypoints.Count, "moving route loads all four legs");
         c.True(movingRoute.Waypoints.All(wp => wp.HasTrajectory),

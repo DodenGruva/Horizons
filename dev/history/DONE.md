@@ -173,3 +173,19 @@
 - Preserved both CSVs, scenario records, context, and evidence limits under
   `bench/results/2026-08-18-join-sweep`.
 - Expanded the full game-backed fast tier to 911 passing assertions.
+
+## 2026-08-18 — completed generation and saturated assist evidence
+
+- Added semantic runner guards for active warm/cold server cache state, completed
+  transient-generation counters, and saturated live-assist receipt/installation.
+- Completed a radius-8 transient run with 289 generated columns, zero failures, and
+  256/256 sampled absent positions still absent from the savegame.
+- Reproduced an early-join server-assist stall: 16 sections requested, zero received, and
+  zero server blob/send work despite a 514-section active server cache.
+- Fixed the 50 ms serve loop to retain bounded requests while a joining player is not yet
+  exposed as `Playing`; the disconnect event remains responsible for real cleanup.
+- Repeated the unchanged scenario with 395 requested/received/installed sections, zero
+  declines, and fully drained client transfer/publication queues by 30 seconds.
+- Measured server blob reads at 3.75/17.5/68.755 ms p95/p99/max and preserved before/after
+  scenario proofs under `bench/results/2026-08-18-generation-assist`.
+- Expanded the full game-backed fast tier to 933 passing assertions.

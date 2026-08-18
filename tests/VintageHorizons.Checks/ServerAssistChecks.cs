@@ -462,6 +462,8 @@ public static class ServerAssistChecks
         long[] first = client.SelectRequestBatch(offered);
         c.Eq(cap, first.Length, "the first batch fills the in-flight cap exactly");
         c.Eq(cap, client.InFlight, "every key in the batch holds a slot");
+        c.Eq(cap, client.PeakInFlight,
+            "the cumulative high-water mark records a saturated request batch");
 
         // The stall, stated as a check. With the cap full and no reply, asking again
         // yields nothing - which is correct, and is why silence from the server is fatal
@@ -485,6 +487,11 @@ public static class ServerAssistChecks
         client.Pump((_, _) => true);
         c.Eq(0, client.InFlight, "a delivered section frees its slot too");
         c.Eq(cap, client.SectionsReceived, "each delivery is counted");
+        c.Eq(cap, client.PeakInFlight,
+            "draining later batches does not erase the saturation high-water mark");
+
+        client.Reset();
+        c.Eq(0, client.PeakInFlight, "a new world resets the in-flight high-water mark");
     }
 
     static void AsyncInstallRetainsItsInFlightSlot(Check c)

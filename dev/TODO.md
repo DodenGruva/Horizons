@@ -10,15 +10,12 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 - Repeat the recorded hardware/settings/config benchmark on the eventual release candidate if its code or sandbox state differs materially.
 
-### Instrumentation
-
-- Add completed transient-generation and saturated server-assist benchmark scenarios.
-  Warm-cache join and completed dedicated-server sweep scenarios now have explicit
-  precondition/completion proof; no live assist section transfer has been measured.
-
 ### P1 fixes
 
 - Soak the new asynchronous mip worker during long exploration, restart, and shutdown; verify stale/failure retries and durable `ApplyToParent` convergence under interruption.
+- Move synchronous server-assist blob reads to a dedicated read-only connection with
+  explicit ownership and preserved request/send ordering. A saturated transfer measured
+  3.75/17.5/68.755 ms p95/p99/max for one-at-a-time owning-thread reads.
 
 ### Renderer scaling
 
@@ -49,8 +46,10 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   first run generated server-save terrain and the second reused it, so aggregate FPS is
   not controlled A/B evidence. No person watched the cold route in motion.
 - Asynchronous mip propagation passed two short before/after route runs with zero mip backlog/errors at interval close; longer soak, restart interruption, and integrated-server load remain unverified.
-- The complete game-backed fast tier passes 911 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
-- Incremental sibling-cache discovery and retry-safe local/server request transitions are source-traced and fixture-tested, but not yet exercised in integrated singleplayer or live server assist.
+- The complete game-backed fast tier passes 933 assertions across 22 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- Live server-assist transfer now exercises network request state end to end. Incremental
+  sibling-cache discovery and retry-safe local misses remain unexercised in integrated
+  singleplayer.
 - Cached bounds and projection hysteresis pass 30 isolated assertions. The corrected long
   warm-cache route completed with five projection resets and no tick hitches, and human
   review found motion smooth with no noticed clipping. The earlier route screenshots were
@@ -68,12 +67,13 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   sampled absent positions. Server pipeline ticks peaked at 17.874 ms with no 25 ms hitch;
   probe/load issue maxima were 3.945/6.004 ms. The server cache was warm, and
   savegame-sweep cadence remains unprofiled in integrated singleplayer.
-- Tick-smoothed server work and time/byte-bounded client installs are source-traced and
-  harness-tested. Completed transient generation, live assist transfer backlog, and the
-  initial foreign-install policy remain unevaluated.
-- Storage-owned foreign decode is source-traced and harness-tested. A brief human test
-  reported a noticeable subjective improvement, but no controlled assist or sibling-cache
-  run has isolated decode time, publication time, backlog age, or throughput.
+- Completed transient generation produced 289/289 columns with zero timeouts or unusable
+  height maps and preserved 256/256 sampled absences. This is one radius-8 dedicated-server
+  run, not a long/default-radius or integrated-singleplayer soak.
+- Saturated live assist requested, received, and installed 395 sections. Client foreign
+  publication peaked at 2.639 ms and 2 queued / 0.62 MiB / 62 ms old, then drained by 30
+  seconds. Server blob reads reached 68.755 ms maximum; the run used 64/s rather than the
+  default 8/s and no person watched it.
 - Two warmed steady-stationary on/off pairs measured about 0.7% lower average FPS and
   1.0% lower median FPS with allocation telemetry at roughly 445 uncapped FPS. Their 1%
   lows reversed direction, and ordinary capped-frame-rate overhead remains unmeasured.

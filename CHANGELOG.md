@@ -8,6 +8,18 @@ first.
 
 ## [Unreleased]
 
+**Completed generation/assist evidence and fixed early-join transfer stalls.** The Windows
+runner now proves active server cache state, completed transient generation, and saturated
+assist transfer rather than trusting scenario labels. A radius-8 run generated all 289
+columns transiently with zero timeouts/height-map failures and kept 256/256 sampled
+positions absent from the savegame. The first cold-client/warm-server assist run exposed a
+race: all 16 request slots filled before the joining player appeared as `Playing`, and the
+50 ms server loop silently removed the queue. Retaining bounded requests until the
+disconnect event reports a real departure let the unchanged rerun request, receive, and
+install 395 sections with no declines and no client 25 ms tick. The run also measured
+synchronous server blob reads at 3.75/17.5/68.755 ms p95/p99/max, making dedicated reader
+ownership the next server-performance target.
+
 **Reproducible warm-join and completed-sweep evidence.** The Windows isolated runner can
 now require a warm or cold client cache, pin a server configuration on a fresh process,
 require an exact server completion line, and preserve cache/completion provenance beside
@@ -90,7 +102,9 @@ ceilings and bounded probe publication. On the client, arrived server sections, 
 singleplayer-cache blobs, and completed background loads now stop after 2 ms or 512 KiB in
 a tick instead of draining solely because results are ready. FIFO work always advances by
 at least one section, and telemetry reports queued bytes and oldest age. These policies are
-source- and harness-tested; integrated sweep/assist playtesting is still pending.
+source- and harness-tested. Dedicated-server sweep, completed generation, and saturated
+assist now have runtime evidence; integrated-singleplayer and human playtesting remain
+pending.
 
 **Less per-frame renderer work.** The renderer used to scan every resident distant-terrain
 mesh on every frame to find the camera's far edge. Because that distance was an exact

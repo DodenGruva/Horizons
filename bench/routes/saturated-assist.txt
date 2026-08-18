@@ -1,0 +1,15 @@
+# Saturated live server-assist benchmark.
+#
+# This scenario requires a populated active server cache and an empty active client cache.
+# Its semantic guard proves that the client filled all 16 normal request slots and then
+# received and installed real server sections. The pinned config disables sweep and
+# generation, removes radius refusals, and raises serving rates so transfer work is the
+# scenario rather than an eight-section-per-second throttle.
+#
+#   pwsh -NoProfile -File scripts/bench-windows.ps1 `
+#     -Label saturated-assist -Route bench/routes/saturated-assist.txt `
+#     -ServerMod -ServerConfig bench/configs/saturated-assist.json `
+#     -ClientCache Cold -ServerCache Warm -RequireAssistPeakInFlight 16 `
+#     -Settle 45 -SettleMax 60 -Measure 30 -Laps 1 -WarmupLaps 0
+
+saturated-assist  512020  190  512010  0  -8

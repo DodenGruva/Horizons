@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+saturated-assist-join-race-fix,saturated-assist,512020,190,512010,1,13220,440.7,438.4,326.1,2.27,3.07,0.0,0.0,1668,3845,45.0,0

@@ -242,6 +242,18 @@ finished:"` makes a partial run fail and preserves the matching terminal line pl
 pre-launch server-cache state in the scenario JSON. A pinned server config requires a
 fresh isolated server; the runner refuses to apply it to `-ReuseServer`.
 
+For completed transient generation, use `bench/routes/completed-generation.txt` with its
+pinned config and `-AutoCommand "/vhgen start 8 520000 520000"`. The
+`-RequireGenerationComplete` guard parses the terminal counters and requires real generated
+columns, zero timeouts and height-map failures, and a non-empty sampled-absence check whose
+positions all remain absent from the savegame.
+
+For a saturated live-assist transfer, use `bench/routes/saturated-assist.txt`, its pinned
+config, `-ClientCache Cold`, `-ServerCache Warm`, and
+`-RequireAssistPeakInFlight 16`. The runner verifies the active server cache rather than
+trusting a database filename, then requires all normal request slots to have been occupied
+and at least one server section to have been received and installed.
+
 ### Development notes
 
 - **Shaders must be pure ASCII** (even comments). The engine's OpenTK marshaling

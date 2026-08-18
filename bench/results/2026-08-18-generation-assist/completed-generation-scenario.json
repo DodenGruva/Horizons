@@ -1,0 +1,50 @@
+{
+  "label": "completed-generation-validation",
+  "route": "bench/routes/completed-generation.txt",
+  "clientCacheRequirement": "Any",
+  "serverCacheRequirement": "Any",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 27672576,
+      "lastWriteUtc": "2026-08-18T03:16:42.8896622Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 19775488,
+      "lastWriteUtc": "2026-08-18T03:16:43.4590252Z"
+    }
+  ],
+  "reportedSectionsFromCache": 558,
+  "reportedServerSectionsFromCache": 383,
+  "serverConfig": "bench/configs/completed-generation.json",
+  "requiredServerText": null,
+  "reportedServerLine": null,
+  "requireGenerationComplete": true,
+  "generation": {
+    "line": "18.8.2026 07:14:39 [Server Notification] [vintagehorizons] Generation finished around block 520000,520000: 289 columns - 289 generated, 0 loaded from the savegame, 0 skipped on the frontier, 0 without a height map, 0 timed out. Verified 256/256 sampled absent positions still absent. Capture continues in the background; the cache is complete once no columns remain queued.",
+    "centreBlockX": 520000,
+    "centreBlockZ": 520000,
+    "totalColumns": 289,
+    "generated": 289,
+    "loaded": 0,
+    "skippedFrontier": 0,
+    "withoutHeightMap": 0,
+    "timedOut": 0,
+    "preservedAbsent": 256,
+    "checkedAbsent": 256
+  },
+  "requiredAssistPeakInFlight": 0,
+  "assist": null,
+  "settleSeconds": 90.0,
+  "settleMaxSeconds": 90.0,
+  "measureSeconds": 30.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 0,
+  "serverMod": true,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T12:16:12.6064136Z"
+}

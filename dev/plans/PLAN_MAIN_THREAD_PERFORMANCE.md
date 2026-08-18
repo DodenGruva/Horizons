@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client tick/pipeline/render and server pipeline/sweep/generation/assist percentiles, hitch counts, allocation totals, and relevant queue telemetry are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Two warmed stationary A/B pairs measured about 0.7% average-FPS overhead from allocation telemetry. Proven warm-join and completed dedicated-server sweep scenarios now exist; completed transient generation, integrated-singleplayer sweep/join, and live assist transfer remain open.
+**Implementation status:** Client tick/pipeline/render and server pipeline/sweep/generation/assist percentiles, hitch counts, allocation totals, and relevant queue telemetry are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Two warmed stationary A/B pairs measured about 0.7% average-FPS overhead from allocation telemetry. Proven warm-join, completed dedicated-server sweep, completed transient-generation, and saturated live-assist scenarios now exist. Integrated-singleplayer sweep/join remains open; the assist run makes off-thread server blob reads the next measured server slice.
 
 ### Client instrumentation
 
@@ -133,7 +133,7 @@ Instrumentation should be cheap when disabled and available through an explicit 
 
 ## 5. Phase 2 — incremental key discovery and request correctness
 
-**Implementation status:** Complete locally. Sibling-cache SQL enumeration runs on a dedicated read-only connection and publishes bounded deltas; network manifests publish each chunk once; local and server failure paths preserve explicit retryable or terminal state with cooldown. The full fast tier covers these transitions, but integrated singleplayer/server-assist runtime validation remains open.
+**Implementation status:** Complete locally. Sibling-cache SQL enumeration runs on a dedicated read-only connection and publishes bounded deltas; network manifests publish each chunk once; local and server failure paths preserve explicit retryable or terminal state with cooldown. The full fast tier covers these transitions, and a saturated live-assist run now covers successful request/publication state. Integrated singleplayer and live retryable-response validation remain open.
 
 ### Local sibling cache
 
@@ -197,8 +197,10 @@ in-motion review of cold coverage arrival remains open before broad runtime acce
 transient generation run on 50 ms fractional allowances with bounded probe issuance;
 server assist uses fair per-player/global allowances and an elapsed deadline. Assist,
 sibling-cache, and background-load installs use FIFO 2 ms / 512 KiB drains with oldest-age
-telemetry and one-item progress. Server blob reads remain synchronous, and integrated
-sweep/assist runtime acceptance is still open.
+telemetry and one-item progress. Completed generation and saturated assist now have
+dedicated-process evidence. Client publication drained with no 25 ms tick, but synchronous
+server blob reads reached 68.755 ms maximum; integrated-singleplayer acceptance remains
+open.
 
 ### Sweep and generation
 
