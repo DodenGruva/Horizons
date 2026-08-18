@@ -4,6 +4,9 @@ public static class DrainBudgetChecks
 {
     public static void Run(Check c)
     {
+        c.True(typeof(LodDrainBudget).IsValueType,
+            "per-frame drain budgets do not allocate a heap object");
+
         long now = 100;
         var bytes = new LodDrainBudget(100, now, 10, () => now);
         c.True(bytes.TryStart(80), "the first ordinary item starts");
@@ -44,5 +47,38 @@ public static class DrainBudgetChecks
             + 24;
         c.Eq(expected, section.EstimatedContentBytes,
             "section byte estimates include arrays, palette entries, and pending codes");
+
+        section.Runs = new ulong[3];
+        section.FindOrAddPaletteEntry(blockId: 1, color: 2, flags: 3);
+        long expectedSnapshot = section.Runs.LongLength * sizeof(ulong)
+            + section.ColumnStart.LongLength * sizeof(int)
+            + section.Captured.LongLength
+            + section.Palette.Count * (sizeof(int) + 2L);
+        c.Eq(expectedSnapshot, SectionSnapshot.EstimateRetainedBytes(section),
+            "mesh snapshot estimates include shared and copied array payloads");
+        c.Eq(expectedSnapshot, SectionSnapshot.Of(section).EstimatedRetainedBytes,
+            "pre-snapshot and completed-snapshot estimates agree");
+
+        var meshResult = new MeshResult
+        {
+            Xyz = Array.Empty<float>(),
+            Rgba = Array.Empty<byte>(),
+            Indices = Array.Empty<int>(),
+            VertexCount = 10,
+            IndexCount = 20,
+            WaterVertexCount = 30,
+            WaterIndexCount = 40,
+        };
+        c.Eq(880L, meshResult.EstimatedUploadBytes,
+            "mesh upload estimates use live vertex and index counts for both passes");
+
+        c.Eq(long.MaxValue, SectionSnapshot.SaturatingAdd(long.MaxValue - 1, 2),
+            "mesh byte accounting saturates instead of wrapping");
+        c.True(LodTerrainRenderer.MeshSnapshotMaxBytesPerFrame > 0
+            && LodTerrainRenderer.MeshSnapshotMaxMillisecondsPerFrame > 0,
+            "mesh snapshot production has byte and elapsed-time ceilings");
+        c.True(LodTerrainRenderer.MeshUploadMaxBytesPerFrame > 0
+            && LodTerrainRenderer.MeshUploadMaxMillisecondsPerFrame > 0,
+            "mesh result upload has byte and elapsed-time ceilings");
     }
 }

@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -44,6 +44,13 @@ Render-dirty membership publishes new-key deltas into a nearest-first priority i
 Existing priorities rebuild after a 256-block camera-cell crossing, detail-distance change,
 or world clear rather than every movement frame. Stale entries validate exact membership,
 and temporarily busy mesh/load keys retain their dirty obligation under a finite scan cap.
+
+Mesh snapshot production stops at job boundaries after 1 ms, 2 MiB of estimated retained
+section arrays, or four jobs. Completed GPU results stop after 2 ms, 4 MiB of live
+vertex/index data, or four results. One first item progresses even when oversized. A
+complete opaque/water replacement becomes live before the old pair is disposed; partial
+upload failure retains old terrain and restores dirty work. Telemetry reports throughput,
+pending bytes, oldest age, direct GL upload time, and disposal time.
 
 ## 3. Completed local performance work
 
@@ -91,6 +98,9 @@ weighted average traversal time 19.8%, and weighted average draw-submission time
 Ordinary frames consume new-key deltas; coarse camera movement or policy/world changes
 perform the deliberate whole-set reindex. Busy and stale entries cannot lose exact dirty
 state.
+25. Mesh snapshot production and GPU result upload are time/byte/item boundary-budgeted.
+Retained and uploaded payloads are measured separately, frame-local budget state is
+allocation-free, and old GPU resources survive until a complete replacement is live.
 
 ## 4. Measured diagnosis and result
 
@@ -207,9 +217,10 @@ maxima were only 0.179/0.249 ms; packet serialization, GC, and process schedulin
 yet separately attributed.
 4. Ordinary render-dirty pruning/scheduling no longer scales with the whole collection;
 the index deliberately rebuilds after coarse camera/policy/world changes. Mesh snapshot
-creation and GPU upload remain item-count rather than time/byte bounded. Visibility-aware
-traversal has a controlled 601-section runtime reduction, but scheduler and traversal
-scaling at thousands of cached sections is not established.
+creation and GPU upload are boundary-budgeted, but their initial ceilings have no runtime
+queue/driver evidence. Visibility-aware traversal has a controlled 601-section runtime
+reduction, but scheduler and traversal scaling at thousands of cached sections is not
+established.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -227,8 +238,9 @@ have dedicated-process evidence.
 
 ## 7. Current open work
 
-1. Extend visibility/traversal/scheduler validation to a thousands-section cache and human
-in-motion review, then time/byte-budget mesh snapshots and GPU uploads.
+1. Extend visibility/traversal/scheduler validation to a thousands-section cache, measure
+the new snapshot/upload ceilings and queue convergence, and complete human in-motion
+review.
 2. Repeat mip interruption/recovery and exercise sibling-cache discovery/retryable local
 misses in integrated singleplayer.
 3. Add storage save revisions, acknowledgements, retry, and shutdown durability.
@@ -252,7 +264,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation counter reads are opt-in per measured owner and sit outside the elapsed-time interval.
 - Server pipeline, sweep, generation, and assist phase costs are independently timed;
   allocation reads remain opt-in and assist queues report exact oldest-head age.
-- Count-only GPU uploads, owning-thread foreign publication, the single-result capture tail, and save acknowledgement gaps remain visible in source.
+- Mesh snapshot and GPU upload drains have elapsed-time, retained/uploaded-byte, and item
+  ceilings with one-first-item progress. Replacement publishes before old-resource
+  disposal, and render telemetry exposes both queues and direct GL/disposal timing.
 - Capture publication is result-boundary time/byte/item bounded; queued/in-progress jobs and completed/deferred results share backpressure, and cross-world results are rejected by epoch.
 - Server-assist blob SQL exists only in the dedicated read-only reader; the server thread
   admits ordered session-tagged work and publishes completed packets.
@@ -265,13 +279,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 263 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 995 assertions across all 24 suites, including 20
+- `dev/DocCheck.ps1` passes 265 checks under Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 1,002 assertions across all 24 suites, including 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
   53 benchmark-route/config/camera-mapping, the durable-mip
   interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
-  accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite
+  accounting, 15 tick-allowance, 21 drain-budget, 30 cached-bounds/far-plane, SQLite
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
@@ -331,6 +345,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Incremental render-dirty scheduling has source, 20 focused assertions, and one
   601-section functional route. Its coarse-cell rebuild cost, scaling at thousands of
   dirty/cached sections, and causal frame-time effect remain unmeasured.
+- Mesh snapshot/upload boundary logic and byte accounting have source, build, and fast-tier
+  evidence only. No game process has measured the new GL/disposal phases, queue ages,
+  convergence, or replacement behavior.
 - The completed sweep ran in separate dedicated-server/client processes with a warm
   server cache, a calibrated 24-chunk radius, serving disabled, and generation disabled.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior
@@ -358,6 +375,9 @@ coarse-cell/detail/world transition still performs an intentional reindex. The c
 functional route proves convergence only; it does not establish large-cache rebuild cost
 or an aggregate FPS effect.
 - The 2 ms / 512 KiB install/capture ceilings are conservative initial policy. Compressed foreign bytes, estimated in-memory background-section bytes, and raw capture-run bytes are intentionally path-local measures, not directly comparable throughput figures. One admitted item may exceed the elapsed or byte ceiling.
+- The 1 ms / 2 MiB snapshot and 2 ms / 4 MiB upload ceilings are likewise conservative
+initial policy. Snapshot-retained arrays and live GPU-transfer bytes are different
+measures, and one admitted job/result remains atomic even after crossing a ceiling.
 - The first clean-cache frontier run generated server-save terrain and the second reused it. Both client caches were empty, but FPS and upload-volume differences between them combine client and server-save state and are not causal comparisons.
 - The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
 - Per-phase allocation counters identify managed bytes attributed to the current owning thread; they do not attribute native allocations or prove that a later GC pause belongs to one phase.

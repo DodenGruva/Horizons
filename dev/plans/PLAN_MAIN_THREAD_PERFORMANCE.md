@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, and incremental render-dirty priority scheduling are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, and boundary-budgeted mesh snapshots/GPU uploads are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -294,8 +294,9 @@ sections. The same-cache pair reduced selected nodes 64.2%, weighted average tra
 19.8%, and weighted average draw submission 9.3%, while retaining 543 meshes with zero
 evictions. Aggregate FPS was unchanged within run noise and is not claimed. Incremental
 render-dirty priority scheduling is source-, harness-, and functional-smoke-complete at
-601 cached sections. A thousands-section scale run and human clipping/turn-around review
-remain open, as do mesh-snapshot and GPU-upload budgets.
+601 cached sections. Mesh-snapshot and GPU-upload boundary budgets are source-, build-,
+and harness-complete. A thousands-section scale run, runtime queue/timing evidence, and
+human clipping/turn-around review remain open.
 
 ### Traversal
 
@@ -319,14 +320,21 @@ remain open, as do mesh-snapshot and GPU-upload budgets.
 nearest-first heap. Priorities rebuild on 256-block camera-cell crossings, detail-policy
 changes, and world clears. Stale entries validate membership; busy mesh/load keys are
 restored under a finite examination ceiling. Twenty focused assertions and one
-601-section functional route establish correctness and convergence. Snapshot time/byte
-budgeting and controlled large-cache timing remain open.
+601-section functional route establish correctness and convergence. Snapshot production
+now stops at job boundaries after 1 ms, 2 MiB of estimated retained arrays, or four jobs;
+one first item always progresses. Controlled large-cache timing remains open.
 
 ### GPU upload
 
 - Limit uploads by elapsed time and vertex/index bytes.
 - Retain the old mesh until replacement upload succeeds.
 - Track GL upload time, dispose time, bytes, and queue age.
+
+**Implementation status:** Completed results stop at boundaries after 2 ms, 4 MiB of
+live vertex/index data, or four results, with one-first-item progress. The new
+opaque/water pair becomes live before the old pair is disposed; partial failure retains
+the old pair and restores dirty work. Telemetry reports upload/disposal timing, bytes,
+backlog, and oldest age. Runtime driver timing and tuning remain open.
 
 ### Later draw-call work
 

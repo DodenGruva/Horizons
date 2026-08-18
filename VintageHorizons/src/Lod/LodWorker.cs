@@ -14,6 +14,15 @@ public class SectionSnapshot
     public required byte[] PaletteFlags;
     public required byte[] PaletteTintSlots;
 
+    /// <summary>
+    /// Array payload retained by a mesh job. Runs and column offsets are immutable shared
+    /// arrays, but they still count: replacing either live array cannot release the old
+    /// one while a queued snapshot references it.
+    /// </summary>
+    public long EstimatedRetainedBytes => EstimateRetainedBytes(
+        Runs.LongLength, ColumnStart.LongLength, Captured.LongLength,
+        PaletteColors.LongLength, PaletteFlags.LongLength, PaletteTintSlots.LongLength);
+
     public Span<ulong> ColumnRuns(int col) =>
         Runs.AsSpan(ColumnStart[col], ColumnStart[col + 1] - ColumnStart[col]);
 
@@ -38,6 +47,27 @@ public class SectionSnapshot
             PaletteTintSlots = slots,
         };
     }
+
+    public static long EstimateRetainedBytes(LodSection s) => EstimateRetainedBytes(
+        s.Runs.LongLength, s.ColumnStart.LongLength, s.Captured.LongLength,
+        s.Palette.Count, s.Palette.Count, s.Palette.Count);
+
+    static long EstimateRetainedBytes(long runs, long columnStarts, long captured,
+        long paletteColors, long paletteFlags, long paletteTintSlots)
+    {
+        long bytes = SaturatingMultiply(runs, sizeof(ulong));
+        bytes = SaturatingAdd(bytes, SaturatingMultiply(columnStarts, sizeof(int)));
+        bytes = SaturatingAdd(bytes, captured);
+        bytes = SaturatingAdd(bytes, SaturatingMultiply(paletteColors, sizeof(int)));
+        bytes = SaturatingAdd(bytes, paletteFlags);
+        return SaturatingAdd(bytes, paletteTintSlots);
+    }
+
+    static long SaturatingMultiply(long value, int factor) =>
+        value > long.MaxValue / factor ? long.MaxValue : value * factor;
+
+    internal static long SaturatingAdd(long left, long right) =>
+        right > long.MaxValue - left ? long.MaxValue : left + right;
 }
 
 public class CaptureJob
@@ -64,6 +94,8 @@ public class MeshJob
     public long Key;
     public required SectionSnapshot Self;
     public required SectionSnapshot?[] Neighbors; // W, E, N, S
+    public long EstimatedRetainedBytes;
+    public long ReadyAtMilliseconds;
 }
 
 public class MeshResult
@@ -81,6 +113,22 @@ public class MeshResult
     public int[]? WaterIndices;
     public int WaterVertexCount;
     public int WaterIndexCount;
+    public long ReadyAtMilliseconds;
+
+    /// <summary>Bytes passed to the GPU, excluding unused pooled-array capacity.</summary>
+    public long EstimatedUploadBytes => SectionSnapshot.SaturatingAdd(
+        UploadBytes(VertexCount, IndexCount),
+        UploadBytes(WaterVertexCount, WaterIndexCount));
+
+    static long UploadBytes(int vertexCount, int indexCount)
+    {
+        long vertices = Math.Max(0, vertexCount);
+        long indices = Math.Max(0, indexCount);
+        long vertexBytes = vertices > long.MaxValue / 16 ? long.MaxValue : vertices * 16;
+        long indexBytes = indices > long.MaxValue / sizeof(int)
+            ? long.MaxValue : indices * sizeof(int);
+        return SectionSnapshot.SaturatingAdd(vertexBytes, indexBytes);
+    }
 }
 
 /// <summary>
@@ -140,6 +188,15 @@ public class LodWorker : IDisposable
         ? Math.Max(0, Environment.TickCount64 - oldest.ReadyAtMilliseconds)
         : 0;
     public int PendingMeshes => meshJobs.Count;
+    public long PendingMeshBytes => meshJobs.Sum(job => job.EstimatedRetainedBytes);
+    public long OldestMeshAgeMs => meshJobs.TryPeek(out MeshJob? oldestMesh)
+        ? Math.Max(0, Environment.TickCount64 - oldestMesh.ReadyAtMilliseconds)
+        : 0;
+    public int PendingMeshResults => MeshResults.Count;
+    public long PendingMeshResultBytes => MeshResults.Sum(result => result.EstimatedUploadBytes);
+    public long OldestMeshResultAgeMs => MeshResults.TryPeek(out MeshResult? oldestResult)
+        ? Math.Max(0, Environment.TickCount64 - oldestResult.ReadyAtMilliseconds)
+        : 0;
     public int PendingMips => mipJobs.Count;
 
     public int CaptureErrors;

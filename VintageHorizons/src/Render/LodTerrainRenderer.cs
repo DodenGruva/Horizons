@@ -23,6 +23,12 @@ public class LodTerrainRenderer : IRenderer
 
     const int MeshSchedulesPerFrame = 4;
     const int MeshUploadsPerFrame = 4;
+    // Initial frame-local ceilings. Item caps remain as a final safety rail, while live
+    // telemetry records enough time/byte/backlog evidence to tune these without guessing.
+    internal const long MeshSnapshotMaxBytesPerFrame = 2 * 1024 * 1024;
+    internal const double MeshSnapshotMaxMillisecondsPerFrame = 1.0;
+    internal const long MeshUploadMaxBytesPerFrame = 4 * 1024 * 1024;
+    internal const double MeshUploadMaxMillisecondsPerFrame = 2.0;
     /// <summary>
     /// Queue depth allowed at the mesh workers. Per thread, not absolute: a fixed 12 was
     /// sized for one builder and would leave a four-thread pool idling three quarters of
@@ -44,18 +50,23 @@ public class LodTerrainRenderer : IRenderer
     /// under what any frame-rate comparison can resolve, so they are timed rather than
     /// inferred. Reported by .vhinfo and by the periodic stats line.
     /// </summary>
-    public LodPhaseCost PruneCost, ScheduleCost, UploadCost, EvictCost, SeasonalCost,
-        FarDistanceCost, WalkCost, DrawCost;
+    public LodPhaseCost PruneCost, ScheduleCost, UploadCost, GlUploadCost, MeshDisposeCost,
+        EvictCost, SeasonalCost, FarDistanceCost, WalkCost, DrawCost;
     public bool TrackPhaseAllocations { get; set; }
 
     public int ProjectionResetCount { get; private set; }
     public long MeshUploadBytes { get; private set; }
+    public long MeshSnapshotBytes { get; private set; }
+    public int MeshSnapshotItems { get; private set; }
+    public int MeshUploadItems { get; private set; }
 
     public void ResetPhaseCosts()
     {
         PruneCost.Reset();
         ScheduleCost.Reset();
         UploadCost.Reset();
+        GlUploadCost.Reset();
+        MeshDisposeCost.Reset();
         EvictCost.Reset();
         SeasonalCost.Reset();
         FarDistanceCost.Reset();
@@ -63,6 +74,9 @@ public class LodTerrainRenderer : IRenderer
         DrawCost.Reset();
         ProjectionResetCount = 0;
         MeshUploadBytes = 0;
+        MeshSnapshotBytes = 0;
+        MeshSnapshotItems = 0;
+        MeshUploadItems = 0;
     }
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
@@ -476,6 +490,8 @@ public class LodTerrainRenderer : IRenderer
         // needed two passes to appear and only four could be touched per frame.
         int meshBudget = MeshSchedulesPerFrame;
         int loadBudget = MeshLoadRequestsPerFrame;
+        var snapshotBudget = new LodDrainBudget(
+            MeshSnapshotMaxBytesPerFrame, MeshSnapshotMaxMillisecondsPerFrame);
 
         // Empty/missing candidates charge neither work budget, so keep a separate hard
         // examination limit. Priority lookup itself stays independent of dirty-set size.
@@ -508,11 +524,32 @@ public class LodTerrainRenderer : IRenderer
                 continue;
             }
 
-            var neighbors = new SectionSnapshot?[4];
+            var neighborSections = new LodSection?[4];
+            long estimatedBytes = SectionSnapshot.EstimateRetainedBytes(section);
             for (int d = 0; d < 4; d++)
             {
                 long nk = LodWorld.NeighborKey(best, d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
-                if (world.Sections.TryGetValue(nk, out LodSection? nb)) neighbors[d] = SectionSnapshot.Of(nb);
+                if (world.Sections.TryGetValue(nk, out LodSection? nb))
+                {
+                    neighborSections[d] = nb;
+                    estimatedBytes = SectionSnapshot.SaturatingAdd(
+                        estimatedBytes, SectionSnapshot.EstimateRetainedBytes(nb));
+                }
+            }
+
+            // TryTake transferred the exact dirty obligation to us. If this frame has
+            // spent its snapshot time/byte allowance, restore that obligation before
+            // stopping. The first eligible snapshot always progresses even if oversized.
+            if (!snapshotBudget.TryStart(estimatedBytes))
+            {
+                world.RenderDirty.Add(best);
+                break;
+            }
+
+            var neighbors = new SectionSnapshot?[4];
+            for (int d = 0; d < 4; d++)
+            {
+                if (neighborSections[d] != null) neighbors[d] = SectionSnapshot.Of(neighborSections[d]!);
             }
 
             meshBudget--;
@@ -522,31 +559,57 @@ public class LodTerrainRenderer : IRenderer
                 Key = best,
                 Self = SectionSnapshot.Of(section),
                 Neighbors = neighbors,
+                EstimatedRetainedBytes = estimatedBytes,
+                ReadyAtMilliseconds = Environment.TickCount64,
             });
         }
+
+
+        MeshSnapshotItems += snapshotBudget.Items;
+        MeshSnapshotBytes = SectionSnapshot.SaturatingAdd(
+            MeshSnapshotBytes, snapshotBudget.Bytes);
     }
 
     void UploadFinishedMeshes()
     {
-        int budget = MeshUploadsPerFrame;
-        while (budget-- > 0 && worker.MeshResults.TryDequeue(out MeshResult? result))
+        int itemBudget = MeshUploadsPerFrame;
+        var uploadBudget = new LodDrainBudget(
+            MeshUploadMaxBytesPerFrame, MeshUploadMaxMillisecondsPerFrame);
+        while (itemBudget-- > 0
+            && worker.MeshResults.TryPeek(out MeshResult? waiting)
+            && uploadBudget.TryStart(waiting.EstimatedUploadBytes)
+            && worker.MeshResults.TryDequeue(out MeshResult? result))
         {
             meshJobInFlight.Remove(result.Key);
 
             bool hadMesh = HasAnyMesh(result.Key);
-            DisposeMeshRefs(result.Key);
-
-            if (result.IndexCount > 0)
+            MeshRef? newOpaque = null;
+            MeshRef? newWater = null;
+            try
             {
-                sectionMeshes[result.Key] = Upload(result.Xyz, result.Rgba, result.Indices,
-                    result.VertexCount, result.IndexCount);
+                if (result.IndexCount > 0)
+                {
+                    newOpaque = Upload(result.Xyz, result.Rgba, result.Indices,
+                        result.VertexCount, result.IndexCount);
+                }
+
+                if (result.WaterIndexCount > 0 && result.WaterXyz != null)
+                {
+                    newWater = Upload(result.WaterXyz, result.WaterRgba!, result.WaterIndices!,
+                        result.WaterVertexCount, result.WaterIndexCount);
+                }
+            }
+            catch
+            {
+                // A partial replacement is not a replacement. Keep the old opaque/water
+                // pair live, free anything newly created, and restore the dirty obligation.
+                DisposeMeshRef(newOpaque);
+                DisposeMeshRef(newWater);
+                world.RenderDirty.Add(result.Key);
+                throw;
             }
 
-            if (result.WaterIndexCount > 0 && result.WaterXyz != null)
-            {
-                waterMeshes[result.Key] = Upload(result.WaterXyz, result.WaterRgba!, result.WaterIndices!,
-                    result.WaterVertexCount, result.WaterIndexCount);
-            }
+            ReplaceMeshRefs(result.Key, newOpaque, newWater);
 
             bool hasMesh = HasAnyMesh(result.Key);
             if (!hadMesh && hasMesh) meshBounds.Include(result.Key);
@@ -556,6 +619,8 @@ public class LodTerrainRenderer : IRenderer
             // never on whether the current camera happens to see the mesh.
             lastResidencyFrame[result.Key] = frameCounter;
         }
+
+        MeshUploadItems += uploadBudget.Items;
     }
 
     void RemoveMeshes(long key)
@@ -567,22 +632,61 @@ public class LodTerrainRenderer : IRenderer
 
     void DisposeMeshRefs(long key)
     {
-        if (sectionMeshes.Remove(key, out MeshRef? mesh)) mesh.Dispose();
-        if (waterMeshes.Remove(key, out MeshRef? water)) water.Dispose();
+        if (sectionMeshes.Remove(key, out MeshRef? mesh)) DisposeMeshRef(mesh);
+        if (waterMeshes.Remove(key, out MeshRef? water)) DisposeMeshRef(water);
+    }
+
+    void ReplaceMeshRefs(long key, MeshRef? newOpaque, MeshRef? newWater)
+    {
+        sectionMeshes.TryGetValue(key, out MeshRef? oldOpaque);
+        waterMeshes.TryGetValue(key, out MeshRef? oldWater);
+
+        if (newOpaque != null) sectionMeshes[key] = newOpaque;
+        else sectionMeshes.Remove(key);
+        if (newWater != null) waterMeshes[key] = newWater;
+        else waterMeshes.Remove(key);
+
+        // Publish the complete replacement first. If an engine-side disposal ever
+        // throws, the new mesh pair is still the live pair and will not leak or vanish.
+        DisposeMeshRef(oldOpaque);
+        DisposeMeshRef(oldWater);
+    }
+
+    void DisposeMeshRef(MeshRef? mesh)
+    {
+        if (mesh == null) return;
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        try
+        {
+            mesh.Dispose();
+        }
+        finally
+        {
+            MeshDisposeCost.Add(phaseStart);
+        }
     }
 
     MeshRef Upload(float[] xyz, byte[] rgba, int[] indices, int vertCount, int indexCount)
     {
         // What UploadMesh is asked to transfer, not backing-array capacity. Mesher pools
         // can deliberately hand back arrays larger than the live vertex/index counts.
-        MeshUploadBytes += vertCount * 16L + indexCount * sizeof(int);
+        MeshUploadBytes = SectionSnapshot.SaturatingAdd(
+            MeshUploadBytes, vertCount * 16L + indexCount * sizeof(int));
         var mesh = new MeshData(false);
         mesh.SetVerticesCount(vertCount);
         mesh.SetIndicesCount(indexCount);
         mesh.xyz = xyz;
         mesh.Rgba = rgba;
         mesh.Indices = indices;
-        return capi.Render.UploadMesh(mesh);
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        try
+        {
+            return capi.Render.UploadMesh(mesh);
+        }
+        finally
+        {
+            GlUploadCost.Add(phaseStart);
+        }
     }
 
     // ---- Frame ----

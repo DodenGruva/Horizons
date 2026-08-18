@@ -163,6 +163,7 @@ public static class LodMesher
             WaterIndices = water.Xyz.Count > 0 ? water.Indices.ToArray() : null,
             WaterVertexCount = water.Xyz.Count / 3,
             WaterIndexCount = water.Indices.Count,
+            ReadyAtMilliseconds = Environment.TickCount64,
         };
     }
 

@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 20 | 2026-08-18 | 0.2.1 | — | Time/byte-budgeted mesh snapshots and GPU uploads; safe mesh replacement and queue/GL telemetry; 1,002 checks pass. |
 | 19 | 2026-08-18 | 0.2.1 | — | Replaced per-frame whole-dirty-set scans with an incremental coarse-cell priority index; 995 checks and a 601-section functional route converged cleanly. |
 | 18 | 2026-08-18 | 0.2.1 | — | Rejected invisible quadtree subtrees without visibility-driven eviction; a controlled 601-section pair cut selected nodes 64.2% and average traversal 19.8%. |
 | 17 | 2026-08-18 | 0.2.1 | — | Interrupted after a durable mip flag, recovered one obligation to clean convergence, and proved a later fresh process loaded zero obligations. |

@@ -895,6 +895,20 @@ public class VintageHorizonsModSystem : ModSystem
                     + renderer.EvictCost.Over100Ms + renderer.SeasonalCost.Over100Ms + renderer.FarDistanceCost.Over100Ms
                     + renderer.WalkCost.Over100Ms + renderer.DrawCost.Over100Ms);
 
+            Mod.Logger.Notification(
+                "  render budgets: snapshots {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
+                + "uploads {5} items/{6:0.00} MiB, {7} queued/{8:0.00} MiB, oldest {9}ms",
+                renderer.MeshSnapshotItems, renderer.MeshSnapshotBytes / (1024.0 * 1024.0),
+                worker.PendingMeshes, worker.PendingMeshBytes / (1024.0 * 1024.0), worker.OldestMeshAgeMs,
+                renderer.MeshUploadItems, renderer.MeshUploadBytes / (1024.0 * 1024.0),
+                worker.PendingMeshResults, worker.PendingMeshResultBytes / (1024.0 * 1024.0),
+                worker.OldestMeshResultAgeMs);
+
+            Mod.Logger.Notification(
+                "  render gpu calls p95/p99/max us: upload {0:0}/{1:0}/{2:0} | dispose {3:0}/{4:0}/{5:0}",
+                renderer.GlUploadCost.P95Us, renderer.GlUploadCost.P99Us, renderer.GlUploadCost.MaxUs,
+                renderer.MeshDisposeCost.P95Us, renderer.MeshDisposeCost.P99Us, renderer.MeshDisposeCost.MaxUs);
+
             // Collections since the last report, beside the phase maxima, because the
             // two are related and the relationship is easy to get backwards. A phase
             // maximum is not a measurement of that phase: the far-distance scan averages
@@ -1059,7 +1073,8 @@ public class VintageHorizonsModSystem : ModSystem
                 $"({renderer.LastTraversalCulledCount} subtrees traversal-culled, " +
                 $"{renderer.LastCulledCount} selected nodes draw-culled), " +
                 $"columns captured: {pipeline.ColumnsCaptured}, pending: {pipeline.PendingColumns}, " +
-                $"worker: {pipeline.Worker.PendingCaptures}c/{pipeline.Worker.PendingMeshes}m/{pipeline.Worker.PendingMips}p, " +
+                $"worker: {pipeline.Worker.PendingCaptures}c/{pipeline.Worker.PendingMeshes}m/" +
+                $"{pipeline.Worker.PendingMeshResults}u/{pipeline.Worker.PendingMips}p, " +
                 $"awaiting mip: {pipeline.World.MipDirty.Count} ({pipeline.World.MipInFlightCount} in flight), " +
                 $"unsaved: {pipeline.World.SaveDirty.Count}, persistence: {(pipeline.Persisting ? "on" : "off")}, " +
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +

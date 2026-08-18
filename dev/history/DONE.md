@@ -262,3 +262,17 @@
 - Completed a functional 601-section moving/rotation route: all four waypoints settled,
   543 meshes converged with no evictions, all guarded queues reached zero, and isolated
   client/server shutdown was graceful. No controlled performance improvement is claimed.
+
+## 2026-08-18 — frame-budgeted mesh snapshots and GPU uploads
+
+- Added 1 ms / 2 MiB / four-job snapshot-production ceilings and 2 ms / 4 MiB /
+  four-result GPU-upload ceilings, with one-first-item progress.
+- Estimated snapshot-retained shared/copied arrays and live opaque/water vertex/index
+  bytes rather than treating a mesh count as a latency budget.
+- Restored exact render-dirty membership when a snapshot waits for the next frame.
+- Uploaded and published a complete replacement pair before disposing the previous GPU
+  resources; partial upload failure retains visible terrain and restores dirty work.
+- Added snapshot/upload throughput, pending bytes, oldest age, direct GL upload timing,
+  and disposal timing to render telemetry.
+- Made the shared frame-local budget helper allocation-free and expanded the game-backed
+  fast tier to 1,002 passing assertions across 24 suites.

@@ -8,6 +8,16 @@ first.
 
 ## [Unreleased]
 
+**Mesh preparation and GPU upload are boundary-budgeted.** Render-thread snapshot
+production now stops after 1 ms, 2 MiB of estimated retained section arrays, or four
+jobs; completed GPU results stop after 2 ms, 4 MiB of live vertex/index data, or four
+results. One first item always progresses even if oversized. The complete new
+opaque/water pair uploads before the previous mesh is disposed, so a partial failure
+retains visible terrain and restores its dirty obligation. New telemetry reports
+snapshot/upload throughput, queued bytes, oldest age, direct GL upload time, and disposal
+time. The Release build and 1,002 fast-check assertions pass; in-game driver timing,
+queue convergence, and tuning of the initial ceilings remain open.
+
 **Render-dirty scheduling is incremental between coarse camera-cell crossings.** Exact
 dirty membership now publishes new-key deltas into a nearest-first priority index instead
 of pruning and searching the complete set every rendered frame. The index rebuilds after
@@ -17,7 +27,7 @@ assertions cover ordering, pruning, bounded progress, reprioritization, and tear
 601-section functional route settled all four moving/full-turn waypoints and converged
 543 meshes plus every guarded queue to zero before graceful shutdown. This is functional
 evidence, not a controlled performance comparison; thousands-section scaling remains
-open, as do time/byte budgets for mesh snapshots and GPU uploads.
+open. The later boundary-budgeting change above has source/harness evidence only.
 
 **Visibility-aware quadtree traversal has controlled runtime evidence.** The renderer now
 rejects a node's conservative world-height frustum box before descending, so an invisible

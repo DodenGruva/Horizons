@@ -108,7 +108,13 @@ ordered in-flight batch prevents a later refusal from overtaking an earlier read
 
 ### Render thread
 
-The render thread schedules mesh demand, accepts bounded completed mesh data, owns GPU resources, traverses the LOD tree, and issues draw calls. Work here is frame-critical even if the game exposes it separately from game ticks.
+The render thread schedules mesh demand, accepts bounded completed mesh data, owns GPU
+resources, traverses the LOD tree, and issues draw calls. Snapshot production is bounded
+at job boundaries by 1 ms, 2 MiB of estimated retained arrays, and four jobs. Completed
+GPU work is bounded at result boundaries by 2 ms, 4 MiB of live vertex/index data, and
+four results. One first item may exceed a ceiling so it cannot starve. The complete new
+opaque/water pair is uploaded and published before the previous pair is disposed. Work
+here is frame-critical even if the game exposes it separately from game ticks.
 
 ## Data model
 
@@ -159,6 +165,13 @@ world is cleared. A dequeued heap entry must still exist in the exact set, and a
 mesh or load work already in flight is restored rather than losing its dirty obligation.
 The scheduler examines only a finite prefix sized to include the bounded in-flight work.
 
+Mesh jobs estimate every array they retain, including immutable run and column arrays
+shared with live sections. Completed results estimate only live vertex/index counts, not
+pooled backing capacity. Telemetry records scheduled/uploaded items and bytes, pending
+bytes and oldest age, direct GL upload calls, and resource disposal separately. The
+frame-local budget state is a value type so enforcing the limits does not create steady
+render-thread heap traffic.
+
 Visibility, residency, and persistence are different concerns:
 
 - Visibility decides what is traversed and drawn now.
@@ -198,6 +211,9 @@ The server must answer every accepted section request, including explicit refusa
 15. **Render-dirty membership and priority are separate.** Exact membership owns the
     obligation; a coarse-cell-refreshed heap orders available work. Stale or temporarily
     blocked heap entries cannot clear the exact dirty state.
+16. **Mesh production and upload are boundary-budgeted.** Time, retained/uploaded bytes,
+    and item caps all apply. One atomic first item may exceed a ceiling; later work waits.
+    A replacement becomes live before the previous GPU resources are disposed.
 
 ## Concurrency invariants
 

@@ -7,7 +7,9 @@ namespace VintageHorizons;
 /// The first item is always admitted: one section can exceed either limit by itself,
 /// and refusing that oldest item forever would prevent every item behind it progressing.
 /// </summary>
-internal sealed class LodDrainBudget
+// A value type because render-frame callers create two of these every frame. Turning the
+// budget itself into heap traffic would make the latency guard add steady GC pressure.
+internal struct LodDrainBudget
 {
     public const long DefaultMaxBytes = 512 * 1024;
     public const double DefaultMaxMilliseconds = 2.0;

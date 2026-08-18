@@ -30,6 +30,11 @@
 
 **Do:** measure elapsed time and bytes in addition to items, stop when the frame/tick allowance is spent, and resume later.
 
+**Implemented:** Session 20 applies job-boundary time/retained-byte limits to mesh
+snapshots and result-boundary time/upload-byte limits to GPU work. The first item still
+progresses, frame-local budget state is allocation-free, and old GPU resources survive
+until a complete replacement is live.
+
 ### G4 — Once-per-second rate limits create once-per-second stutters
 
 **Trigger:** implementing server sweep, generation, assist serving, or any token bucket.
