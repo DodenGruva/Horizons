@@ -173,6 +173,19 @@ looks into the sky while producing plausible frame-time CSVs.
 **Do:** map route pitch to `PI - routePitch`, pin both `MousePitch` and `CameraPitch`, and
 visually inspect a rendered screenshot before accepting route evidence.
 
+### G18 — Capture activity does not prove a route is uncached
+
+**Trigger:** using a movement route to claim first-time exploration or cold-cache capture
+behavior.
+
+**Trap:** a persistent benchmark sandbox may already contain VH coverage for the whole
+route. Vanilla chunks can still load and produce capture/publication work there, so active
+capture telemetry does not prove the distant cache is being populated for the first time.
+
+**Do:** record cache state as part of the scenario. For an uncached-terrain benchmark,
+start from a clean isolated VH cache or verify every route coordinate is absent before
+launch. Label populated-cache runs as warm-cache traversal even when recapture is active.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

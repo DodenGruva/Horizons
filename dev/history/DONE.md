@@ -119,3 +119,14 @@
 - Repeated the full route: capture maximum fell to 5.732 ms, backlog stayed within 9
   results / 0.70 MiB / 93 ms, and zero ticks reached 25 ms.
 - Preserved both full-route CSVs and their evidence limitations under `bench/results`.
+
+## 2026-08-17 — warm-cache route classification and human review
+
+- Established that the full Session 9 route crossed terrain already present in the VH
+  cache and reclassified its evidence as warm-cache traversal rather than new exploration.
+- Preserved the measured capture-publication comparison because both runs directly
+  reported live capture results and owning-thread publication cost.
+- Recorded the human verdict that movement and rotation looked good and smooth with no
+  noticed clipping or turn-around stalls on that route.
+- Closed the warm-cache visual-review task and replaced it with explicit unseen-terrain
+  validation whose pre-run cache absence must be proven.

@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and concrete install/capture queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected continuous movement/rotation route now has a full baseline and same-route capture-budget follow-up. Server sweep/assist, broader queue-age, allocation, disabled-overhead, and human-watched visual scenarios remain open.
+**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and concrete install/capture queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Uncached exploration, server sweep/assist, broader queue-age, allocation, and disabled-overhead scenarios remain open.
 
 ### Client instrumentation
 
@@ -170,8 +170,9 @@ water mesh footprints maintain a cached world-space rectangle; ordinary frames c
 required distance in O(1). The applied projection rounds upward to 512-block steps, grows
 immediately, and shrinks after a stable five-second cooldown. Thirty isolated assertions
 cover bounds, caps, quantization, hysteresis, and reset. A corrected short moving-camera
-smoke and controlled long automated run now exist; a human-watched visual clipping and
-turn-around check remains open before runtime acceptance.
+smoke and controlled long warm-cache run now exist; human review found the latter smooth
+with no noticed clipping or turn-around stalls. Cold coverage arrival remains open before
+broad runtime acceptance.
 
 ### Work
 

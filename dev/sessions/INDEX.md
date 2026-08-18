@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 10 | 2026-08-17 | 0.2.1 | — | Reclassified the long route as warm-cache traversal; recorded a positive human smoothness/clipping review; made uncached-terrain validation explicit. |
 | 9 | 2026-08-17 | 0.2.1 | — | Ran the full corrected movement/rotation route; bounded capture publication by time/bytes; added result backpressure, epoch rejection, and before/after evidence. |
 | 8 | 2026-08-17 | 0.2.1 | — | Added deterministic moving/rotating benchmark routes; corrected PI-centred camera pitch; narrowed old sky-biased evidence and preserved four mip CSVs. |
 | 7 | 2026-08-17 | 0.2.1 | — | Moved foreign inflation/structural decode to the storage owner; retained request state until publication; added opt-in per-phase allocation telemetry. |

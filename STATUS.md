@@ -64,7 +64,7 @@ Two same-route runs after the asynchronous change ended with zero mip errors, ze
 
 The route is intentionally short and teleport-driven. Its same-route pipeline/tick comparison is strong evidence for the isolated mip spike class, but its old screenshots and renderer load are invalid because the camera looked mostly sky. It is not proof of long-session behavior, terrain-rendering cost, or subjective play quality.
 
-The corrected 1,600-block moving/rotating route then ran with 30-second legs, one warm-up lap, and two measured laps before and after capture publication was boundary-budgeted. The baseline reproduced capture publication at 12.038 ms maximum and total game tick at 12.062 ms. The follow-up reduced those maxima to 5.732/5.749 ms, kept capture backlog within 9 results / 0.70 MiB / 93 ms old, and again had zero ticks at or above 25 ms. Average FPS stayed within 0.2% at all four waypoints; 1% lows improved 0.7-6.6%. Five projection resets occurred in each measured run. The sandbox cache evolved between runs, so aggregate FPS deltas are supporting evidence; the phase maximum, low queue age, and source-level multi-result bound are stronger.
+The corrected 1,600-block moving/rotating route then ran with 30-second legs, one warm-up lap, and two measured laps before and after capture publication was boundary-budgeted. Every route coordinate already had VH coverage, so this was warm-cache traversal with recapture activity rather than first-time exploration. The baseline reproduced capture publication at 12.038 ms maximum and total game tick at 12.062 ms. The follow-up reduced those maxima to 5.732/5.749 ms, kept capture backlog within 9 results / 0.70 MiB / 93 ms old, and again had zero ticks at or above 25 ms. Average FPS stayed within 0.2% at all four waypoints; 1% lows improved 0.7-6.6%. Five projection resets occurred in each measured run. The sandbox cache evolved between runs, so aggregate FPS deltas are supporting evidence; the phase maximum, low queue age, and source-level multi-result bound are stronger.
 
 ## 5. Remaining performance findings
 
@@ -84,7 +84,7 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Human-watch the corrected movement/camera-rotation route for clipping and turn-around stalls; add warm join, sweep, and server-assist scenarios; measure enabled-versus-disabled allocation telemetry overhead.
+1. Run the corrected movement/camera-rotation route through terrain proven absent from the VH cache; add warm join, sweep, and server-assist scenarios; measure enabled-versus-disabled allocation telemetry overhead.
 2. Time/byte-budget GPU uploads where measurement warrants.
 3. Measure the initial 2 ms / 512 KiB install policy, foreign publication/decode backlog, and tick-smoothed serving in integrated play; move server blob reads only with safe connection ownership.
 4. Make traversal/scheduling visibility-aware without coupling visibility to residency.
@@ -111,21 +111,27 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 190 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- `dev/DocCheck.ps1` passes 192 checks under both Windows PowerShell 5.1 and PowerShell 7.
 - The full game-backed fast tier passes 900 assertions across all 22 suites, including 23 benchmark-route/camera-mapping, foreign queue/deferred-palette/failure isolation, async request-slot retention, allocation accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
-- Two full corrected-route CSVs and their machine/settings context are tracked under `bench/results/2026-08-17-moving-rotation`. The baseline/follow-up completed all measured legs with zero settle timeouts, zero tick hitches, and graceful isolated shutdown. Large screenshots and sandbox logs remain intentionally ignored.
+- Two full corrected warm-cache-route CSVs and their machine/settings context are tracked under `bench/results/2026-08-17-moving-rotation`. The baseline/follow-up completed all measured legs with zero settle timeouts, zero tick hitches, and graceful isolated shutdown. Large screenshots and sandbox logs remain intentionally ignored.
 - The corrected Windows harness completed client and server shutdown without force termination.
+
+### Human-tested
+
+- The human observer watched the corrected warm-cache movement/rotation route and reported
+  that it looked good and smooth, with no noticed transient clipping or turn-around stalls.
+  This is qualitative evidence for that populated-cache scenario, not a controlled
+  comparison or an unseen-terrain verdict.
 
 ### Not yet established
 
 - One brief human playtest reported a noticeable subjective improvement after off-thread foreign decode; it was not a controlled or thorough comparison.
-- No human-watched continuous-movement/rotation run, join, sweep, or assist soak has been compared before/after.
+- No continuous-movement/rotation run has entered terrain proven absent from the VH cache; join, sweep, and assist soaks also remain untested.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
 - No integrated sweep or assist run has yet measured the smoothed server cadence, install backlog age, or temporary coarseness under the initial client budgets.
-- The corrected long moving-camera route reported five measured projection resets and terrain-facing endpoints with no obvious near-camera cutoff. It was automated, so transient clipping and turn-around smoothness still lack a human verdict.
-- Capture publication's full follow-up peaked at 9 queued results / 0.70 MiB / 93 ms oldest and 5.732 ms for one admitted result. Interrupted shutdown and integrated-server capture remain untested.
+- Capture publication's warm-cache follow-up peaked at 9 queued results / 0.70 MiB / 93 ms oldest and 5.732 ms for one admitted result. Unseen terrain, interrupted shutdown, and integrated-server capture remain untested.
 - No controlled assist or sibling-cache run has separated foreign worker decode, owning-thread publication, backlog age, or throughput.
 - Enabled-versus-disabled allocation-telemetry overhead has not been measured in a steady stationary game scenario.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
@@ -136,7 +142,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Teleport-driven exploration emphasizes capture/propagation, and the original route's incorrect sky-facing pitch underrepresented terrain traversal, draw, and shader costs.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
-- Cached bounds remove the steady mesh scan by construction. The corrected long trajectory exercised continuous movement and stable reset counts, but the 512-block projection step, five-second shrink cooldown, conservative rectangular overestimate, and clipping behavior have not yet been judged by a person watching motion.
+- Cached bounds remove the steady mesh scan by construction. The corrected long warm-cache trajectory exercised continuous movement and stable reset counts, and human review found it smooth with no noticed clipping. Cold coverage arrival, the conservative rectangular overestimate under other routes, and broader visual conditions remain unjudged.
 - The 2 ms / 512 KiB install/capture ceilings are conservative initial policy. Compressed foreign bytes, estimated in-memory background-section bytes, and raw capture-run bytes are intentionally path-local measures, not directly comparable throughput figures. One admitted item may exceed the elapsed or byte ceiling.
 - The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
 - Per-phase allocation counters identify managed bytes attributed to the current owning thread; they do not attribute native allocations or prove that a later GC pause belongs to one phase.

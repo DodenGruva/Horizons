@@ -12,6 +12,8 @@ budget change built on that commit.
 - Vintage Story: 1.22.7 Stable
 - Mod: Vintage Horizons 0.2.1, client-only against the isolated unmodified server
 - Route: `bench/routes/moving-rotation.txt`
+- Cache state: every route coordinate already had VH coverage; this is warm-cache
+  traversal with recapture activity, not first-time exploration
 - Command: `pwsh -NoProfile -File scripts/bench-windows.ps1 -Label moving-rotation-2026-08-17-long-1 -Route bench/routes/moving-rotation.txt -Measure 30 -Laps 2 -WarmupLaps 1`
 - Route speed: 400 blocks per 30-second leg (13.3 blocks/s)
 - Camera: one complete horizontal turn per leg, conventional -12 degree pitch mapped to
@@ -51,8 +53,9 @@ elapsed-time/byte budget at result boundaries.
 The four endpoint screenshots in the ignored `.testdata/bench` sandbox were inspected.
 They face rendered terrain rather than sky and show no obvious near-camera projection
 cutoff. They also show fog/white void and finite captured-terrain edges in places, which a
-static endpoint image cannot distinguish from missing cache coverage. A human-watched run
-is still required to judge transient clipping and turn-around stalls during rotation.
+static endpoint image cannot distinguish from missing cache coverage. The human observer
+also watched the route in motion and reported that it looked good and smooth, with no
+noticed clipping or turn-around stalls.
 
 ## Capture-budget follow-up
 
@@ -90,7 +93,8 @@ and phase maximum are the stronger acceptance evidence.
 
 ## Limitations
 
-This is one machine, one generated sandbox save, and one client-only route. It does not
-exercise sibling-cache adoption, server assist, savegame sweep, or an integrated server
-installation. Allocation telemetry was enabled, and its overhead has not yet been
-measured against a disabled stationary baseline.
+This is one machine, one generated sandbox save, and one client-only warm-cache route. It
+does not establish first-time capture in unseen terrain, and it does not exercise
+sibling-cache adoption, server assist, savegame sweep, or an integrated server
+installation. Allocation telemetry was enabled, and its overhead has not yet been measured
+against a disabled stationary baseline.
