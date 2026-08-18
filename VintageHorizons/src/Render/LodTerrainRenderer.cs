@@ -70,6 +70,9 @@ public class LodTerrainRenderer : IRenderer
     readonly LodMeshBounds meshBounds = new();
     readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
+    readonly LodRenderDirtyScheduler dirtyScheduler = new();
+    readonly Predicate<long> keepRenderDirty;
+    readonly Predicate<long> renderDirtyBlocked;
     // Visibility is intentionally absent from this state. The camera may stop walking
     // an off-screen subtree, but distance-based residency still keeps appropriate meshes
     // warm for a turn-around (G8).
@@ -178,6 +181,8 @@ public class LodTerrainRenderer : IRenderer
         this.world = world;
         this.worker = worker;
         this.tints = tints;
+        keepRenderDirty = KeepRenderDirty;
+        renderDirtyBlocked = RenderDirtyBlocked;
         maxWorkerMeshBacklog = worker.MeshThreads * MeshBacklogPerThread;
 
         capi.Event.ReloadShader += LoadShader;
@@ -441,70 +446,25 @@ public class LodTerrainRenderer : IRenderer
 
     // ---- Mesh job scheduling + result upload ----
 
-    readonly List<long> dirtyPrune = new();
-
     /// <summary>
     /// Drop meaningless render-dirty entries: no live mesh AND finer than the level
     /// the walk wants there - meshing those wastes work. Entries at wanted level or
     /// COARSER must survive: they are draw targets or gate meshes the walk descends
     /// through (pruning gates stalls descent and freezes approached terrain at the
-    /// coarse level it was first meshed at). Runs every frame regardless of worker
-    /// backlog - pruning must never starve.
+    /// coarse level it was first meshed at). New keys are indexed incrementally;
+    /// existing priorities refresh only when the camera crosses a coarse cell.
     /// </summary>
     void PruneRenderDirty()
     {
-        if (world.RenderDirty.Count == 0) return;
-
-        dirtyPrune.Clear();
-        foreach (long key in world.RenderDirty)
-        {
-            if (!HasAnyMesh(key) && LodWorld.KeyLevel(key) < LodWorld.WantedLevelForSq(NearestDistanceSqTo(key)))
-            {
-                dirtyPrune.Add(key);
-            }
-        }
-        foreach (long key in dirtyPrune) world.RenderDirty.Remove(key);
+        dirtyScheduler.Refresh(world.RenderDirty, camPos.X, camPos.Z,
+            LodWorld.DetailDistance, keepRenderDirty);
     }
 
-    readonly long[] scheduleCandidates = new long[MeshSchedulesPerFrame + MeshLoadRequestsPerFrame];
-    readonly double[] scheduleCandidateDistSq = new double[MeshSchedulesPerFrame + MeshLoadRequestsPerFrame];
+    bool KeepRenderDirty(long key) => HasAnyMesh(key)
+        || LodWorld.KeyLevel(key) >= LodWorld.WantedLevelForSq(NearestDistanceSqTo(key));
 
-    /// <summary>
-    /// The nearest dirty keys that can start work now, nearest first, at most as many as
-    /// one frame could possibly use. Returns how many were found.
-    ///
-    /// A fixed insertion buffer rather than a sort: the buffer holds 36 and the dirty set
-    /// can hold thousands, so sorting the set to take its head would be the same mistake
-    /// in a different shape. Squared distances, because the order is all that is wanted
-    /// from them and the square root does not change it.
-    /// </summary>
-    int SelectNearestDirty()
-    {
-        int count = 0;
-        int capacity = scheduleCandidates.Length;
-
-        foreach (long key in world.RenderDirty)
-        {
-            // Skip anything already being meshed or reloaded, so the per-frame budget
-            // goes to sections that can actually start work now.
-            if (meshJobInFlight.Contains(key) || world.LoadsInFlight.Contains(key)) continue;
-
-            double distSq = NearestDistanceSqTo(key);
-            if (count == capacity && distSq >= scheduleCandidateDistSq[count - 1]) continue;
-
-            int at = count < capacity ? count++ : capacity - 1;
-            while (at > 0 && scheduleCandidateDistSq[at - 1] > distSq)
-            {
-                scheduleCandidateDistSq[at] = scheduleCandidateDistSq[at - 1];
-                scheduleCandidates[at] = scheduleCandidates[at - 1];
-                at--;
-            }
-            scheduleCandidateDistSq[at] = distSq;
-            scheduleCandidates[at] = key;
-        }
-
-        return count;
-    }
+    bool RenderDirtyBlocked(long key) => meshJobInFlight.Contains(key)
+        || world.LoadsInFlight.Contains(key);
 
     void ScheduleMeshJobs()
     {
@@ -517,27 +477,15 @@ public class LodTerrainRenderer : IRenderer
         int meshBudget = MeshSchedulesPerFrame;
         int loadBudget = MeshLoadRequestsPerFrame;
 
-        // ONE pass over the dirty set, keeping the nearest few, rather than a fresh scan
-        // of the whole set for every key scheduled.
-        //
-        // The iteration cap below has been here a while, and the reason it was added is
-        // still true: the paths that drop a key without starting work charge neither
-        // budget, so without a cap the loop runs until RenderDirty drains. But capping
-        // the number of iterations left each iteration scanning everything, so the work
-        // stayed proportional to cap times dirty, with a square root per element.
-        // Measured at 2.6ms inside a single frame during fill-in, which is a visible
-        // stutter exactly when the player is exploring.
-        int candidates = SelectNearestDirty();
-
-        for (int i = 0; i < candidates && meshBudget > 0 && loadBudget > 0; i++)
+        // Empty/missing candidates charge neither work budget, so keep a separate hard
+        // examination limit. Priority lookup itself stays independent of dirty-set size.
+        int examinations = MeshSchedulesPerFrame + MeshLoadRequestsPerFrame;
+        int priorityExaminationBudget = examinations + meshJobInFlight.Count + world.LoadsInFlight.Count;
+        while (meshBudget > 0 && loadBudget > 0 && examinations-- > 0
+            && dirtyScheduler.TryTake(world.RenderDirty, keepRenderDirty,
+                renderDirtyBlocked, priorityExaminationBudget,
+                out long best))
         {
-            long best = scheduleCandidates[i];
-
-            // It was dirty and not in flight a moment ago, and nothing below touches any
-            // key but the one it is working on. Remove says so anyway for the price of
-            // the probe the old code was making regardless.
-            if (!world.RenderDirty.Remove(best)) continue;
-
             // Non-blocking: an evicted section starts a background reload and is
             // re-requested by the selection walk once it lands, rather than stalling
             // this frame on a decompress.
@@ -651,10 +599,9 @@ public class LodTerrainRenderer : IRenderer
         camPos = capi.World.Player.Entity.CameraPos;
         frameCounter++;
 
-        // Timed apart, not together. Lumped into one counter they cannot be told apart,
-        // and they are different shapes: pruning walks the whole dirty set once a frame,
-        // while scheduling picks a bounded number of jobs out of it. A spike in the pair
-        // was being read as a spike in scheduling.
+        // Timed apart: pruning/index refresh is normally incremental but deliberately
+        // rebuilds when the camera crosses a coarse cell; scheduling then consumes a
+        // bounded nearest-first queue without scanning the complete dirty set.
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         PruneRenderDirty();
         PruneCost.Add(phaseStart);

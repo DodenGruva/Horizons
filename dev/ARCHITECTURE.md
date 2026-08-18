@@ -152,6 +152,13 @@ rectangle without scanning resident meshes. The camera far plane rounds upward i
 five seconds. The shader's effective far edge remains continuous, and `.vhfar` remains an
 explicit culling/far-edge cap rather than a different residency policy.
 
+Render-dirty membership is exact owning-thread state, while scheduling uses a separate
+nearest-first priority index. New dirty keys enter incrementally. Existing priorities
+rebuild only after the camera crosses a 256-block cell, detail distance changes, or the
+world is cleared. A dequeued heap entry must still exist in the exact set, and a key with
+mesh or load work already in flight is restored rather than losing its dirty obligation.
+The scheduler examines only a finite prefix sized to include the bounded in-flight work.
+
 Visibility, residency, and persistence are different concerns:
 
 - Visibility decides what is traversed and drawn now.
@@ -188,6 +195,9 @@ The server must answer every accepted section request, including explicit refusa
 14. **Capture publication is boundary-budgeted.** The owning thread stops after its
     elapsed-time, raw-run-byte, or item ceiling. One admitted result remains atomic and
     may exceed a ceiling; later results wait under combined job/result backpressure.
+15. **Render-dirty membership and priority are separate.** Exact membership owns the
+    obligation; a coarse-cell-refreshed heap orders available work. Stale or temporarily
+    blocked heap entries cannot clear the exact dirty state.
 
 ## Concurrency invariants
 

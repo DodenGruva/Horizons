@@ -8,6 +8,17 @@ first.
 
 ## [Unreleased]
 
+**Render-dirty scheduling is incremental between coarse camera-cell crossings.** Exact
+dirty membership now publishes new-key deltas into a nearest-first priority index instead
+of pruning and searching the complete set every rendered frame. The index rebuilds after
+a 256-block camera-cell crossing, detail-policy change, or world clear; stale entries are
+validated and temporarily busy mesh/load keys retain their obligations. Twenty focused
+assertions cover ordering, pruning, bounded progress, reprioritization, and teardown. A
+601-section functional route settled all four moving/full-turn waypoints and converged
+543 meshes plus every guarded queue to zero before graceful shutdown. This is functional
+evidence, not a controlled performance comparison; thousands-section scaling remains
+open, as do time/byte budgets for mesh snapshots and GPU uploads.
+
 **Visibility-aware quadtree traversal has controlled runtime evidence.** The renderer now
 rejects a node's conservative world-height frustum box before descending, so an invisible
 subtree performs no draw selection or mesh demand. Refinement waits only for visible child

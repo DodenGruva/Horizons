@@ -247,3 +247,18 @@
   telemetry intervals, method, and limitations under
   `bench/results/2026-08-18-visibility-traversal`.
 - Expanded the game-backed fast tier to 975 assertions across 23 suites.
+
+## 2026-08-18 — incremental render-dirty priority scheduling
+
+- Replaced per-frame complete `RenderDirty` pruning and nearest selection with exact
+  dirty membership plus an incremental nearest-first priority index.
+- Rebuilt priorities only after a 256-block camera-cell crossing, detail-distance change,
+  or world clear; ordinary frames inspect only newly added keys.
+- Validated stale entries against exact membership and restored temporarily busy keys so
+  in-flight meshes/reloads cannot strand or erase newer dirty obligations.
+- Added 20 focused assertions for pruning, ordering, delta ingestion, busy-prefix progress,
+  camera-cell reprioritization, and clear invalidation; the full tier passes 995 assertions
+  across 24 suites.
+- Completed a functional 601-section moving/rotation route: all four waypoints settled,
+  543 meshes converged with no evictions, all guarded queues reached zero, and isolated
+  client/server shutdown was graceful. No controlled performance improvement is claimed.

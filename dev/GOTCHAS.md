@@ -270,6 +270,21 @@ clearing writer from overtaking orchestration, verify the exact isolated PID bef
 termination, require the restart to report persisted work, and use a later fresh process
 to prove the cleared state reached disk.
 
+### G25 — A priority queue needs separate ownership of the obligation
+
+**Trigger:** replacing whole-set nearest searches with a heap or spatial work index.
+
+**Trap:** a removed/re-added key leaves a stale heap entry, while the nearest key may be
+temporarily blocked by an in-flight mesh or reload. Treating heap removal as ownership can
+either publish stale work or silently lose the newer dirty obligation. Re-ranking every
+camera movement frame also recreates the original O(collection) cost under a new name.
+
+**Do:** keep exact dirty membership separate, validate every dequeued entry, restore busy
+keys without clearing membership, ingest new keys incrementally, and rebuild priorities
+only at a coarse spatial/policy boundary under an explicit examination ceiling.
+
+**Found:** render-dirty priority scheduling, Session 19.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

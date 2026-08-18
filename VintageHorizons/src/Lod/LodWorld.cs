@@ -33,7 +33,7 @@ public class LodWorld
     public int EvictedSectionsTotal { get; private set; }
 
     /// <summary>Sections whose mesh is stale.</summary>
-    public readonly HashSet<long> RenderDirty = new();
+    public readonly LodRenderDirtySet RenderDirty = new();
 
     /// <summary>Sections whose DB row is stale.</summary>
     public readonly HashSet<long> SaveDirty = new();

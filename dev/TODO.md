@@ -15,7 +15,7 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - Repeat visibility-aware subtree traversal on a thousands-section cache and human-check
   clipping and turn-around behavior. The controlled 601-section dedicated-process pair
   established lower selection/traversal/submission work with stable mesh residency.
-- Replace repeated full `RenderDirty` scans with spatial or priority scheduling.
+- Bound mesh-snapshot creation by elapsed time and estimated retained bytes.
 - Bound GPU uploads by elapsed time and bytes.
 - Measure whether regional buffers or multi-draw are warranted after CPU fixes.
 - Select a practical default far cap only from benchmark and playtest evidence.
@@ -50,7 +50,7 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Dedicated client/server durability is established;
   integrated-singleplayer interruption remains unverified.
-- The complete game-backed fast tier passes 975 assertions across 23 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The complete game-backed fast tier passes 995 assertions across 24 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Live server-assist transfer now exercises network request state end to end. Incremental
   sibling-cache discovery and retry-safe local misses remain unexercised in integrated
   singleplayer.
@@ -62,6 +62,10 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   601-section route: selected nodes fell 64.2%, average traversal 19.8%, and average draw
   submission 9.3%, while both sides retained 543 meshes with zero evictions. Aggregate
   FPS did not improve measurably; thousands-section scaling and human motion review remain.
+- Incremental render-dirty scheduling passes 20 focused assertions and a functional
+  601-section moving/rotation route that settled every waypoint and converged all guarded
+  queues. It has no controlled old/new timing comparison, no thousands-section scale
+  evidence, and no human review of this build.
 - Capture publication is source-bounded and passed a warm-cache same-route before/after
   run: its maximum fell from 12.038 to 5.732 ms and backlog peaked at 9 results / 0.70 MiB /
   93 ms. One admitted result remains non-preemptible; unseen terrain and interrupted

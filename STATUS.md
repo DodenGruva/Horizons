@@ -5,7 +5,7 @@
 **Status date:** 2026-08-18
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `36` C# files under `VintageHorizons/src`
+**Source files:** `37` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -39,6 +39,11 @@ Capture jobs/results carry a world epoch, estimated raw-run bytes, and ready tim
 Foreign decode results carry a world epoch, key, source, deferred palette codes, estimated bytes, and ready time. Network/world request state survives decoder acceptance until owning-thread publication or terminal rejection. A resident local section wins both pre- and post-resolution checks. The foreign reload route remains available until future save acknowledgements can prove the adopted local row durable.
 
 Mip jobs carry a world epoch, child identity, and content revision. The child remains `MipDirty` and its parent remains RAM-pinned until a matching result commits. Failed, stale, or cross-world results cannot clear the durable `ApplyToParent` obligation.
+
+Render-dirty membership publishes new-key deltas into a nearest-first priority index.
+Existing priorities rebuild after a 256-block camera-cell crossing, detail-distance change,
+or world clear rather than every movement frame. Stale entries validate exact membership,
+and temporarily busy mesh/load keys retain their dirty obligation under a finite scan cap.
 
 ## 3. Completed local performance work
 
@@ -82,6 +87,10 @@ requesting meshes. Visible refinement gates only on visible children. Mesh resid
 an independent distance/age policy with a one-detail-level grace band, so view direction
 does not control eviction. A controlled same-cache route reduced selected nodes 64.2%,
 weighted average traversal time 19.8%, and weighted average draw-submission time 9.3%.
+24. Render-dirty pruning and nearest-job selection use an incremental priority index.
+Ordinary frames consume new-key deltas; coarse camera movement or policy/world changes
+perform the deliberate whole-set reindex. Busy and stale entries cannot lose exact dirty
+state.
 
 ## 4. Measured diagnosis and result
 
@@ -182,6 +191,12 @@ durability state to zero. Mean waypoint average FPS changed from 463.4 to 459.4 
 ordered pair. Static endpoint screenshots showed no obvious new camera-edge holes, but
 they do not replace human review in motion or a thousands-section scaling run.
 
+A later functional-only warm-cache route exercised the incremental dirty scheduler against
+601 cached sections. All four moving/full-turn waypoints settled, 543 meshes became
+resident with no evictions, and the final sample reported zero capture, mesh, mip,
+render-dirty, save, load, or storage backlog/errors before graceful shutdown. This one
+short run establishes lifecycle convergence, not a controlled performance improvement.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -190,10 +205,11 @@ they do not replace human review in motion or a thousands-section scaling run.
 contained a 32.450 ms service outlier in an interval whose reader and individual-send
 maxima were only 0.179/0.249 ms; packet serialization, GC, and process scheduling are not
 yet separately attributed.
-4. Dirty pruning and scheduling still scale with whole collections; GPU upload remains
-limited by mesh count rather than time/bytes. Visibility-aware traversal now has a
-controlled 601-section runtime reduction, but scaling at thousands of cached sections is
-not established.
+4. Ordinary render-dirty pruning/scheduling no longer scales with the whole collection;
+the index deliberately rebuilds after coarse camera/policy/world changes. Mesh snapshot
+creation and GPU upload remain item-count rather than time/byte bounded. Visibility-aware
+traversal has a controlled 601-section runtime reduction, but scheduler and traversal
+scaling at thousands of cached sections is not established.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -211,8 +227,8 @@ have dedicated-process evidence.
 
 ## 7. Current open work
 
-1. Extend visibility-aware traversal validation to a thousands-section cache and human
-in-motion review, replace whole-dirty-set scheduling, and time/byte-budget GPU uploads.
+1. Extend visibility/traversal/scheduler validation to a thousands-section cache and human
+in-motion review, then time/byte-budget mesh snapshots and GPU uploads.
 2. Repeat mip interruption/recovery and exercise sibling-cache discovery/retryable local
 misses in integrated singleplayer.
 3. Add storage save revisions, acknowledgements, retry, and shutdown durability.
@@ -243,12 +259,16 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Quadtree nodes are frustum-tested before descent; invisible subtrees cannot request
   meshes. Visible-child coverage remains conservative, while eviction uses a separate
   distance/age residency timestamp that camera visibility never updates.
+- Exact render-dirty membership feeds only new-key deltas into a nearest-first heap on
+  ordinary frames. Camera-cell and detail-policy changes plus world clears own full
+  reindexing; stale and busy heap entries cannot clear exact membership.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 258 checks under both Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 975 assertions across all 23 suites, including 7
-  visibility-traversal/residency, 53 benchmark-route/config/camera-mapping, the durable-mip
+- `dev/DocCheck.ps1` passes 263 checks under both Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 995 assertions across all 24 suites, including 20
+  render-dirty-scheduling assertions, 7 visibility-traversal/residency,
+  53 benchmark-route/config/camera-mapping, the durable-mip
   interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
   accounting, 15 tick-allowance, 14 drain-budget, 30 cached-bounds/far-plane, SQLite
@@ -285,6 +305,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   intervals per side, selected nodes fell 64.2%, weighted average traversal time 19.8%,
   and weighted average draw submission 9.3%; both sides retained 543 meshes with zero
   evictions and no reported 25 ms Vintage Horizons tick.
+- A short isolated warm-cache functional route exercised the incremental scheduler with
+  601 cached sections and 543 resident meshes. Every waypoint settled, all guarded queues
+  converged, and shutdown was graceful; no before/after performance claim is attached.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Human-tested
@@ -305,6 +328,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   and controlled 601-section dedicated-process evidence. No thousands-section route or
   human in-motion review has yet established broader scaling, clipping behavior, or
   subjective turn-around quality.
+- Incremental render-dirty scheduling has source, 20 focused assertions, and one
+  601-section functional route. Its coarse-cell rebuild cost, scaling at thousands of
+  dirty/cached sections, and causal frame-time effect remain unmeasured.
 - The completed sweep ran in separate dedicated-server/client processes with a warm
   server cache, a calibrated 24-chunk radius, serving disabled, and generation disabled.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior
@@ -327,6 +353,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
 - Cached bounds remove the steady mesh scan by construction. The corrected long warm-cache trajectory exercised continuous movement and stable reset counts, and human review found it smooth with no noticed clipping. Cold coverage arrival, the conservative rectangular overestimate under other routes, and broader visual conditions remain unjudged.
+- The priority scheduler removes ordinary whole-set dirty scans by construction, but a
+coarse-cell/detail/world transition still performs an intentional reindex. The current
+functional route proves convergence only; it does not establish large-cache rebuild cost
+or an aggregate FPS effect.
 - The 2 ms / 512 KiB install/capture ceilings are conservative initial policy. Compressed foreign bytes, estimated in-memory background-section bytes, and raw capture-run bytes are intentionally path-local measures, not directly comparable throughput figures. One admitted item may exceed the elapsed or byte ceiling.
 - The first clean-cache frontier run generated server-save terrain and the second reused it. Both client caches were empty, but FPS and upload-volume differences between them combine client and server-save state and are not causal comparisons.
 - The brief subjective improvement is consistent with removing inflation and run parsing from the game tick, but it does not establish effect size or exclude unrelated run-to-run variation.
