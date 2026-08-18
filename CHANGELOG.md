@@ -8,6 +8,18 @@ first.
 
 ## [Unreleased]
 
+**Cached-terrain transition artifacts have source fixes and an exact handoff plan.**
+Terrain color variation now uses a stable section world origin instead of camera-relative
+render coordinates, and the five-block approach sink has been removed. The old 78.5%
+distance cutoff could discard fallback before vanilla chunks streamed; the current
+playtest uses a conservative inner radial handoff with at least 192 blocks of fallback
+overlap. That radius remains a stopgap because it cannot identify individual rendered
+chunks. The approved follow-up is a bounded hybrid: fully cache-owned meshes use the
+unchanged draw path, fully vanilla-owned meshes are skipped on the CPU, and only mixed
+frontier meshes sample a compact 32x32x32 readiness mask. Twenty-three focused assertions
+were added but have not been rerun; the latest Release playtest package was built for human
+evaluation. Formats and protocols are unchanged.
+
 **Server-assist progress logging no longer blocks the server tick.** The elevated-rate
 transfer benchmark reproduced multi-millisecond assist tails at the synchronous
 every-200-sections notification. Correlated setup/publication/admission, send, allocation,

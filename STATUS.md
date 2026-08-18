@@ -16,6 +16,11 @@
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
+Current rendering edits world-anchor cached-terrain noise, remove the near-transition
+geometry sink, and replace the old outer cutoff with a conservative inner radial playtest
+handoff. A detailed but unimplemented chunk-aware hybrid ownership design is approved in
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+
 ## 2. Product and architecture state
 
 The client captures received chunk columns, converts them into persistent 3D RLE sections, builds a mip pyramid, meshes selected sections on workers, and renders them beyond vanilla view distance. An optional server installation can capture collectively explored terrain, sweep existing savegame columns, generate transient terrain on request, and offer stored sections to clients.
@@ -62,6 +67,14 @@ vertex/index data, or four results. One first item progresses even when oversize
 complete opaque/water replacement becomes live before the old pair is disposed; partial
 upload failure retains old terrain and restores dirty work. Telemetry reports throughput,
 pending bytes, oldest age, direct GL upload time, and disposal time.
+
+Cached-terrain color variation now combines section-local geometry with a stable section
+world origin instead of camera-relative render coordinates. The vertex shader no longer
+sinks cached geometry near the vanilla transition. The current playtest suppresses a
+conservative inner radial core while retaining at least 192 blocks of cached fallback;
+this mitigates overlap but cannot know exact vanilla chunk readiness. The approved hybrid
+follow-up uses exclusive 32x32x32 ownership, bounded readiness tracking, CPU whole-mesh
+skips, and mixed-only GPU masking while preserving independent cache residency.
 
 ## 3. Completed local performance work
 
@@ -127,6 +140,9 @@ persisted mip obligation; a third fresh integrated process required zero obligat
 progress notification inside request admission. Removing it kept cumulative status
 visibility while a repeat 273-section transfer held active service to 2.061 ms maximum,
 individual sends below 0.647 ms, and crossed no managed collection in measured callbacks.
+30. Cached-terrain noise is world-anchored, the near approach no longer deforms vertices,
+and a conservative radial handoff playtest retains a broad fallback band. Exact per-chunk
+ownership remains planned rather than implemented.
 
 ## 4. Measured diagnosis and result
 
@@ -277,6 +293,10 @@ creation and GPU upload are boundary-budgeted and have bounded 3,132-section run
 queue/driver evidence. Visibility-aware traversal has a controlled 601-section reduction;
 the thousands-section run is functional scaling evidence rather than a controlled causal
 comparison.
+5. The current radial handoff still submits suppressed cached meshes and discards their
+fragments early. The approved hybrid could reduce draw submission and GPU work by skipping
+fully replaced sections, but its tracker/mask overhead and net frame-time effect are
+unmeasured.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -293,12 +313,17 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 - Incremental sibling-cache discovery and retry-safe local misses now have an integrated
   command-generation run with exact-key retry/installation proof. Natural miss frequency
   and default-sweep behavior remain unmeasured.
+- The color-noise and sink causes are source-traced and corrected. A distance-only handoff
+  remains unable to express individual vanilla readiness; exact ownership, unload recovery,
+  and seam behavior are open under the approved hybrid plan.
 
 ## 7. Current open work
 
-1. Complete human in-motion review of clipping, turn-around behavior, and visual mesh
-replacement on the thousands-section build.
-2. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+1. Implement and performance-gate the chunk-aware cached-to-vanilla handoff in
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+2. Complete human in-motion review of clipping, turn-around behavior, visual mesh
+replacement, and the current near-handoff playtest.
+3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
 warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
@@ -341,10 +366,17 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Integrated client and server storage workers share one process environment; the guarded
   mip interruption marker is enabled only for the unsuffixed client pipeline, while the
   local-offer miss hook requires an explicit sandbox marker and exact-key install proof.
+- Cached-terrain noise now derives from a stable section origin plus local vertices; the
+  approach sink is absent. The radial handoff is bounded to no more than half the approved
+  vanilla distance while retaining at least 192 blocks of fallback.
+- The installed public `IsChunkRendered` query tests a 32x32x32 client chunk's
+  `quantityDrawn`; client source inspection places that counter advance during
+  tessellation before completed mesh upload, so it requires lifecycle-safe confirmation.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 319 checks under Windows PowerShell 5.1 and PowerShell 7.
+- `dev/DocCheck.ps1` passes 321 checks in the current PowerShell environment; cross-shell
+  portability was previously established under Windows PowerShell 5.1 and PowerShell 7.
 - The full game-backed fast tier passes 1,058 assertions across all 25 suites, including 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
@@ -354,7 +386,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
   accounting, 15 tick-allowance, 23 drain-budget, 30 cached-bounds/far-plane, SQLite
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
+- Twenty-three additional focused assertions cover conservative handoff arithmetic and
+  shader/renderer ownership invariants. They have not been executed since the Session 24
+  edits and are not included in the established 1,058-assertion result.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
+- The Session 24 rendering source was built in Release and packaged as
+  `vintagehorizons_0.2.1-playtest-near-handoff.zip`; no game process was launched by the
+  assistant for this playtest.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
 - Two full corrected warm-cache-route CSVs and their machine/settings context are tracked under `bench/results/2026-08-17-moving-rotation`. The baseline/follow-up completed all measured legs with zero settle timeouts, zero tick hitches, and graceful isolated shutdown. Large screenshots and sandbox logs remain intentionally ignored.
 - Two one-way clean-client-cache CSVs and their scenario correction are tracked under `bench/results/2026-08-17-uncached-frontier`. Both had zero ≥25 ms VH ticks and bounded capture backlog; the cooldown run established queue convergence before graceful shutdown.
@@ -412,6 +450,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   that it looked good and smooth, with no noticed transient clipping or turn-around stalls.
   This is qualitative evidence for that populated-cache scenario, not a controlled
   comparison or an unseen-terrain verdict.
+- The user described the first Session 24 render-fixes package as better, then reported
+  cached terrain still mixed into proper terrain. This establishes the remaining overlap
+  in that package, not acceptance of the latest radial package or every individual fix.
 
 ### Not yet established
 
@@ -451,6 +492,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
+- The latest conservative radial handoff package has not received human results. The
+  chunk-aware tracker/mask/CPU-skip design is not implemented, so its z-fighting, seam,
+  popping, unload-recovery, and performance acceptance remain open.
 
 ## 9. Known uncertainty
 
@@ -483,6 +527,10 @@ read was a direct owning-thread observation; later runs prove reads are now off-
 reproduce/fix a progress-log tail without managed-collection crossings. The raw log for
 the old 32.450 ms sample is unavailable, so that exact sample remains unproven rather than
 being retroactively relabelled. The fix run is one-machine, one-player evidence.
+- Shader-only suppression is not free: resident mesh buffers, traversal, uniforms, draw
+  submission, vertex processing, rasterization, and the early fragment discard remain.
+  The proposed hybrid may remove much of that work for fully replaced sections, but a
+  performance gain is not established until paired CPU/GPU-aware evidence exists.
 
 ## 10. Documentation map
 

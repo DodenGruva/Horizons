@@ -17,6 +17,11 @@ uniform float fogDensityIn;
 
 uniform float farViewDistance;
 
+// Stable world X/Z for this section. Geometry stays camera-relative for precision,
+// but appearance must not move with the camera: a fixed terrain point must always
+// sample the same colour variation.
+uniform vec4 noiseOrigin;
+
 // Which of this section's four sides border on area we have NO captured data for
 // (-X, +X, -Z, +Z; 1 = open). Client-side-only means coverage is whatever the
 // server has streamed us, so the cache genuinely runs out mid-air along the edges
@@ -41,8 +46,10 @@ out vec4 vertexColor;
 out float yLevel;
 out vec4 rgbaFog;
 out float dist;
+out float radialDistance;
 out float fogAmount;
 out float edgeFade;
+out vec3 terrainPos;
 
 #include vertexflagbits.ash
 #include colorutil.ash
@@ -63,27 +70,16 @@ void main()
     worldPos = modelMatrix * vec4(vertexPositionIn, 1.0);
     worldPos = applyGlobalWarping(worldPos);
 
+    terrainPos = vec3(
+        noiseOrigin.x + vertexPositionIn.x,
+        vertexPositionIn.y,
+        noiseOrigin.y + vertexPositionIn.z);
+
     // 0 at the start of the LOD band (inside vanilla terrain), 1 at the far edge
     float distStart = viewDistance * 0.785;
     float radial = length(worldPos.xz);
+    radialDistance = radial;
     dist = (radial - distStart) / (farViewDistance - distStart - 512.0);
-
-    // Sink LOD terrain into the ground near the transition ring so the seam with real
-    // chunks reads as terrain, not a floating shelf.
-    //
-    // Measured in BLOCKS from the start of the band, not as a fraction of it: dist is
-    // normalised over the whole cache, which grows as the player explores, so a
-    // fractional ramp changed width depending on how much of the world had been
-    // visited -- 86 blocks at a 5000-block edge, 390 at 20000.
-    //
-    // smoothstep rather than a linear ramp: a straight rise stops dead when it reaches
-    // full height and leaves a visible crease right where it finishes. This eases out
-    // to zero slope at both ends, so the sink is still there but the top of the bend
-    // is not something the eye can catch.
-    const float SINK_DEPTH = 5.0;
-    const float SINK_FADE_BLOCKS = 110.0;
-    float intoBand = radial - distStart;
-    worldPos.y -= SINK_DEPTH * (1.0 - smoothstep(0.0, SINK_FADE_BLOCKS, intoBand));
 
     // Distance into the section from each open side, as a 0..1 ramp over the outer
     // third. Vertex positions are section-local, so this is just the local x/z.

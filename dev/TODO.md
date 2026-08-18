@@ -6,6 +6,25 @@
 
 The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
+### Chunk-aware cached-to-vanilla handoff
+
+The approved rendering design is
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+
+- Source-prove the client post-tessellation/upload and unload lifecycle around
+  `IsChunkRendered`; use the plan's bounded stabilization/revalidation fallback if no
+  reliable public event exists.
+- Implement bounded 32x32x32 readiness tracking, atomic GPU mask publication, O(1) LOD
+  aggregate classification, CPU skip for fully replaced meshes, and mixed-only mask
+  sampling behind the radial fallback.
+- Preserve independent residency so suppressed fallback remains warm without triggering
+  unload/reload/remesh churn.
+- Benchmark cache-only, vanilla-settled, moving-frontier, large-cache, teleport, and
+  view-distance-change scenarios before claiming neutral or improved performance.
+- Human-check the latest radial playtest for the original gap, color alternation, downward
+  shrink, cached/vanilla mixing, water/cliff seams, and approach popping. Repeat the visual
+  matrix after the hybrid implementation.
+
 ### Documentation and baseline
 
 - Repeat the recorded hardware/settings/config benchmark on the eventual release candidate if its code or sandbox state differs materially.
@@ -23,6 +42,8 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
 - Is temporary coarseness acceptable while time-budgeted installs catch up during fast travel?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
+- Is the hybrid's one-time chunk handoff pop preferable to any residual overlap, and do
+  observed cliff/water seams require a frontier-only correction?
 
 ## Verification debt
 
@@ -36,7 +57,15 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Both dedicated client/server and integrated-singleplayer durability
   are established for the guarded routes.
-- The complete game-backed fast tier passes 1,056 assertions across 25 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The last executed complete game-backed fast tier passes 1,058 assertions across 25
+  suites. Session 24 adds 23 focused handoff/shader assertions that have not yet been run.
+  A real game process still supplies the only end-to-end proof of thread ownership and GPU
+  behavior.
+- The world-stable color coordinate, removed approach sink, and conservative radial
+  handoff have source/build evidence and a packaged playtest. The user found the first
+  render-fixes package better but still observed cached/vanilla mixing; the latest radial
+  package and proposed hybrid have no completed human result. Chunk-readiness timing,
+  visual seams, GPU cost, and net performance remain open.
 - Live server-assist transfer exercises network request state end to end. An integrated
   command-generation run discovered 211 sibling keys, forced one retryable miss, and
   installed that exact key plus 62 others. Natural miss frequency and default-sweep

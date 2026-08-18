@@ -10,9 +10,11 @@ in vec4 vertexColor;
 in float yLevel;
 in vec4 rgbaFog;
 in float dist;
+in float radialDistance;
 in float fogAmount;
 in float edgeFade;
 in vec3 tint;
+in vec3 terrainPos;
 
 uniform float fogDensityIn;
 uniform float fogMinIn;
@@ -20,6 +22,7 @@ uniform float horizonFog;
 uniform vec3 sunPosition;
 uniform vec3 sunColor;
 uniform float dayLight;
+uniform float cacheHandoffDistance;
 
 // Live tint table. The alpha byte carries a tint SLOT plus a blend band:
 //   0..63    opaque,     slot = alpha
@@ -64,7 +67,10 @@ layout(location = 3) out vec4 outGPosition;
 
 void main()
 {
-    if (dist < 0.0 || dist > 1.0) discard;
+    // Retain a broad fallback overlap for chunks that are still streaming, then give
+    // the close field entirely to ready vanilla terrain so the approximate surfaces do
+    // not mix. This boundary is deliberately much nearer than the old 78.5% cutoff.
+    if (radialDistance < cacheHandoffDistance || dist > 1.0) discard;
 
     // Flat-shaded facet normal from position derivatives - no normals in the mesh.
     vec3 normal = normalize(cross(dFdx(worldPos.xyz), dFdy(worldPos.xyz)));
@@ -91,7 +97,7 @@ void main()
     // Water is a smooth surface; only break up land.
     if (!translucent) {
         float period = max(4.0, columnBlocks * 6.0);
-        float n = valuenoise(worldPos.xyz / period);
+        float n = valuenoise(terrainPos / period);
         albedo *= 1.0 + 0.10 * (n - 0.5);
     }
 

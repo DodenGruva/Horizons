@@ -13,6 +13,7 @@ public static class StaticAssetChecks
         AsciiOnly(c);
         TintSlotAgreement(c);
         AlphaPacking(c);
+        LodFallbackAndStableColour(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
     }
@@ -102,6 +103,40 @@ public static class StaticAssetChecks
     {
         c.True(LodTintRegistry.MaxSlots * 3 <= 256,
             $"tint bands fit in a byte (MaxSlots {LodTintRegistry.MaxSlots} * 3 <= 256)");
+    }
+
+    /// <summary>
+    /// Three rendering regressions are expressible only across the renderer and its two
+    /// shader stages: the near handoff must retain cached fallback, the transition must
+    /// not deform geometry, and cosmetic noise must use a world-stable coordinate rather
+    /// than the camera-relative position required by projection and fog.
+    /// </summary>
+    static void LodFallbackAndStableColour(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string shaders = Path.Combine(root, "VintageHorizons", "assets", "vintagehorizons", "shaders");
+        string vertex = File.ReadAllText(Path.Combine(shaders, "lodterrain.vsh"));
+        string fragment = File.ReadAllText(Path.Combine(shaders, "lodterrain.fsh"));
+        string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src", "Render",
+            "LodTerrainRenderer.cs"));
+
+        c.False(fragment.Contains("dist < 0.0", StringComparison.Ordinal),
+            "cached terrain is not discarded at the old outer handoff boundary");
+        c.True(fragment.Contains("radialDistance < cacheHandoffDistance", StringComparison.Ordinal),
+            "cached terrain hands the conservative close field back to vanilla terrain");
+        c.True(renderer.Contains("prog.Uniform(\"cacheHandoffDistance\"", StringComparison.Ordinal),
+            "the renderer uploads the conservative near handoff radius");
+        c.False(vertex.Contains("worldPos.y -=", StringComparison.Ordinal),
+            "the near transition does not push cached terrain downward");
+
+        c.True(vertex.Contains("uniform vec4 noiseOrigin", StringComparison.Ordinal),
+            "the vertex shader declares a stable section noise origin");
+        c.True(renderer.Contains("prog.Uniform(\"noiseOrigin\"", StringComparison.Ordinal),
+            "the renderer uploads the stable section noise origin");
+        c.True(fragment.Contains("valuenoise(terrainPos / period)", StringComparison.Ordinal),
+            "terrain colour noise uses the stable terrain coordinate");
+        c.False(fragment.Contains("valuenoise(worldPos", StringComparison.Ordinal),
+            "terrain colour noise never follows the camera-relative render position");
     }
 
     /// <summary>

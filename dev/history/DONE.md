@@ -328,3 +328,20 @@
   maximum, and no collection crossing any measured callback or send.
 - Built and content-verified the fixed Release playtest zip; the final tier passes 1,058
   assertions and no wire, blob, or schema number changed.
+
+## 2026-08-18 - cached-terrain transition source fixes and hybrid design
+
+- Moved cosmetic terrain noise from camera-relative render coordinates to a stable
+  section-world coordinate.
+- Removed the five-block, 110-block-wide vertex sink that made cached terrain shrink
+  downward on approach.
+- Replaced the old 78.5% outer cutoff with a conservative inner radial playtest handoff
+  that retains at least 192 blocks of fallback overlap.
+- Added 23 focused handoff/shader assertions and built two Release playtest packages; the
+  newest near-handoff zip has SHA-256
+  `89A20E1B48865869FC18D3689EF34C86FD9954BC4A80926B92011F353815BD0D`.
+- Source-traced the installed 1.22.5 chunk-rendered signal and recorded its
+  tessellation-before-upload caveat.
+- Approved and documented a bounded hybrid design with exclusive 32x32x32 ownership, CPU
+  whole-mesh skipping, mixed-only GPU masking, independent residency, seam gates, and
+  paired performance acceptance.

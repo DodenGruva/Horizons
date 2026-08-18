@@ -6,6 +6,7 @@ public static class FarDistanceChecks
     {
         CachedBounds(c);
         EffectiveDistanceAndCap(c);
+        ConservativeNearHandoff(c);
         StableProjection(c);
     }
 
@@ -69,6 +70,29 @@ public static class FarDistanceChecks
             "the .vhfar cap cannot clip the vanilla view-distance safety band");
         c.Eq(4608f, LodFarDistance.RequiredProjection(4096),
             "the camera projection retains room beyond the visible LOD edge");
+    }
+
+    static void ConservativeNearHandoff(Check c)
+    {
+        c.Eq(0f, LodNearHandoff.InnerDiscardRadius(0),
+            "no vanilla radius keeps all available cached fallback");
+        c.Eq(0f, LodNearHandoff.InnerDiscardRadius(128),
+            "a tiny view retains the minimum fallback overlap");
+        c.Eq(64f, LodNearHandoff.InnerDiscardRadius(256),
+            "a 256-block view hands off only in its close 64-block core");
+        c.Eq(256f, LodNearHandoff.InnerDiscardRadius(512),
+            "a normal view keeps cached fallback through its inner half");
+        c.Eq(512f, LodNearHandoff.InnerDiscardRadius(1024),
+            "a large view still hands off no farther out than half radius");
+
+        foreach (float view in new[] { 192f, 256f, 512f, 1024f, 4096f })
+        {
+            float inner = LodNearHandoff.InnerDiscardRadius(view);
+            c.True(view - inner >= LodNearHandoff.MinimumFallbackOverlap,
+                $"view distance {view} retains at least the minimum fallback overlap");
+            c.True(inner <= view * LodNearHandoff.MaximumInnerFraction,
+                $"view distance {view} never hands off outside half radius");
+        }
     }
 
     static void StableProjection(Check c)

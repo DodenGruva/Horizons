@@ -775,6 +775,7 @@ public class LodTerrainRenderer : IRenderer
 
         prog.Uniform("viewDistance", viewDistance);
         prog.Uniform("farViewDistance", EffectiveFarDistance);
+        prog.Uniform("cacheHandoffDistance", LodNearHandoff.InnerDiscardRadius(viewDistance));
 
         // Uniforms persist in the program between Use() calls, so re-upload only when
         // the table actually changed (every ~240 frames) rather than every frame.
@@ -850,6 +851,12 @@ public class LodTerrainRenderer : IRenderer
         modelMat.Identity().Translate(relX, -camPos.Y, relZ);
         prog!.UniformMatrix("modelMatrix", modelMat.Values);
         prog.Uniform("columnBlocks", (float)LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)));
+
+        // Projection/fog use camera-relative coordinates, but colour noise needs the
+        // section's stable world origin or a fixed patch changes colour while flying.
+        // This uniform does not affect geometry, so float precision at extreme world
+        // coordinates can only soften the cosmetic variation, never move terrain.
+        prog.Uniform("noiseOrigin", (float)originX, (float)originZ, 0f, 0f);
 
         // Sides that border on never-captured area, so the shader can dissolve them
         // into the horizon instead of leaving a cliff at the edge of what we've seen.

@@ -101,6 +101,26 @@ internal static class LodFarDistance
         Math.Max(MinimumProjectionDistance, effectiveFarDistance + ProjectionMargin);
 }
 
+/// <summary>
+/// Conservative inner handoff from cached terrain to vanilla chunks. The old boundary
+/// sat at 78.5% of configured view distance and could outrun streaming; removing it
+/// entirely made approximate cached surfaces compete with ready vanilla geometry. Keep
+/// at least 192 blocks of overlap and never hand off outside half the configured radius.
+/// </summary>
+internal static class LodNearHandoff
+{
+    public const float MinimumFallbackOverlap = 192;
+    public const float MaximumInnerFraction = 0.5f;
+
+    public static float InnerDiscardRadius(float vanillaViewDistance)
+    {
+        float distance = Math.Max(0, vanillaViewDistance);
+        return Math.Max(0, Math.Min(
+            distance * MaximumInnerFraction,
+            distance - MinimumFallbackOverlap));
+    }
+}
+
 internal readonly record struct LodFarPlaneUpdate(float Distance, bool Changed);
 
 /// <summary>

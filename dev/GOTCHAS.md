@@ -356,6 +356,40 @@ when a proven hot path must remain free of synchronous logger calls.
 
 **Found:** server-assist tail attribution, Session 23.
 
+### G30 — Camera-relative geometry coordinates are not stable appearance coordinates
+
+**Trigger:** adding world-space noise, tint variation, material breakup, or another
+appearance effect to camera-relative LOD geometry.
+
+**Trap:** camera-relative positions intentionally change as the camera moves. Sampling a
+noise field from those positions makes a fixed terrain point change color in flight even
+though its mesh and stored color are unchanged.
+
+**Do:** keep geometry camera-relative for projection precision, but pass a stable section
+world origin and derive appearance coordinates from section-local vertices. At extreme
+world coordinates, precision loss may soften cosmetic variation but must never move
+geometry.
+
+**Found:** cached-terrain color alternation, Session 24.
+
+### G31 — View distance is not per-chunk render readiness
+
+**Trigger:** handing cached terrain to the vanilla renderer near its configured view edge.
+
+**Trap:** a radial cutoff cannot tell whether one replacement chunk has actually rendered.
+Moving it outward opens a band while streaming lags; moving it inward leaves approximate
+cached and vanilla meshes overlapping and z-fighting. Sinking or fading the cached mesh
+still leaves two owners. The public `IsChunkRendered` signal is closer, but in the 1.22.5
+client its counter advances during tessellation before completed mesh upload.
+
+**Do:** use exclusive chunk ownership. Treat dirty/load signals as candidates, confirm the
+render lifecycle, keep uncertain cells cache-owned, publish CPU/GPU readiness atomically,
+skip wholly replaced meshes, and mask only mixed frontier sections. Keep visibility and
+residency separate so ownership changes do not cause remesh thrash.
+
+**Found:** cached/vanilla handoff investigation, Session 24. Detailed implementation plan:
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

@@ -8,7 +8,10 @@ Vintage Horizons extends visible terrain beyond Vintage Story's normal chunk vie
 
 The client must remain useful against an unmodified server. It may only derive terrain from chunk data the server actually sent. An optional server installation can build its own cache, index previously generated terrain, generate transient terrain on request, and offer stored sections to clients.
 
-The mod does not replace the vanilla near-terrain renderer. Its distant terrain overlaps the vanilla band, sinks into the near transition, and fades into fog or the edge of known coverage.
+The mod does not replace the vanilla near-terrain renderer. Its distant terrain currently
+keeps a conservative fallback overlap, hands a close radial core back to vanilla as a
+playtest stopgap, and fades into fog or the edge of known coverage. Cached geometry no
+longer sinks near the transition.
 
 ## System flow
 
@@ -148,7 +151,14 @@ Propagation keeps the child's pending flag set while work is queued or executing
 
 The renderer uses a quadtree over section levels. Distance selects the desired detail level. A parent remains as coverage until the required child slots are ready, preventing holes during level transitions.
 
-Opaque and translucent terrain use separate mesh buffers and passes. Seasonal/climate tint data is refreshed from live game color maps and applied in the shader. The camera uses relative section transforms so large world coordinates do not enter mesh vertex data.
+Opaque and translucent terrain use separate mesh buffers and passes. Seasonal/climate tint data is refreshed from live game color maps and applied in the shader. The camera uses relative section transforms so large world coordinates do not enter mesh vertex data. Cosmetic terrain noise combines section-local vertices with a stable section world origin; it must not sample camera-relative geometry coordinates.
+
+The settled near-handoff target is exclusive per-vanilla-render-chunk ownership. Cached
+terrain covers uncertain/unready cells, vanilla owns confirmed render-ready cells, fully
+replaced cached meshes are skipped before submission, and only mixed frontier meshes pay
+for a GPU readiness mask. Visibility/ownership remains separate from mesh residency and
+persistence. The current radial cutoff is a guarded stopgap until this design is
+implemented and measured; see `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
 
 The renderer maintains a horizontal world-space rectangle over all opaque and water mesh
 keys. Additions expand it in constant time; removing an extreme marks it for one rebuild
@@ -235,6 +245,10 @@ The server must answer every accepted section request, including explicit refusa
     obligation until the storage owner acknowledges the current persistence revision.
     Failures retry, superseded pending snapshots coalesce, and close either reaches clean
     state or reports exact unresolved revisions.
+18. **Near terrain has one renderer owner per vanilla chunk.** The intended handoff keeps
+    uncertain cells cache-owned, transfers confirmed cells exclusively to vanilla, skips
+    wholly replaced cached meshes, and masks only mixed frontier meshes. Ownership does
+    not itself evict resident cache resources.
 
 ## Concurrency invariants
 
