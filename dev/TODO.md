@@ -12,9 +12,9 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### Instrumentation
 
-- Add equivalent phase telemetry for sweep, generation, and server-assist serving.
-- Add warm-cache join, sweep, and server-assist benchmark scenarios.
-- Measure the overhead of enabled versus disabled instrumentation in a steady stationary scenario.
+- Add warm-cache join, completed sweep, transient-generation, and saturated server-assist
+  benchmark scenarios. The short server-mod smoke reached sweep probing and idle assist
+  service, but no section transfer.
 
 ### P1 fixes
 
@@ -60,10 +60,11 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   93 ms. One admitted result remains non-preemptible; unseen terrain and interrupted
   shutdown were not exercised.
 - Server-assist and savegame-sweep spike cadence has not yet been profiled in integrated singleplayer.
-- Tick-smoothed server work and time/byte-bounded client installs are source-traced and harness-tested, but their frame-time effect and backlog policy have not yet been evaluated in an integrated game process.
+- Tick-smoothed server work and time/byte-bounded client installs are source-traced and harness-tested. A short integrated server-mod smoke emitted sweep probe and idle assist telemetry, but its frame-time effect, completed-sweep cadence, transfer backlog, and install policy remain unevaluated.
 - Storage-owned foreign decode is source-traced and harness-tested. A brief human test
   reported a noticeable subjective improvement, but no controlled assist or sibling-cache
   run has isolated decode time, publication time, backlog age, or throughput.
-- Per-phase allocation telemetry is harness-tested; its enabled-versus-disabled overhead
-  still needs a steady stationary comparison.
+- Two warmed steady-stationary on/off pairs measured about 0.7% lower average FPS and
+  1.0% lower median FPS with allocation telemetry at roughly 445 uncapped FPS. Their 1%
+  lows reversed direction, and ordinary capped-frame-rate overhead remains unmeasured.
 - GPU bottleneck attribution remains unmeasured; CPU/render-thread findings must not be presented as proof that the shader or GPU is innocent.

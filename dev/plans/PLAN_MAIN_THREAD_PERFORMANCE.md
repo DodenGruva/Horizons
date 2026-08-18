@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs, and bounded capture publication are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs, and bounded capture publication are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -79,7 +79,7 @@ The goal is not merely higher average FPS. The work must improve frame-time cons
 
 ## 4. Phase 1 — observability and reproduction
 
-**Implementation status:** Client-side tick/pipeline/render percentiles, hitch counts, projection resets, upload bytes, and concrete install/capture queue ages are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Server sweep/assist, broader queue-age, allocation, and disabled-overhead scenarios remain open.
+**Implementation status:** Client tick/pipeline/render and server pipeline/sweep/generation/assist percentiles, hitch counts, allocation totals, and relevant queue telemetry are implemented. The active-exploration teleport route reproduced the issue and attributed its largest spike to mip work, but its old screenshots/render load were sky-biased by an incorrect pitch mapping. The corrected warm-cache continuous movement/rotation route now has a full baseline, same-route capture-budget follow-up, and positive human smoothness/clipping review. Two clean-client-cache one-way capture-frontier runs also completed with bounded, convergent backlog and no ≥25 ms VH ticks. Two warmed stationary A/B pairs measured about 0.7% average-FPS overhead from allocation telemetry. A short server-mod smoke emitted sweep/assist telemetry; warm join, completed sweep/generation, and live assist-transfer scenarios remain open.
 
 ### Client instrumentation
 

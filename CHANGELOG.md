@@ -8,6 +8,16 @@ first.
 
 ## [Unreleased]
 
+**Server observability and telemetry cost evidence.** Explicit stats sessions now report
+server capture-pipeline, sweep, transient-generation, and assist phases with p95/p99/max,
+hitch, queue, and managed-allocation context. The isolated runners can install the server
+mod and perform a genuine stats-disabled comparison; auto-unpause no longer implicitly
+turns allocation sampling on. Two warmed stationary on/off pairs measured about a 0.7%
+average-FPS and 1.0% median-FPS cost at roughly 445 uncapped FPS, while inconsistent 1%
+lows support no tail-latency claim. A server-mod smoke emitted pipeline, sweep, and assist
+intervals and shut down gracefully; live assist blob/send work and full sweep/generation
+scenarios remain open.
+
 **Clean-cache exploration evidence.** A new one-way benchmark follows the active capture
 frontier for 1,600 blocks without looping back through earlier legs. Two independently
 reset client-cache runs had no Vintage Horizons game ticks at or above 25 ms; their worst
@@ -59,8 +69,7 @@ sibling-cache benchmark is still pending.
 now record managed allocation totals and worst single-call allocation for client tick,
 pipeline, and renderer phases. The counters are opt-in, scoped to the measured client
 owners, and read outside the elapsed-time boundary. This makes later movement tests able
-to distinguish a phase's own work from memory pressure and garbage-collection effects;
-enabled-versus-disabled overhead still needs a steady stationary comparison.
+to distinguish a phase's own work from memory pressure and garbage-collection effects.
 
 **Smoother server sweeps, generation, and terrain transfer.** Savegame sweeping,
 transient generation, and server-assist serving no longer release a full second's work in

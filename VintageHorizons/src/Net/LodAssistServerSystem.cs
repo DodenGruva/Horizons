@@ -17,12 +17,18 @@ public class LodAssistServerSystem : ModSystem
 {
     ICoreServerAPI sapi = null!;
     IServerNetworkChannel channel = null!;
+    bool allocationTelemetryEnabled;
+
+    /// <summary>Owning-thread assist costs since the last server telemetry report.</summary>
+    public LodPhaseCost ServeCost, BlobReadCost, SectionSendCost, OfferCost;
 
     public override bool ShouldLoad(EnumAppSide forSide) => forSide == EnumAppSide.Server;
 
     public override void StartServerSide(ICoreServerAPI api)
     {
         sapi = api;
+        allocationTelemetryEnabled =
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1";
         channel = api.Network.RegisterChannel(LodAssist.ChannelName)
             .RegisterMessageType<AssistHello>()
             .RegisterMessageType<AssistWelcome>()
@@ -34,12 +40,14 @@ public class LodAssistServerSystem : ModSystem
 
         // Accumulate the configured per-second rates across normal ticks. Each allowance
         // is capped at one tick's share, so a slow tick cannot cause a catch-up burst.
-        api.Event.RegisterGameTickListener(_ => ServePending(), LodTickAllowance.TickMilliseconds);
+        api.Event.RegisterGameTickListener(_ => MeasureServePending(), LodTickAllowance.TickMilliseconds);
 
         // Every five seconds, which is slow next to the serve loop on purpose: this walks
         // the whole key snapshot per player, and the thing it is chasing (a pregen, a
         // sweep, another player exploring) takes minutes, not milliseconds.
-        api.Event.RegisterGameTickListener(_ => OfferNewKeys(), 5000);
+        api.Event.RegisterGameTickListener(_ => MeasureOfferNewKeys(), 5000);
+        if (allocationTelemetryEnabled)
+            api.Event.RegisterGameTickListener(_ => LogStats(), 15000);
 
         api.Event.PlayerDisconnect += OnPlayerDisconnect;
 
@@ -167,7 +175,8 @@ public class LodAssistServerSystem : ModSystem
     /// inline so the per-second cap has something to meter, and so a player who asks for a
     /// hundred sections gets them steadily instead of in one spike.
     /// </summary>
-    readonly Dictionary<string, Queue<long>> pendingByPlayer = new();
+    readonly record struct PendingSection(long Key, long ReadyMs);
+    readonly Dictionary<string, Queue<PendingSection>> pendingByPlayer = new();
     readonly Dictionary<string, LodTickAllowance> serveAllowanceByPlayer = new();
     readonly LodTickAllowance globalServeAllowance = new();
     const double ServeWorkBudgetMs = 2.0;
@@ -182,15 +191,16 @@ public class LodAssistServerSystem : ModSystem
         string uid = fromPlayer.PlayerUID;
         sapi.Event.EnqueueMainThreadTask(() =>
         {
-            if (!pendingByPlayer.TryGetValue(uid, out Queue<long>? queue))
+            if (!pendingByPlayer.TryGetValue(uid, out Queue<PendingSection>? queue))
             {
-                pendingByPlayer[uid] = queue = new Queue<long>();
+                pendingByPlayer[uid] = queue = new Queue<PendingSection>();
             }
 
             // Bounded: the client is supposed to limit itself, but a server must not
             // depend on a client behaving.
             int room = Math.Max(0, MaxQueuedPerPlayer - queue.Count);
-            foreach (long key in keys.Take(room)) queue.Enqueue(key);
+            long readyMs = sapi.World.ElapsedMilliseconds;
+            foreach (long key in keys.Take(room)) queue.Enqueue(new PendingSection(key, readyMs));
 
             // Anything past the cap is refused OUT LOUD. This used to drop silently,
             // with a comment saying the client would re-ask - it cannot. A client marks
@@ -211,7 +221,7 @@ public class LodAssistServerSystem : ModSystem
     /// </summary>
     void Refuse(IServerPlayer player, long key)
     {
-        channel.SendPacket(new AssistSection { Key = key }, player);
+        SendSection(player, new AssistSection { Key = key });
         sectionsRefused++;
     }
 
@@ -221,6 +231,13 @@ public class LodAssistServerSystem : ModSystem
     /// Serve pending requests under continuously accrued per-player and global rates.
     /// A small elapsed-time ceiling also stops after an unexpectedly slow blob read.
     /// </summary>
+    void MeasureServePending()
+    {
+        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
+        ServePending();
+        ServeCost.Add(phaseStart);
+    }
+
     void ServePending()
     {
         LodServerCaptureSystem? capture = sapi.ModLoader.GetModSystem<LodServerCaptureSystem>();
@@ -243,7 +260,7 @@ public class LodAssistServerSystem : ModSystem
         for (int n = 0; n < uids.Count && globalSpent < globalBudget && !tickBudget.Expired; n++)
         {
             string uid = uids[(start + n) % uids.Count];
-            Queue<long> queue = pendingByPlayer[uid];
+            Queue<PendingSection> queue = pendingByPlayer[uid];
 
             if (sapi.World.PlayerByUid(uid) is not IServerPlayer player
                 || player.ConnectionState != EnumClientState.Playing)
@@ -259,7 +276,7 @@ public class LodAssistServerSystem : ModSystem
             while (playerSpent < playerBudget && globalSpent < globalBudget
                 && queue.Count > 0 && !tickBudget.Expired)
             {
-                long key = queue.Dequeue();
+                long key = queue.Dequeue().Key;
 
                 // Refuse gradually rather than clearing every queue in one callback. This
                 // path is reachable during join before the cache opens and when serving is
@@ -277,7 +294,7 @@ public class LodAssistServerSystem : ModSystem
                 // honoured for somewhere the player has since left.
                 if (!WithinServeRadius(key, player, config.ServeRadiusBlocks))
                 {
-                    channel.SendPacket(new AssistSection { Key = key }, player);
+                    SendSection(player, new AssistSection { Key = key });
                     sectionsOutsideRadius++;
                     playerSpent++;
                     globalSpent++;
@@ -285,8 +302,10 @@ public class LodAssistServerSystem : ModSystem
                 }
 
                 serveClock.Restart();
+                LodPhaseStart blobStart = LodPhaseCost.Start(allocationTelemetryEnabled);
                 byte[] blob = capture!.LoadBlob(key) ?? Array.Empty<byte>();
                 blobReadMs += serveClock.Elapsed.TotalMilliseconds;
+                BlobReadCost.Add(blobStart);
 
                 // Empty blob rather than silence for a miss: the client needs to know to
                 // stop asking, and cannot tell "declined" from "lost" otherwise.
@@ -295,12 +314,12 @@ public class LodAssistServerSystem : ModSystem
                 // sweeping or generating server is most of them: the manifest carries mip
                 // parents that exist in memory before their row does. A flat refusal there
                 // costs the player the section permanently.
-                channel.SendPacket(new AssistSection
+                SendSection(player, new AssistSection
                 {
                     Key = key,
                     Blob = blob,
                     Retryable = blob.Length == 0 && capture.ExpectsToHave(key),
-                }, player);
+                });
                 sectionsServed++;
                 bytesServed += blob.Length;
                 playerSpent++;
@@ -364,6 +383,53 @@ public class LodAssistServerSystem : ModSystem
     uint serveRound;
     long sectionsServed, lastReportedServed, bytesServed;
     double blobReadMs;
+
+    void SendSection(IServerPlayer player, AssistSection packet)
+    {
+        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
+        channel.SendPacket(packet, player);
+        SectionSendCost.Add(phaseStart);
+    }
+
+    void MeasureOfferNewKeys()
+    {
+        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
+        OfferNewKeys();
+        OfferCost.Add(phaseStart);
+    }
+
+    void LogStats()
+    {
+        int pending = pendingByPlayer.Values.Sum(queue => queue.Count);
+        long now = sapi.World.ElapsedMilliseconds;
+        long oldestAgeMs = pendingByPlayer.Values
+            .Where(queue => queue.Count > 0)
+            .Select(queue => Math.Max(0, now - queue.Peek().ReadyMs))
+            .DefaultIfEmpty(0)
+            .Max();
+        Mod.Logger.Notification(
+            "Server assist stats p95/p99/max us: serve {0:0}/{1:0}/{2:0} | blob read "
+            + "{3:0}/{4:0}/{5:0} | section send {6:0}/{7:0}/{8:0} | offer scan "
+            + "{9:0}/{10:0}/{11:0}; {12} requests queued for {13} players, oldest {14}ms",
+            ServeCost.P95Us, ServeCost.P99Us, ServeCost.MaxUs,
+            BlobReadCost.P95Us, BlobReadCost.P99Us, BlobReadCost.MaxUs,
+            SectionSendCost.P95Us, SectionSendCost.P99Us, SectionSendCost.MaxUs,
+            OfferCost.P95Us, OfferCost.P99Us, OfferCost.MaxUs,
+            pending, pendingByPlayer.Count, oldestAgeMs);
+
+        Mod.Logger.Notification(
+            "  assist allocation interval MiB/max KiB: serve {0:0.00}/{1:0.0} | blob "
+            + "{2:0.00}/{3:0.0} | send {4:0.00}/{5:0.0} | offer {6:0.00}/{7:0.0}",
+            ServeCost.AllocatedBytes / (1024.0 * 1024.0), ServeCost.MaxAllocatedBytes / 1024.0,
+            BlobReadCost.AllocatedBytes / (1024.0 * 1024.0), BlobReadCost.MaxAllocatedBytes / 1024.0,
+            SectionSendCost.AllocatedBytes / (1024.0 * 1024.0), SectionSendCost.MaxAllocatedBytes / 1024.0,
+            OfferCost.AllocatedBytes / (1024.0 * 1024.0), OfferCost.MaxAllocatedBytes / 1024.0);
+
+        ServeCost.Reset();
+        BlobReadCost.Reset();
+        SectionSendCost.Reset();
+        OfferCost.Reset();
+    }
 
     /// <summary>Keys the server holds, in chunks. Main thread only.</summary>
     void SendManifest(IServerPlayer player, long[] keys)

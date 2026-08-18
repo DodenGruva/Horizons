@@ -1,0 +1,13 @@
+# Single-view route for steady-state instrumentation-overhead comparisons.
+#
+# Use a warm sandbox cache and run otherwise identical alternating stats-on/stats-off
+# samples. This isolates the allocation counters and periodic telemetry from movement,
+# capture-frontier growth, camera rotation, and waypoint-to-waypoint teleport costs.
+#
+#   pwsh -File scripts/bench-windows.ps1 -Label steady-stats-on `
+#     -Route bench/routes/steady-stationary.txt -Settle 30 -Measure 60 -WarmupLaps 0
+#   pwsh -File scripts/bench-windows.ps1 -Label steady-stats-off `
+#     -Route bench/routes/steady-stationary.txt -Settle 30 -Measure 60 -WarmupLaps 0 `
+#     -DisableStats
+
+spawn-horizon      512020  190  512010    0   -8

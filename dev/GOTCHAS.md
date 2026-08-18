@@ -198,6 +198,18 @@ substantially overlap footprints captured by earlier legs in the same run.
 fresh-cache legs, or reset the cache per leg. Describe the initial settled footprint and
 do not label every later frame cold merely because the database started empty.
 
+### G20 — A named stats switch may not be the only enable path
+
+**Trigger:** measuring enabled-versus-disabled diagnostic or instrumentation overhead.
+
+**Trap:** the unattended runner set auto-unpause, and the client treated auto-unpause as
+an alias for allocation telemetry. A nominal stats-off sample would therefore still call
+the per-phase GC allocation counter and could falsely report no overhead.
+
+**Do:** source-trace every enable path before an A/B run and keep unrelated test controls
+orthogonal. Here, only `VINTAGEHORIZONS_STATS=1` enables allocation sampling and continuous
+stats; auto-unpause controls window-focus behavior only.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

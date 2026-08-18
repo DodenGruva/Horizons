@@ -70,8 +70,7 @@ public class VintageHorizonsModSystem : ModSystem
     {
         capi = api;
         allocationTelemetryEnabled =
-            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1"
-            || Environment.GetEnvironmentVariable("VINTAGEHORIZONS_AUTOUNPAUSE") == "1";
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1";
 
         try
         {

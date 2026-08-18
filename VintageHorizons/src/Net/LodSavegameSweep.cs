@@ -51,6 +51,12 @@ public class LodSavegameSweep
     readonly LodColumnMap exists = new();
     readonly LodTickAllowance loadAllowance = new();
 
+    /// <summary>Owning-thread sweep costs since the last server telemetry report.</summary>
+    public LodPhaseCost ProbeIssueCost, ProbePublishCost, LoadIssueCost;
+
+    /// <summary>Allocation sampling is opt-in; elapsed timing remains always active.</summary>
+    public bool TrackPhaseAllocations { get; set; }
+
     int probeIndex;
     int probesInFlight;
     int loadIndex;
@@ -109,8 +115,17 @@ public class LodSavegameSweep
     void Step()
     {
         if (Done || verifying) return;
-        if (Probing) StepProbe();
-        else StepLoad();
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        if (Probing)
+        {
+            StepProbe();
+            ProbeIssueCost.Add(phaseStart);
+        }
+        else
+        {
+            StepLoad();
+            LoadIssueCost.Add(phaseStart);
+        }
     }
 
     void StepProbe()
@@ -134,8 +149,10 @@ public class LodSavegameSweep
                 // The callback need not be on the main thread, and HashSet is not safe.
                 sapi.Event.EnqueueMainThreadTask(() =>
                 {
+                    LodPhaseStart publishStart = LodPhaseCost.Start(TrackPhaseAllocations);
                     probesInFlight--;
                     if (hit) exists.Add(cx, cz);
+                    ProbePublishCost.Add(publishStart);
                 }, "vh-sweep-probe");
             });
         }
@@ -239,4 +256,11 @@ public class LodSavegameSweep
         : Probing
             ? $"sweeping savegame: examined {probeIndex}/{ProbeTotal}, {exists.Count} hold terrain"
             : $"sweeping savegame: loaded {Loaded}, {SkippedEdge} skipped on the frontier";
+
+    public void ResetPhaseCosts()
+    {
+        ProbeIssueCost.Reset();
+        ProbePublishCost.Reset();
+        LoadIssueCost.Reset();
+    }
 }

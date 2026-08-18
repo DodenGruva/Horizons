@@ -12,6 +12,9 @@ param(
     [int]$WarmupLaps = 1,
     [double]$Cooldown = 0,
     [int]$Port = 42425,
+    [switch]$ServerMod,
+    [switch]$DisableStats,
+    [string]$AutoCommand,
     [switch]$ReuseServer,
     [switch]$Watch
 )
@@ -122,6 +125,9 @@ if ($null -eq $server) {
 
 Copy-Item -LiteralPath (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons') -Destination $clientMods -Recurse
 Copy-Item -LiteralPath (Join-Path $repoRoot 'bench/VintageHorizonsBench/bin/Debug/net10.0/Mods/vintagehorizonsbench') -Destination $clientMods -Recurse
+if ($null -eq $server -and $ServerMod) {
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons') -Destination $serverMods -Recurse
+}
 
 $settingsPath = Join-Path $sandbox 'clientsettings.json'
 $settings = if (Test-Path -LiteralPath $settingsPath) {
@@ -164,13 +170,18 @@ $serverArgs = @(
     "--dataPath `"$serverData`"",
     "--withconfig=`"{ Port: $Port, VerifyPlayerAuth: false, WhitelistMode: 'off', AdvertiseServer: false, DefaultRoleCode: 'admin' }`""
 )
+$statsEnabled = if ($DisableStats) { '0' } else { '1' }
 if ($null -eq $server) {
     foreach ($log in @($serverOut, $serverErr)) {
         if (Test-Path -LiteralPath $log) { Move-Item -LiteralPath $log -Destination "$log.prev" -Force }
     }
     $server = Start-Process -FilePath 'dotnet' -ArgumentList $serverArgs -WorkingDirectory $game -PassThru `
         -RedirectStandardOutput $serverOut -RedirectStandardError $serverErr -WindowStyle Hidden `
-        -Environment @{ TEMP = (Join-Path $serverData 'tmp'); TMP = (Join-Path $serverData 'tmp') }
+        -Environment @{
+            TEMP = (Join-Path $serverData 'tmp')
+            TMP = (Join-Path $serverData 'tmp')
+            VINTAGEHORIZONS_STATS = $statsEnabled
+        }
     Set-Content -LiteralPath $serverPidFile -Value $server.Id
     Write-Host "Test server started: PID $($server.Id), port $Port"
 
@@ -194,8 +205,12 @@ $clientEnvironment = @{
     VHBENCH_WARMUP_LAPS = ([Math]::Max(0, $WarmupLaps)).ToString()
     VHBENCH_COOLDOWN = ([Math]::Max(0, $Cooldown)).ToString([Globalization.CultureInfo]::InvariantCulture)
     VHBENCH_STOP_SERVER = '1'
-    VINTAGEHORIZONS_STATS = '1'
+    VINTAGEHORIZONS_STATS = $statsEnabled
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
+}
+if ($AutoCommand) {
+    $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
+    $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
 }
 $clientArgs = @(
     'Vintagestory.dll',

@@ -28,6 +28,10 @@ public class LodServerCaptureSystem : ModSystem
     LodSavegameSweep? sweep;
     LodPlayerPregen? generate;
     long tickListenerId;
+    long statsListenerId;
+    bool statsRegistered;
+    bool allocationTelemetryEnabled;
+    LodPhaseCost pipelineTickCost;
 
     /// <summary>
     /// Whether chunk loads drive capture on this server. Dedicated: yes, every load.
@@ -93,6 +97,8 @@ public class LodServerCaptureSystem : ModSystem
     public override void StartServerSide(ICoreServerAPI api)
     {
         sapi = api;
+        allocationTelemetryEnabled =
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_STATS") == "1";
 
         bool configReadable = true;
         try
@@ -173,7 +179,10 @@ public class LodServerCaptureSystem : ModSystem
         if (Config.SweepEnabled)
         {
             sweep = new LodSavegameSweep(sapi, Mod.Logger,
-                Config.SweepRadiusChunks, Config.SweepColumnsPerSecond);
+                Config.SweepRadiusChunks, Config.SweepColumnsPerSecond)
+            {
+                TrackPhaseAllocations = allocationTelemetryEnabled,
+            };
             sweep.Start();
         }
 
@@ -190,7 +199,10 @@ public class LodServerCaptureSystem : ModSystem
             pregen = new LodPlayerPregen(sapi, Mod.Logger, pipeline!,
                 (int)spawn.X / cs, (int)spawn.Z / cs,
                 Config.PregenRadiusChunks, Config, "startup pre-generation",
-                Config.PregenColumnsPerSecond);
+                Config.PregenColumnsPerSecond)
+            {
+                TrackPhaseAllocations = allocationTelemetryEnabled,
+            };
             pregen.Start();
         }
     }
@@ -212,9 +224,15 @@ public class LodServerCaptureSystem : ModSystem
         // colour-unresolved and the receiving client fills colour in, which it can do
         // from the block code alone. Tint slots are likewise client-only and stay 0.
         pipeline = new LodPipeline(sapi, Mod.Logger, (_, _, _, _) => (0, 0));
+        pipeline.TrackPhaseAllocations = allocationTelemetryEnabled;
         pipeline.Open("ModData/vintagehorizons", "-server");
 
-        tickListenerId = sapi.Event.RegisterGameTickListener(_ => pipeline!.Tick(), 50);
+        tickListenerId = sapi.Event.RegisterGameTickListener(_ => TickPipeline(), 50);
+        if (allocationTelemetryEnabled && !statsRegistered)
+        {
+            statsRegistered = true;
+            statsListenerId = sapi.Event.RegisterGameTickListener(_ => LogStats(), 15000);
+        }
 
         Mod.Logger.Notification("Server LOD capture active ({0} sections from cache). {1}",
             pipeline.CachedSectionsLoaded, Config.Describe());
@@ -381,7 +399,10 @@ public class LodServerCaptureSystem : ModSystem
         string startedBy = args.Caller.Player?.PlayerName ?? "the console";
 
         generate = new LodPlayerPregen(sapi, Mod.Logger, OpenPipeline(),
-            centreCx, centreCz, radius, Config, startedBy);
+            centreCx, centreCz, radius, Config, startedBy)
+        {
+            TrackPhaseAllocations = allocationTelemetryEnabled,
+        };
         generate.Start();
 
         int columns = LodPlayerPregen.ColumnsFor(radius);
@@ -429,8 +450,115 @@ public class LodServerCaptureSystem : ModSystem
     /// </summary>
     void OnGameWorldSave()
     {
-        if (pipeline?.Active == true) pipeline.Tick();
+        if (pipeline?.Active == true) TickPipeline();
     }
+
+    void TickPipeline()
+    {
+        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
+        pipeline!.Tick();
+        pipelineTickCost.Add(phaseStart);
+    }
+
+    void LogStats()
+    {
+        if (pipeline == null) return;
+
+        Mod.Logger.Notification(
+            "Server stats: pipeline tick p95/p99/max {0:0}/{1:0}/{2:0}us over {3} ticks; "
+            + "hitches >=25/50/100ms {4}/{5}/{6}",
+            pipelineTickCost.P95Us, pipelineTickCost.P99Us, pipelineTickCost.MaxUs,
+            pipelineTickCost.Calls, pipelineTickCost.Over25Ms, pipelineTickCost.Over50Ms,
+            pipelineTickCost.Over100Ms);
+
+        Mod.Logger.Notification(
+            "  server pipeline p95/p99/max us: foreign {0:0}/{1:0}/{2:0} | load {3:0}/{4:0}/{5:0} | "
+            + "capture schedule {6:0}/{7:0}/{8:0} | capture apply {9:0}/{10:0}/{11:0} | "
+            + "mip apply {12:0}/{13:0}/{14:0} | mip schedule {15:0}/{16:0}/{17:0} | "
+            + "save {18:0}/{19:0}/{20:0}",
+            pipeline.ForeignInstallCost.P95Us, pipeline.ForeignInstallCost.P99Us, pipeline.ForeignInstallCost.MaxUs,
+            pipeline.LoadInstallCost.P95Us, pipeline.LoadInstallCost.P99Us, pipeline.LoadInstallCost.MaxUs,
+            pipeline.CaptureScheduleCost.P95Us, pipeline.CaptureScheduleCost.P99Us, pipeline.CaptureScheduleCost.MaxUs,
+            pipeline.CaptureApplyCost.P95Us, pipeline.CaptureApplyCost.P99Us, pipeline.CaptureApplyCost.MaxUs,
+            pipeline.MipApplyCost.P95Us, pipeline.MipApplyCost.P99Us, pipeline.MipApplyCost.MaxUs,
+            pipeline.MipScheduleCost.P95Us, pipeline.MipScheduleCost.P99Us, pipeline.MipScheduleCost.MaxUs,
+            pipeline.SaveSnapshotCost.P95Us, pipeline.SaveSnapshotCost.P99Us, pipeline.SaveSnapshotCost.MaxUs);
+
+        LogSweepStats("sweep", sweep);
+        LogGenerationStats("startup generation", pregen);
+        LogGenerationStats("command generation", generate);
+
+        Mod.Logger.Notification(
+            "  server allocation interval MiB/max KiB: pipeline tick {0:0.00}/{1:0.0}",
+            pipelineTickCost.AllocatedBytes / (1024.0 * 1024.0),
+            pipelineTickCost.MaxAllocatedBytes / 1024.0);
+
+        Mod.Logger.Notification(
+            "  server pipeline allocation interval MiB/max KiB: foreign {0:0.00}/{1:0.0} | "
+            + "load {2:0.00}/{3:0.0} | capture schedule {4:0.00}/{5:0.0} | capture apply "
+            + "{6:0.00}/{7:0.0} | mip apply {8:0.00}/{9:0.0} | mip schedule "
+            + "{10:0.00}/{11:0.0} | save {12:0.00}/{13:0.0}",
+            MiB(pipeline.ForeignInstallCost.AllocatedBytes), KiB(pipeline.ForeignInstallCost.MaxAllocatedBytes),
+            MiB(pipeline.LoadInstallCost.AllocatedBytes), KiB(pipeline.LoadInstallCost.MaxAllocatedBytes),
+            MiB(pipeline.CaptureScheduleCost.AllocatedBytes), KiB(pipeline.CaptureScheduleCost.MaxAllocatedBytes),
+            MiB(pipeline.CaptureApplyCost.AllocatedBytes), KiB(pipeline.CaptureApplyCost.MaxAllocatedBytes),
+            MiB(pipeline.MipApplyCost.AllocatedBytes), KiB(pipeline.MipApplyCost.MaxAllocatedBytes),
+            MiB(pipeline.MipScheduleCost.AllocatedBytes), KiB(pipeline.MipScheduleCost.MaxAllocatedBytes),
+            MiB(pipeline.SaveSnapshotCost.AllocatedBytes), KiB(pipeline.SaveSnapshotCost.MaxAllocatedBytes));
+
+        pipelineTickCost.Reset();
+        pipeline.ResetPhaseCosts();
+        sweep?.ResetPhaseCosts();
+        pregen?.ResetPhaseCosts();
+        generate?.ResetPhaseCosts();
+    }
+
+    void LogSweepStats(string label, LodSavegameSweep? work)
+    {
+        if (work == null || work.ProbeIssueCost.Calls + work.ProbePublishCost.Calls
+            + work.LoadIssueCost.Calls == 0) return;
+
+        Mod.Logger.Notification(
+            "  {0} p95/p99/max us: probe issue {1:0}/{2:0}/{3:0} | probe publish "
+            + "{4:0}/{5:0}/{6:0} | load issue {7:0}/{8:0}/{9:0}",
+            label,
+            work.ProbeIssueCost.P95Us, work.ProbeIssueCost.P99Us, work.ProbeIssueCost.MaxUs,
+            work.ProbePublishCost.P95Us, work.ProbePublishCost.P99Us, work.ProbePublishCost.MaxUs,
+            work.LoadIssueCost.P95Us, work.LoadIssueCost.P99Us, work.LoadIssueCost.MaxUs);
+
+        Mod.Logger.Notification(
+            "  {0} allocation interval MiB/max KiB: probe issue {1:0.00}/{2:0.0} | "
+            + "probe publish {3:0.00}/{4:0.0} | load issue {5:0.00}/{6:0.0}",
+            label,
+            MiB(work.ProbeIssueCost.AllocatedBytes), KiB(work.ProbeIssueCost.MaxAllocatedBytes),
+            MiB(work.ProbePublishCost.AllocatedBytes), KiB(work.ProbePublishCost.MaxAllocatedBytes),
+            MiB(work.LoadIssueCost.AllocatedBytes), KiB(work.LoadIssueCost.MaxAllocatedBytes));
+    }
+
+    void LogGenerationStats(string label, LodPlayerPregen? work)
+    {
+        if (work == null || work.ProbeIssueCost.Calls + work.ProbePublishCost.Calls
+            + work.WorkIssueCost.Calls == 0) return;
+
+        Mod.Logger.Notification(
+            "  {0} p95/p99/max us: probe issue {1:0}/{2:0}/{3:0} | probe publish "
+            + "{4:0}/{5:0}/{6:0} | work issue {7:0}/{8:0}/{9:0}",
+            label,
+            work.ProbeIssueCost.P95Us, work.ProbeIssueCost.P99Us, work.ProbeIssueCost.MaxUs,
+            work.ProbePublishCost.P95Us, work.ProbePublishCost.P99Us, work.ProbePublishCost.MaxUs,
+            work.WorkIssueCost.P95Us, work.WorkIssueCost.P99Us, work.WorkIssueCost.MaxUs);
+
+        Mod.Logger.Notification(
+            "  {0} allocation interval MiB/max KiB: probe issue {1:0.00}/{2:0.0} | "
+            + "probe publish {3:0.00}/{4:0.0} | work issue {5:0.00}/{6:0.0}",
+            label,
+            MiB(work.ProbeIssueCost.AllocatedBytes), KiB(work.ProbeIssueCost.MaxAllocatedBytes),
+            MiB(work.ProbePublishCost.AllocatedBytes), KiB(work.ProbePublishCost.MaxAllocatedBytes),
+            MiB(work.WorkIssueCost.AllocatedBytes), KiB(work.WorkIssueCost.MaxAllocatedBytes));
+    }
+
+    static double MiB(long bytes) => bytes / (1024.0 * 1024.0);
+    static double KiB(long bytes) => bytes / 1024.0;
 
     public override void Dispose()
     {
@@ -444,6 +572,7 @@ public class LodServerCaptureSystem : ModSystem
             sapi.Event.ChunkColumnLoaded -= OnChunkColumnLoaded;
             sapi.Event.GameWorldSave -= OnGameWorldSave;
             sapi.Event.UnregisterGameTickListener(tickListenerId);
+            if (statsRegistered) sapi.Event.UnregisterGameTickListener(statsListenerId);
         }
         pipeline?.Close();
         pipeline?.Dispose();

@@ -6,7 +6,7 @@ set -euo pipefail
 #   scripts/bench.sh <label> [--mods <dir-or-zip>[,<dir-or-zip>...]] [--server-mods <...>]
 #                            [--route <file>] [--settle <sec>] [--settle-max <sec>]
 #                            [--measure <sec>] [--laps <n>]
-#                            [--detail <blocks>]
+#                            [--detail <blocks>] [--no-stats]
 #
 # Examples:
 #   scripts/bench.sh vanilla                            # no LOD mod at all: the baseline
@@ -31,7 +31,7 @@ source "$ROOT/scripts/test-lib.sh"
 
 label="${1:-}"
 if [[ -z "$label" || "$label" == -* ]]; then
-    echo "usage: bench.sh <label> [--mods <list>] [--server-mods <list>] [--route <file>] [--settle <s>] [--settle-max <s>] [--measure <s>] [--laps <n>] [--warmup-laps <n>] [--detail <blocks>]" >&2
+    echo "usage: bench.sh <label> [--mods <list>] [--server-mods <list>] [--route <file>] [--settle <s>] [--settle-max <s>] [--measure <s>] [--laps <n>] [--warmup-laps <n>] [--detail <blocks>] [--no-stats]" >&2
     exit 2
 fi
 shift
@@ -46,6 +46,7 @@ laps=1
 warmup_laps=1
 detail=""
 watch=0
+stats=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -59,6 +60,7 @@ while [[ $# -gt 0 ]]; do
         --warmup-laps) warmup_laps="$2"; shift 2 ;;
         --detail) detail="$2"; shift 2 ;;
         --watch) watch=1; shift ;;
+        --no-stats) stats=0; shift ;;
         *) echo "bench.sh: unknown option '$1'" >&2; exit 2 ;;
     esac
 done
@@ -133,6 +135,10 @@ fi
 
 rm -f "$BENCH_OUT/$label.done" "$BENCH_OUT/$label.csv"
 
+# Export before the server starts so an installed server-side VintageHorizons copy uses
+# the same telemetry mode as the client under test.
+export VINTAGEHORIZONS_STATS="$stats"
+
 "$ROOT/scripts/test-stop.sh" >/dev/null 2>&1 || true
 "$ROOT/scripts/test-server.sh"
 
@@ -160,7 +166,6 @@ export VHBENCH_WARMUP_LAPS="$warmup_laps"
 # timings and the pipeline counters, and those are the only record of what was
 # happening when a waypoint refuses to settle. A benchmark that records frame times
 # and nothing else can say a run was slow but never why.
-export VINTAGEHORIZONS_STATS=1
 export VINTAGEHORIZONS_AUTOUNPAUSE=1   # the window is unfocused during unattended runs
 
 "$ROOT/scripts/test-client.sh" -c "localhost:${VH_TEST_PORT:-42425}"

@@ -144,3 +144,16 @@
   62 ms; the cooldown established zero pending capture, mip, render, save, and storage work.
 - Preserved both CSVs and scenario limitations under `bench/results`, including the human
   correction that compact later legs can overlap coverage produced earlier in the same run.
+
+## 2026-08-17 — server telemetry and instrumentation overhead
+
+- Added p95/p99/max, hitch, managed-allocation, queue-depth, and oldest-age telemetry for
+  the server capture pipeline, sweep, transient generation, and assist serving.
+- Added isolated runner controls for server-mod scenarios, auto-command generation starts,
+  and genuine stats-disabled A/B runs.
+- Separated auto-unpause from allocation telemetry so unattended stats-off runs are real.
+- Added a stationary route and preserved three alternating on/off pairs. The two warmed
+  pairs measured about 0.7% lower average FPS and 1.0% lower median FPS with stats at
+  roughly 445 uncapped FPS; inconsistent 1% lows support no tail claim.
+- Completed a server-mod sweep smoke that emitted the new interval lines and shut down
+  gracefully; assist blob/send and generation paths remain runtime-unexercised.

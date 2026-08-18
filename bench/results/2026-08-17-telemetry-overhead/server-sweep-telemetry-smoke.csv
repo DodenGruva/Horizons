@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+server-sweep-telemetry-smoke-2026-08-17,spawn-horizon,512020,190,512010,1,8752,437.6,439.5,258.4,2.29,3.87,0.0,0.0,1627,3833,21.0,0

@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+steady-stats-on-2026-08-17-2,spawn-horizon,512020,190,512010,1,19790,439.8,440.1,359.4,2.27,2.78,0.0,0.0,2000,3561,36.0,0

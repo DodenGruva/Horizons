@@ -53,6 +53,12 @@ public class LodPlayerPregen
     readonly LodColumnMap exists = new();
     readonly LodTickAllowance workAllowance = new();
 
+    /// <summary>Owning-thread generation costs since the last server telemetry report.</summary>
+    public LodPhaseCost ProbeIssueCost, ProbePublishCost, WorkIssueCost;
+
+    /// <summary>Allocation sampling is opt-in; elapsed timing remains always active.</summary>
+    public bool TrackPhaseAllocations { get; set; }
+
     /// <summary>Peeks outstanding, key to issue time. Expired entries count as TimedOut.</summary>
     readonly Dictionary<long, long> peeksInFlight = new();
     readonly List<long> stale = new();
@@ -171,8 +177,17 @@ public class LodPlayerPregen
     {
         if (Done || Verifying) return;
         ExpireStuckPeeks();
-        if (Probing && !Cancelled) StepProbe();
-        else StepWork();
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        if (Probing && !Cancelled)
+        {
+            StepProbe();
+            ProbeIssueCost.Add(phaseStart);
+        }
+        else
+        {
+            StepWork();
+            WorkIssueCost.Add(phaseStart);
+        }
     }
 
     void StepProbe()
@@ -195,8 +210,10 @@ public class LodPlayerPregen
                 // The callback need not be on the main thread, and the map is not safe.
                 sapi.Event.EnqueueMainThreadTask(() =>
                 {
+                    LodPhaseStart publishStart = LodPhaseCost.Start(TrackPhaseAllocations);
                     probesInFlight--;
                     if (hit) exists.Add(cx, cz);
+                    ProbePublishCost.Add(publishStart);
                 }, "vh-generate-probe");
             });
         }
@@ -412,4 +429,11 @@ public class LodPlayerPregen
               + $"{workIndex}/{WorkTotal} columns - {Generated} generated, {Indexed} loaded, "
               + $"{SkippedFrontier} skipped, {NoHeightMap} without height maps, {TimedOut} timed "
               + $"out, {peeksInFlight.Count} peeks in flight";
+
+    public void ResetPhaseCosts()
+    {
+        ProbeIssueCost.Reset();
+        ProbePublishCost.Reset();
+        WorkIssueCost.Reset();
+    }
 }
