@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 21 | 2026-08-18 | 0.2.1 | — | Proved renderer budgets through 3,132 cached sections; added revision-acknowledged saves, retry/coalescing/shutdown draining, and 1,050 passing checks. |
 | 20 | 2026-08-18 | 0.2.1 | — | Time/byte-budgeted mesh snapshots and GPU uploads; safe mesh replacement and queue/GL telemetry; 1,002 checks pass. |
 | 19 | 2026-08-18 | 0.2.1 | — | Replaced per-frame whole-dirty-set scans with an incremental coarse-cell priority index; 995 checks and a 601-section functional route converged cleanly. |
 | 18 | 2026-08-18 | 0.2.1 | — | Rejected invisible quadtree subtrees without visibility-driven eviction; a controlled 601-section pair cut selected nodes 64.2% and average traversal 19.8%. |

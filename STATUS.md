@@ -5,7 +5,7 @@
 **Status date:** 2026-08-18
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `37` C# files under `VintageHorizons/src`
+**Source files:** `38` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -36,9 +36,17 @@ guard. The interruption hook has no path and no behavior in ordinary processes.
 
 Capture jobs/results carry a world epoch, estimated raw-run bytes, and ready time. The owning thread rejects cross-world results, performs live palette registration and section mutation, and records publication throughput/backlog. A queue clear is not treated as a teardown identity because an in-progress worker job may publish after it.
 
-Foreign decode results carry a world epoch, key, source, deferred palette codes, estimated bytes, and ready time. Network/world request state survives decoder acceptance until owning-thread publication or terminal rejection. A resident local section wins both pre- and post-resolution checks. The foreign reload route remains available until future save acknowledgements can prove the adopted local row durable.
+Foreign decode results carry a world epoch, key, source, deferred palette codes, estimated bytes, and ready time. Network/world request state survives decoder acceptance until owning-thread publication or terminal rejection. A resident local section wins both pre- and post-resolution checks. The foreign reload route remains available until a save acknowledgement proves a local row durable.
 
 Mip jobs carry a world epoch, child identity, and content revision. The child remains `MipDirty` and its parent remains RAM-pinned until a matching result commits. Failed, stale, or cross-world results cannot clear the durable `ApplyToParent` obligation.
+
+Section rows carry a runtime-only persistence revision separate from mip content revision.
+`SaveDirty` remains set through snapshot enqueue and clears only when the storage owner
+acknowledges that exact current revision. Failed writes retain dirty state under bounded
+retry; newer pending snapshots for one key coalesce; foreign fallback retires after the
+first durable local row. Close alternates drain, acknowledgement publication, and
+remaining-dirty enqueue until clean or a 15-second deadline, then reports exact unresolved
+keys/revisions. Database schema 6, blob 4, and assist protocol 1 are unchanged.
 
 Render-dirty membership publishes new-key deltas into a nearest-first priority index.
 Existing priorities rebuild after a 256-block camera-cell crossing, detail-distance change,
@@ -101,6 +109,13 @@ state.
 25. Mesh snapshot production and GPU result upload are time/byte/item boundary-budgeted.
 Retained and uploaded payloads are measured separately, frame-local budget state is
 allocation-free, and old GPU resources survive until a complete replacement is live.
+26. Section persistence uses exact revision acknowledgements. Stale success and failure
+cannot clear newer dirty state, pending same-key snapshots coalesce, failed writes retry
+with bounded delay, and shutdown repeatedly exposes and drains remaining dirty revisions.
+27. Automated renderer validation exercised 601-section and 3,132-section caches. The
+large route processed 94,285 snapshot/upload items with bounded queues and no 25 ms
+renderer phase; a separate acknowledged-persistence run wrote 138 revisions and converged
+to zero unsaved/backlog/errors.
 
 ## 4. Measured diagnosis and result
 
@@ -207,6 +222,22 @@ resident with no evictions, and the final sample reported zero capture, mesh, mi
 render-dirty, save, load, or storage backlog/errors before graceful shutdown. This one
 short run establishes lifecycle convergence, not a controlled performance improvement.
 
+The renderer-budget follow-up processed 900 snapshots / 1,158.52 MiB and 900 uploads /
+907.27 MiB on the 601-section cache with no sampled queue, no 25 ms renderer phase, and
+2.721 ms maximum direct GL upload. A sustained 12,800-block corridor then captured 36,928
+columns and grew the cache from 601 to 3,132 rows (30,023,680 to 157,724,672 bytes). It
+processed 94,285 snapshots/uploads; sampled backlog stayed within 18 snapshots / 26.12
+MiB / 157 ms and four uploads / 2.76 MiB / 16 ms. Direct upload peaked at 6.861 ms and no
+renderer phase reached 25 ms. One 36.883 ms game tick was attributed to a 36.289 ms atomic
+capture publication, a separate remaining tail. Every guarded field converged to zero.
+
+After revision-acknowledged persistence was added, a fresh process reopened all 3,132
+rows, moved/rotated through the same cache, wrote 138 section revisions, and ended with
+zero unsaved sections, write backlog, and write errors before graceful client/server
+shutdown. Deterministic checks separately injected a failed first write and successful
+retry, rejected a stale acknowledgement after repeated mutation, coalesced a superseded
+pending snapshot, drained 300 keys, and reopened SQLite to read the newest revision.
+
 ## 5. Remaining performance findings
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
@@ -217,17 +248,19 @@ maxima were only 0.179/0.249 ms; packet serialization, GC, and process schedulin
 yet separately attributed.
 4. Ordinary render-dirty pruning/scheduling no longer scales with the whole collection;
 the index deliberately rebuilds after coarse camera/policy/world changes. Mesh snapshot
-creation and GPU upload are boundary-budgeted, but their initial ceilings have no runtime
-queue/driver evidence. Visibility-aware traversal has a controlled 601-section runtime
-reduction, but scheduler and traversal scaling at thousands of cached sections is not
-established.
+creation and GPU upload are boundary-budgeted and have bounded 3,132-section runtime
+queue/driver evidence. Visibility-aware traversal has a controlled 601-section reduction;
+the thousands-section run is functional scaling evidence rather than a controlled causal
+comparison.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
 ## 6. Remaining correctness and durability findings
 
-- Dirty sections leave `SaveDirty` when queued rather than after a storage acknowledgement. Failed writes do not automatically restore the exact dirty revision.
-- Shutdown can encounter dirty state after the storage enqueue cap is full; save revisions/acknowledgements remain open work.
+- Exact persistence revisions, success/failure acknowledgements, bounded retry,
+  same-key pending coalescing, and repeated shutdown drain/ack/enqueue are implemented.
+  Persistent-failure timeout reporting has deterministic/source evidence but has not been
+  forced in a game process.
 - Asynchronous mip propagation now has a longer movement/capture convergence run,
   graceful restart, deliberate interruption after a durable `ApplyToParent` write,
   successful recovery, and a fresh-process zero-obligation postcheck.
@@ -238,13 +271,13 @@ have dedicated-process evidence.
 
 ## 7. Current open work
 
-1. Extend visibility/traversal/scheduler validation to a thousands-section cache, measure
-the new snapshot/upload ceilings and queue convergence, and complete human in-motion
-review.
+1. Complete human in-motion review of clipping, turn-around behavior, and visual mesh
+replacement on the thousands-section build.
 2. Repeat mip interruption/recovery and exercise sibling-cache discovery/retryable local
 misses in integrated singleplayer.
-3. Add storage save revisions, acknowledgements, retry, and shutdown durability.
-4. Isolate the remaining server-assist service/send/GC tail if it reproduces.
+3. Isolate the remaining server-assist service/send/GC tail if it reproduces.
+4. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -260,7 +293,12 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Sweep, generation, and assist serving now spend capped fractional allowances across 50 ms ticks; delayed ticks cannot release full-second catch-up work.
 - Assist arrivals, sibling-cache blobs, and background-load results all have elapsed-time and byte ceilings with FIFO oldest-item progress.
 - Foreign inflation and structural parsing occur only on the storage owner; owning-thread results resolve live palette state and reject cross-world, corrupt, or local-win arrivals.
-- Decoder acceptance retains request responsibility through publication. The adopted section keeps its foreign fallback because save enqueue is not a durability acknowledgement.
+- Decoder acceptance retains request responsibility through publication. The adopted
+  section keeps its foreign fallback until a successful row acknowledgement; save enqueue
+  is never treated as durability.
+- Persistence revisions are independent of mip content revisions. Dirty membership
+  survives enqueue, stale/failed acknowledgements cannot clear it, pending same-key
+  snapshots coalesce, and shutdown repeats drain/ack/enqueue before exact timeout report.
 - Allocation counter reads are opt-in per measured owner and sit outside the elapsed-time interval.
 - Server pipeline, sweep, generation, and assist phase costs are independently timed;
   allocation reads remain opt-in and assist queues report exact oldest-head age.
@@ -279,13 +317,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 265 checks under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 1,002 assertions across all 24 suites, including 20
+- `dev/DocCheck.ps1` passes 278 checks under Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 1,050 assertions across all 25 suites, including 44
+  persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
+  bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
   53 benchmark-route/config/camera-mapping, the durable-mip
   interruption marker, foreign queue/deferred-palette/failure isolation, assist-reader
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
-  accounting, 15 tick-allowance, 21 drain-budget, 30 cached-bounds/far-plane, SQLite
+  accounting, 15 tick-allowance, 23 drain-budget, 30 cached-bounds/far-plane, SQLite
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - Four old-route CSV artifacts are tracked under `bench/results/2026-08-17-mip-worker`: two before and two after. Both after runs converged with no mip queue/in-flight backlog and no mip errors, but their screenshots/render load were sky-biased.
@@ -322,6 +362,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - A short isolated warm-cache functional route exercised the incremental scheduler with
   601 cached sections and 543 resident meshes. Every waypoint settled, all guarded queues
   converged, and shutdown was graceful; no before/after performance claim is attached.
+- Renderer-budget, cache-growth, and acknowledged-persistence evidence is tracked under
+  `bench/results/2026-08-18-renderer-budgets-large-cache`. The growth route expanded 601
+  rows to 3,132, processed 94,285 snapshot/upload items with bounded queues, and had no
+  25 ms renderer phase. The persistence follow-up reopened all 3,132 rows, wrote 138
+  revisions, and ended with zero unsaved sections, write backlog, or write errors.
 - The corrected Windows harness completed client and server shutdown without force termination.
 
 ### Human-tested
@@ -339,15 +384,19 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   soaks remain untested.
 - No integrated game process has yet exercised the sibling-cache discovery worker or end-to-end retryable server response.
 - Visibility-aware subtree traversal and independent mesh residency have source, harness,
-  and controlled 601-section dedicated-process evidence. No thousands-section route or
-  human in-motion review has yet established broader scaling, clipping behavior, or
-  subjective turn-around quality.
-- Incremental render-dirty scheduling has source, 20 focused assertions, and one
-  601-section functional route. Its coarse-cell rebuild cost, scaling at thousands of
-  dirty/cached sections, and causal frame-time effect remain unmeasured.
-- Mesh snapshot/upload boundary logic and byte accounting have source, build, and fast-tier
-  evidence only. No game process has measured the new GL/disposal phases, queue ages,
-  convergence, or replacement behavior.
+  controlled 601-section evidence, and automated 3,132-section scaling. No human has
+  watched the thousands-section build for clipping or subjective turn-around quality.
+- Incremental render-dirty scheduling has source, 20 focused assertions, a 601-section
+  functional route, and an automated 3,132-section run. Its causal frame-time effect is
+  still unmeasured.
+- Mesh snapshot/upload boundary logic and byte accounting have source, build, fast-tier,
+  601-section, and 3,132-section game evidence. The large run bounded sampled queues to
+  18 snapshots/four uploads, measured GL upload below 6.9 ms, and converged, but no person
+  watched replacement behavior and no second driver has been measured.
+- Persistence hardening has deterministic failure/retry, repeated-mutation, coalescing,
+  full-worker-drain, and restart evidence plus a clean 3,132-section game run. A persistent
+  write failure has not been injected into a game process to observe the final exact
+  unresolved-timeout log.
 - The completed sweep ran in separate dedicated-server/client processes with a warm
   server cache, a calibrated 24-chunk radius, serving disabled, and generation disabled.
   Integrated-singleplayer cadence, cold-cache throughput, and default-radius behavior

@@ -7,6 +7,10 @@ public static class DrainBudgetChecks
         c.True(typeof(LodDrainBudget).IsValueType,
             "per-frame drain budgets do not allocate a heap object");
 
+        var productionDefault = new LodDrainBudget();
+        c.True(productionDefault.TryStart(1), "the production parameterless budget admits its first item");
+        c.True(productionDefault.TryStart(1), "the production parameterless budget has an initialized clock");
+
         long now = 100;
         var bytes = new LodDrainBudget(100, now, 10, () => now);
         c.True(bytes.TryStart(80), "the first ordinary item starts");

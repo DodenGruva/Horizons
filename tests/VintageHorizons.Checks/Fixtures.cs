@@ -35,7 +35,7 @@ public static class Fixtures
     /// palette BlockIds into codes. Codes are supplied directly so no registry is needed.
     /// </summary>
     public static LodSaveSnapshot Snapshot(LodSection section, int level = 0, int sx = 0, int sz = 0,
-        bool applyToParent = false, string[]? codes = null)
+        bool applyToParent = false, string[]? codes = null, long revision = 1)
     {
         int count = section.Palette.Count;
         var colors = new int[count];
@@ -51,6 +51,7 @@ public static class Fixtures
             Level = level,
             SX = sx,
             SZ = sz,
+            Revision = revision,
             ApplyToParent = applyToParent,
             PaletteCodes = codes ?? Enumerable.Range(0, count).Select(i => "game:testblock-" + i).ToArray(),
             PaletteColors = colors,

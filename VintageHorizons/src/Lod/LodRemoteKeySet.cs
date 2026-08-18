@@ -144,14 +144,25 @@ public class LodRemoteKeySet
 
     /// <summary>
     /// A foreign section is now resident and queued for local persistence. Keep the
-    /// offered route until storage acknowledgements exist: SaveDirty currently clears on
-    /// enqueue, so declaring the row local before its write completes can race an eviction.
+    /// offered route until storage acknowledges the row, so a failed write retains its
+    /// remote fallback.
     /// </summary>
     public void MarkInstalled(long key)
     {
         remoteWanted.Remove(key);
         world.LoadFailed.Remove(key);
         world.LoadsInFlight.Remove(key);
+    }
+
+    /// <summary>
+    /// Storage acknowledged a local row. Future reloads may use disk and no longer need
+    /// the remote fallback; this transition deliberately happens after, never at, enqueue.
+    /// </summary>
+    public void MarkPersisted(long key)
+    {
+        localKeys.Add(key);
+        RemoteOnly.Remove(key);
+        remoteWanted.Remove(key);
     }
 
     /// <summary>

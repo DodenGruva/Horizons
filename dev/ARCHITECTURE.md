@@ -180,6 +180,23 @@ Visibility, residency, and persistence are different concerns:
 
 They must not share one timestamp or state flag if doing so makes turning the camera trigger remesh storms.
 
+Persistence has its own monotonically increasing per-section revision, separate from the
+content revision used by mip jobs. This distinction is required because clearing the
+persisted `ApplyToParent` flag changes a row without changing terrain content. Snapshot
+enqueue reserves a revision but leaves `SaveDirty` set. The storage owner coalesces a
+newer still-pending snapshot for the same key, executes at most one older plus one pending
+revision, and publishes a success/failure acknowledgement for every executed write. Only
+a successful acknowledgement matching the current persistence revision clears dirty
+state; stale success and all failure paths retain it. Failures retry with bounded
+exponential delay. A successful local write retires a foreign fallback only after that
+acknowledgement.
+
+Shutdown applies the same protocol rather than using a separate best-effort path: drain
+accepted writes, publish their acknowledgements, queue remaining dirty revisions, and
+repeat until clean or the fixed deadline. A timed-out close reports every unresolved key
+and revision before world state is cleared. Persistence revisions are runtime identity,
+not part of the SQLite schema, section blob, or assist protocol.
+
 ## Optional server behavior
 
 Server capture and serving are additive. Players without the mod remain unaffected. Client-local capture wins over a server-offered section because it represents terrain that client actually observed, including edits.
@@ -214,6 +231,10 @@ The server must answer every accepted section request, including explicit refusa
 16. **Mesh production and upload are boundary-budgeted.** Time, retained/uploaded bytes,
     and item caps all apply. One atomic first item may exceed a ceiling; later work waits.
     A replacement becomes live before the previous GPU resources are disposed.
+17. **Save enqueue is not durability.** `SaveDirty` remains the exact reconstruction
+    obligation until the storage owner acknowledges the current persistence revision.
+    Failures retry, superseded pending snapshots coalesce, and close either reaches clean
+    state or reports exact unresolved revisions.
 
 ## Concurrency invariants
 

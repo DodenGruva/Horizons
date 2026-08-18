@@ -19,7 +19,14 @@ public sealed class LodSaveSnapshot
     public int Level;
     public int SX;
     public int SZ;
+    /// <summary>
+    /// Owning-thread persistence revision. It is not serialized; it identifies the
+    /// exact frozen state that a background write acknowledges.
+    /// </summary>
+    public long Revision;
     public bool ApplyToParent;
+
+    public long Key => LodWorld.SectionKey(Level, SX, SZ);
 
     public string[] PaletteCodes = Array.Empty<string>();
     public int[] PaletteColors = Array.Empty<int>();
@@ -29,7 +36,8 @@ public sealed class LodSaveSnapshot
     public int[] ColumnStart = Array.Empty<int>();
     public bool[] Captured = Array.Empty<bool>();
 
-    public static LodSaveSnapshot Of(int level, int sx, int sz, LodSection section, IWorldAccessor world, bool applyToParent)
+    public static LodSaveSnapshot Of(int level, int sx, int sz, long revision,
+        LodSection section, IWorldAccessor world, bool applyToParent)
     {
         int count = section.Palette.Count;
         var codes = new string[count];
@@ -50,6 +58,7 @@ public sealed class LodSaveSnapshot
             Level = level,
             SX = sx,
             SZ = sz,
+            Revision = revision,
             ApplyToParent = applyToParent,
             PaletteCodes = codes,
             PaletteColors = colors,

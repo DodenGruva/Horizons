@@ -1,0 +1,60 @@
+{
+  "label": "large-cache-growth-2026-08-18",
+  "route": ".testdata/bench/large-cache-growth.txt",
+  "clientCacheRequirement": "Warm",
+  "serverCacheRequirement": "Any",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 30023680,
+      "lastWriteUtc": "2026-08-18T17:12:39.0529558Z"
+    }
+  ],
+  "prelaunchServerCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863-server.db",
+      "bytes": 21422080,
+      "lastWriteUtc": "2026-08-18T13:01:47.2009543Z"
+    }
+  ],
+  "reportedSectionsFromCache": 601,
+  "reportedServerSectionsFromCache": null,
+  "serverConfig": null,
+  "requiredServerText": null,
+  "reportedServerLine": null,
+  "requireGenerationComplete": false,
+  "generation": null,
+  "requireMipConvergence": true,
+  "mipConvergence": {
+    "line": "18.8.2026 12:27:09 [Notification] [vintagehorizons] Stats: 707 sections resident [L0:320 L1:170 L2:99 L3:64 L4:35 L5:14 L6:5] (2312 RAM-evicted, 601 from cache), 707 meshes (2060 evicted), 43 selected [L0:36 L1:1 L2:1 L3:0 L4:5 L5:0 L6:0] minus 0 draw-culled (31 subtrees traversal-culled), 36928 columns captured, 0 pending, worker: 0 captures / 0 meshes / 0 mips queued / 0+0+0 errors, 0 awaiting mip (0 in flight), 0 render-dirty, 0 unsaved",
+    "pendingColumns": 0,
+    "pendingCaptures": 0,
+    "pendingMeshes": 0,
+    "pendingMips": 0,
+    "captureErrors": 0,
+    "meshErrors": 0,
+    "mipErrors": 0,
+    "awaitingMip": 0,
+    "mipInFlight": 0,
+    "renderDirty": 0,
+    "unsaved": 0,
+    "pendingCaptureResults": 0,
+    "storageWriteBacklog": 0,
+    "storageWriteErrors": 0,
+    "asyncLoadsInFlight": 0,
+    "storageReadErrors": 0
+  },
+  "requireMipRecovery": false,
+  "persistedMipObligationsLoaded": 0,
+  "requiredAssistPeakInFlight": 0,
+  "assist": null,
+  "settleSeconds": 20.0,
+  "settleMaxSeconds": 90.0,
+  "measureSeconds": 600.0,
+  "measuredLaps": 1,
+  "warmupLaps": 0,
+  "cooldownSeconds": 60,
+  "serverMod": false,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T17:27:19.8856821Z"
+}

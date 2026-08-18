@@ -276,3 +276,22 @@
   and disposal timing to render telemetry.
 - Made the shared frame-local budget helper allocation-free and expanded the game-backed
   fast tier to 1,002 passing assertions across 24 suites.
+
+## 2026-08-18 — renderer scaling and revision-acknowledged persistence
+
+- Exercised snapshot/upload budgets on 601 cached sections, then grew the isolated cache
+  through a 12,800-block corridor to 3,132 rows / 157,724,672 bytes.
+- Processed 94,285 snapshots/uploads with sampled queues bounded to 18/four items, direct
+  GL upload below 6.9 ms, no 25 ms renderer phase, and complete semantic convergence.
+- Fixed the runtime-only `LodDrainBudget` struct-constructor regression found by the first
+  current-build launch, added a production-form check, and made the Windows runner reject
+  assemblies older than their C# or project inputs.
+- Added per-section persistence revisions, exact write success/failure acknowledgements,
+  retained dirty state, bounded retry, pending same-key coalescing, durable foreign-route
+  promotion, and repeated shutdown drain/ack/enqueue with exact unresolved reporting.
+- Added injected failure/retry, repeated mutation, coalescing, 300-key drain, and newest-
+  row restart coverage; the Release tier passes 1,050 assertions across 25 suites.
+- Reopened the 3,132-section cache in game, wrote 138 revisions, converged unsaved/backlog/
+  errors to zero, and shut down both isolated processes normally.
+- Preserved route CSV/scenario evidence and limitations under
+  `bench/results/2026-08-18-renderer-budgets-large-cache`.

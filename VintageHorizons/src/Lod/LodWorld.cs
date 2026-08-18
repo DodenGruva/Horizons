@@ -46,9 +46,13 @@ public class LodWorld
     readonly Dictionary<long, long> mipInFlight = new();
     readonly Dictionary<long, int> mipParentPins = new();
     readonly Dictionary<long, long> contentRevisions = new();
+    readonly Dictionary<long, long> persistenceRevisions = new();
+    readonly Dictionary<long, long> queuedSaveRevisions = new();
 
     public int MipInFlightCount => mipInFlight.Count;
     public long ContentRevision(long key) => contentRevisions.GetValueOrDefault(key);
+    public long PersistenceRevision(long key) => persistenceRevisions.GetValueOrDefault(key);
+    public long QueuedSaveRevision(long key) => queuedSaveRevisions.GetValueOrDefault(key);
 
     /// <summary>Every key (all levels) that holds data or has any descendant with data. Drives quadtree descent.</summary>
     public readonly HashSet<long> HasDataSet = new();
@@ -296,7 +300,7 @@ public class LodWorld
     {
         contentRevisions[key] = ContentRevision(key) + 1;
         RenderDirty.Add(key);
-        SaveDirty.Add(key);
+        MarkSaveDirty(key);
         if (KeyLevel(key) < MaxLevel) MipDirty.Add(key);
 
         // Neighbor meshes cull their faces against our edge columns; conservatively
@@ -306,6 +310,52 @@ public class LodWorld
             long nk = NeighborKey(key, d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
             if (Sections.ContainsKey(nk)) RenderDirty.Add(nk);
         }
+    }
+
+    /// <summary>
+    /// Record a change to the row that must become durable. Kept separate from content
+    /// revisions because clearing ApplyToParent changes the stored row without changing
+    /// terrain content.
+    /// </summary>
+    public void MarkSaveDirty(long key)
+    {
+        persistenceRevisions[key] = PersistenceRevision(key) + 1;
+        SaveDirty.Add(key);
+    }
+
+    /// <summary>
+    /// Reserve the current row revision for a background snapshot. Dirty state remains
+    /// set until the storage thread acknowledges this exact revision.
+    /// </summary>
+    public bool TryQueueSave(long key, out long revision)
+    {
+        revision = PersistenceRevision(key);
+        if (!SaveDirty.Contains(key) || revision == 0) return false;
+        if (queuedSaveRevisions.GetValueOrDefault(key) >= revision) return false;
+        queuedSaveRevisions[key] = revision;
+        return true;
+    }
+
+    /// <summary>Undo a reservation that the storage queue could not accept.</summary>
+    public void CancelQueuedSave(long key, long revision)
+    {
+        if (queuedSaveRevisions.GetValueOrDefault(key) == revision)
+            queuedSaveRevisions.Remove(key);
+    }
+
+    /// <summary>
+    /// Apply one storage acknowledgement. Success clears dirty state only when it names
+    /// the newest row revision; a failure or stale success leaves the obligation intact.
+    /// </summary>
+    /// <returns>True only when the newest revision became durable.</returns>
+    public bool CompleteSave(long key, long revision, bool succeeded)
+    {
+        if (queuedSaveRevisions.GetValueOrDefault(key) == revision)
+            queuedSaveRevisions.Remove(key);
+
+        if (!succeeded || PersistenceRevision(key) != revision) return false;
+        SaveDirty.Remove(key);
+        return true;
     }
 
     /// <summary>
@@ -353,7 +403,7 @@ public class LodWorld
             if (!Sections.TryGetValue(childKey, out LodSection? child) || child.CapturedColumns == 0)
             {
                 MipDirty.Remove(childKey);
-                SaveDirty.Add(childKey); // persist the cleared ApplyToParent flag
+                MarkSaveDirty(childKey); // persist the cleared ApplyToParent flag
                 continue;
             }
 
@@ -391,7 +441,7 @@ public class LodWorld
         }
 
         MipDirty.Remove(result.ChildKey);
-        SaveDirty.Add(result.ChildKey); // persist the cleared ApplyToParent flag
+        MarkSaveDirty(result.ChildKey); // persist the cleared ApplyToParent flag
 
         LodSection parent = GetOrCreateSection(parentKey);
         if (LodMip.ApplyToParent(result, parent)) MarkChanged(parentKey);
@@ -427,6 +477,8 @@ public class LodWorld
         mipInFlight.Clear();
         mipParentPins.Clear();
         contentRevisions.Clear();
+        persistenceRevisions.Clear();
+        queuedSaveRevisions.Clear();
         HasDataSet.Clear();
         TopLevelKeys.Clear();
         LoadsInFlight.Clear();

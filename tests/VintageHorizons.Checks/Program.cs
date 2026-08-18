@@ -22,6 +22,7 @@ public static class Program
         ("pure", "phase timing", PhaseCostChecks.Run),
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),
+        ("fixture", "persistence acknowledgements", PersistenceChecks.Run),
         ("pure", "far distance", FarDistanceChecks.Run),
         ("pure", "benchmark routes", BenchRouteChecks.Run),
         ("pure", "mesher", MesherChecks.Run),

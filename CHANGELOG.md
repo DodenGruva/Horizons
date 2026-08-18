@@ -8,6 +8,19 @@ first.
 
 ## [Unreleased]
 
+**Cache writes now clear dirty state only after the exact revision is durable.** Frozen
+section snapshots carry runtime-only revisions and the storage worker returns an explicit
+success or failure for every executed write. A stale success cannot erase a newer change,
+failures retain dirty state under bounded exponential retry, and repeated pending saves
+for one section coalesce to the newest snapshot. Foreign terrain keeps its remote fallback
+until a local write succeeds. World close repeatedly drains accepted writes and then
+queues the dirty revisions exposed by those acknowledgements until clean or a fixed
+timeout; any remainder is logged as exact section coordinates and revisions. The disk,
+blob, and network formats are unchanged. The 1,050-assertion Release tier covers injected
+failure/retry, repeated mutation, coalescing, a 300-key drain, and newest-row restart. A
+3,132-section game cache then reopened, wrote 138 revisions, converged to zero unsaved/
+backlog/errors, and shut down normally.
+
 **Mesh preparation and GPU upload are boundary-budgeted.** Render-thread snapshot
 production now stops after 1 ms, 2 MiB of estimated retained section arrays, or four
 jobs; completed GPU results stop after 2 ms, 4 MiB of live vertex/index data, or four
@@ -15,8 +28,11 @@ results. One first item always progresses even if oversized. The complete new
 opaque/water pair uploads before the previous mesh is disposed, so a partial failure
 retains visible terrain and restores its dirty obligation. New telemetry reports
 snapshot/upload throughput, queued bytes, oldest age, direct GL upload time, and disposal
-time. The Release build and 1,002 fast-check assertions pass; in-game driver timing,
-queue convergence, and tuning of the initial ceilings remain open.
+time. A 601-section moving route and a 12,800-block growth route to 3,132 persisted
+sections exercised both budgets. The larger run processed 94,285 snapshots/uploads,
+bounded sampled queues to 18 snapshots and four uploads, measured direct GL upload below
+6.9 ms, recorded no 25 ms renderer phase, and converged every guarded queue. Human visual
+review and cross-driver evidence remain open.
 
 **Render-dirty scheduling is incremental between coarse camera-cell crossings.** Exact
 dirty membership now publishes new-key deltas into a nearest-first priority index instead
@@ -26,8 +42,9 @@ validated and temporarily busy mesh/load keys retain their obligations. Twenty f
 assertions cover ordering, pruning, bounded progress, reprioritization, and teardown. A
 601-section functional route settled all four moving/full-turn waypoints and converged
 543 meshes plus every guarded queue to zero before graceful shutdown. This is functional
-evidence, not a controlled performance comparison; thousands-section scaling remains
-open. The later boundary-budgeting change above has source/harness evidence only.
+evidence, not a controlled performance comparison. A later 3,132-section route also
+converged with bounded renderer queues; causal scheduler timing and human review remain
+open.
 
 **Visibility-aware quadtree traversal has controlled runtime evidence.** The renderer now
 rejects a node's conservative world-height frustum box before descending, so an invisible
@@ -38,7 +55,8 @@ same-cache 601-section dedicated-process comparison, selected nodes fell 64.2%, 
 average traversal time fell 19.8%, and weighted average draw-submission time fell 9.3%.
 Both sides retained 543 meshes with zero evictions and zero reported 25 ms game ticks.
 Aggregate FPS was effectively unchanged and is not claimed as an improvement. A
-thousands-section scale run and human in-motion clipping/turn-around review remain open.
+later 3,132-section route established automated scaling and convergence, while human
+in-motion clipping/turn-around review remains open.
 
 **Interrupted mip work now has durable restart evidence.** The isolated Windows runner can
 wait until a real `ApplyToParent` row is written, revalidate and terminate only its sandbox

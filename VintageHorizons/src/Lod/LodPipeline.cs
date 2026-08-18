@@ -59,6 +59,7 @@ public class LodPipeline
     /// sections simply stay dirty (and therefore RAM-resident) and retry later.
     /// </summary>
     const int MaxStorageBacklog = 256;
+    const int StorageShutdownTimeoutMs = 15000;
 
     readonly ICoreAPI api;
     readonly ILogger logger;
@@ -147,6 +148,9 @@ public class LodPipeline
             : 0);
 
     readonly Queue<LodForeignInstallCompletion> foreignInstallCompletions = new();
+    readonly Dictionary<long, SaveRetryState> saveRetries = new();
+
+    readonly record struct SaveRetryState(long Revision, int Failures, long NotBeforeMs);
 
     int tickCounter;
     long worldEpoch;
@@ -367,6 +371,8 @@ public class LodPipeline
     public void Tick()
     {
         if (!Active) return;
+
+        ApplySaveCompletions();
 
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         InstallForeignSections();
@@ -711,33 +717,99 @@ public class LodPipeline
 
     // ---- Persistence ----
 
+    void ApplySaveCompletions()
+    {
+        if (storageThread == null) return;
+
+        while (storageThread.TryTakeSaveCompletion(out LodSaveCompletion completion))
+        {
+            bool newestBecameDurable = World.CompleteSave(
+                completion.Key, completion.Revision, completion.Succeeded);
+
+            if (completion.Succeeded)
+            {
+                // A durable row is now a valid local fallback even when a still-newer
+                // revision remains dirty.
+                Remote.MarkPersisted(completion.Key);
+                if (newestBecameDurable) saveRetries.Remove(completion.Key);
+                continue;
+            }
+
+            // A stale failure must not delay a newer snapshot already in flight.
+            if (World.PersistenceRevision(completion.Key) != completion.Revision
+                || World.QueuedSaveRevision(completion.Key) != 0) continue;
+
+            int failures = 1;
+            if (saveRetries.TryGetValue(completion.Key, out SaveRetryState prior)
+                && prior.Revision == completion.Revision)
+            {
+                failures = prior.Failures + 1;
+            }
+            saveRetries[completion.Key] = new SaveRetryState(
+                completion.Revision, failures,
+                Environment.TickCount64 + LodSaveRetry.DelayMilliseconds(failures));
+        }
+    }
+
     void SaveSomeDirtySections(int budget)
     {
-        if (store == null || World.SaveDirty.Count == 0) return;
-        if (storageThread != null && storageThread.Backlog >= MaxStorageBacklog) return;
+        if (store == null || storageThread == null || World.SaveDirty.Count == 0 || budget <= 0) return;
 
         storageClock.Restart();
-        List<long>? saved = null;
         foreach (long key in World.SaveDirty)
         {
-            if (World.Sections.TryGetValue(key, out LodSection? section))
+            if (storageThread.Backlog >= MaxStorageBacklog) break;
+            long revision = World.PersistenceRevision(key);
+            if (saveRetries.TryGetValue(key, out SaveRetryState retry)
+                && retry.Revision == revision && Environment.TickCount64 < retry.NotBeforeMs)
+                continue;
+            if (!World.Sections.TryGetValue(key, out LodSection? section)) continue;
+            if (!World.TryQueueSave(key, out revision)) continue;
+
+            // Freeze on this thread (the section keeps mutating), compress and
+            // write on the storage thread.
+            var snap = LodSaveSnapshot.Of(LodWorld.KeyLevel(key), LodWorld.KeySx(key), LodWorld.KeySz(key),
+                revision, section, api.World, World.MipDirty.Contains(key));
+            if (!storageThread.Enqueue(snap))
             {
-                // Freeze on this thread (the section keeps mutating), compress and
-                // write on the storage thread.
-                var snap = LodSaveSnapshot.Of(LodWorld.KeyLevel(key), LodWorld.KeySx(key), LodWorld.KeySz(key),
-                    section, api.World, World.MipDirty.Contains(key));
-                storageThread?.Enqueue(snap);
+                World.CancelQueuedSave(key, revision);
+                break;
             }
-            (saved ??= new List<long>()).Add(key);
             if (--budget <= 0) break;
         }
-        if (saved != null) foreach (long key in saved) World.SaveDirty.Remove(key);
 
         double ms = storageClock.Elapsed.TotalMilliseconds;
         SaveCalls++;
         SaveMsTotal += ms;
         if (ms > SaveMsMax) SaveMsMax = ms;
     }
+
+    bool FlushPersistence(int timeoutMs)
+    {
+        if (storageThread == null) return World.SaveDirty.Count == 0;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+
+        while (clock.ElapsedMilliseconds < timeoutMs)
+        {
+            ApplySaveCompletions();
+            SaveSomeDirtySections(int.MaxValue);
+            if (World.SaveDirty.Count == 0 && storageThread.Backlog == 0) return true;
+
+            int remaining = timeoutMs - (int)clock.ElapsedMilliseconds;
+            if (remaining <= 0) break;
+            if (storageThread.Backlog > 0) storageThread.Drain(Math.Min(100, remaining));
+            else Thread.Sleep(Math.Min(10, remaining));
+        }
+
+        ApplySaveCompletions();
+        return World.SaveDirty.Count == 0 && storageThread.Backlog == 0;
+    }
+
+    string DescribeUnresolvedSaves() => string.Join(", ", World.SaveDirty
+        .OrderBy(key => key)
+        .Select(key => $"{LodWorld.KeyLevel(key)}:{LodWorld.KeySx(key)}:{LodWorld.KeySz(key)}"
+            + $"@r{World.PersistenceRevision(key)}"
+            + (World.QueuedSaveRevision(key) == 0 ? "" : $"(queued-r{World.QueuedSaveRevision(key)})")));
 
     /// <summary>
     /// Flush and shut the cache down. Order matters: queue everything, let the writer
@@ -752,15 +824,14 @@ public class LodPipeline
 
         if (store != null)
         {
-            SaveSomeDirtySections(int.MaxValue);
             if (storageThread != null)
             {
-                storageThread.Drain();
-                if (storageThread.Backlog > 0)
-                {
-                    logger.Warning("Storage drain timed out with {0} sections unwritten", storageThread.Backlog);
-                }
+                FlushPersistence(StorageShutdownTimeoutMs);
                 storageThread.Dispose();
+                ApplySaveCompletions();
+                if (World.SaveDirty.Count > 0 || storageThread.Backlog > 0)
+                    logger.Warning("Storage shutdown left unresolved saves: {0}; writer backlog: {1}",
+                        DescribeUnresolvedSaves(), storageThread.Backlog);
                 storageThread = null;
             }
             store.Close();
@@ -771,6 +842,7 @@ public class LodPipeline
         queuedColumns.Clear();
         pendingColumns.Clear();
         Remote.Clear();
+        saveRetries.Clear();
         foreignInstallCompletions.Clear();
         // Results for the world we are leaving must not be applied to the next one.
         // Both queues, or a result held back for a reload would cross worlds.
@@ -785,11 +857,7 @@ public class LodPipeline
 
     public void Dispose()
     {
-        storageThread?.Drain();
-        storageThread?.Dispose();
-        storageThread = null;
-        store?.Dispose();
-        store = null;
+        Close();
         Worker.Dispose();
     }
 }

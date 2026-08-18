@@ -21,8 +21,15 @@ internal struct LodDrainBudget
     public int Items { get; private set; }
     public long Bytes { get; private set; }
 
-    public LodDrainBudget(long maxBytes = DefaultMaxBytes,
-        double maxMilliseconds = DefaultMaxMilliseconds)
+    // Struct construction with `new LodDrainBudget()` otherwise zero-initializes every
+    // field instead of selecting an overload whose arguments happen to be optional.
+    // Keep the production shorthand explicit so its clock delegate is always present.
+    public LodDrainBudget()
+        : this(DefaultMaxBytes, DefaultMaxMilliseconds)
+    {
+    }
+
+    public LodDrainBudget(long maxBytes, double maxMilliseconds)
         : this(maxBytes, Stopwatch.GetTimestamp(),
             Math.Max(1, (long)Math.Ceiling(maxMilliseconds * Stopwatch.Frequency / 1000.0)),
             Stopwatch.GetTimestamp)

@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+large-cache-growth-2026-08-18,east-large-cache-growth,512020,230,512810,1,313109,521.8,587.3,150.0,1.92,6.67,0.0,0.0,1921,4804,21.0,0

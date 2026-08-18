@@ -12,20 +12,11 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 
 ### Renderer scaling
 
-- Repeat visibility-aware subtree traversal on a thousands-section cache and human-check
-  clipping and turn-around behavior. The controlled 601-section dedicated-process pair
-  established lower selection/traversal/submission work with stable mesh residency.
-- Exercise the 1 ms / 2 MiB snapshot and 2 ms / 4 MiB upload ceilings in game; verify
-  queue-age convergence and tune only from measured large-cache evidence.
+- Human-check clipping and turn-around behavior on the thousands-section build. Automated
+  scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
+  causal traversal comparison.
 - Measure whether regional buffers or multi-draw are warranted after CPU fixes.
 - Select a practical default far cap only from benchmark and playtest evidence.
-
-### Persistence hardening
-
-- Add save revisions and completion acknowledgements.
-- Retry failed writes without losing dirty state.
-- Coalesce superseded snapshots for the same section.
-- Make shutdown drain existing backlog and then persist remaining dirty revisions.
 
 ### Integrated validation
 
@@ -50,7 +41,7 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Dedicated client/server durability is established;
   integrated-singleplayer interruption remains unverified.
-- The complete game-backed fast tier passes 1,002 assertions across 24 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
+- The complete game-backed fast tier passes 1,050 assertions across 25 suites. A real game process still supplies the only end-to-end proof of thread ownership and GPU behavior.
 - Live server-assist transfer now exercises network request state end to end. Incremental
   sibling-cache discovery and retry-safe local misses remain unexercised in integrated
   singleplayer.
@@ -60,15 +51,23 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   sky-biased; cold terrain/coverage arrival still needs visual review.
 - Visibility-aware traversal passes source/harness checks and a controlled same-cache
   601-section route: selected nodes fell 64.2%, average traversal 19.8%, and average draw
-  submission 9.3%, while both sides retained 543 meshes with zero evictions. Aggregate
-  FPS did not improve measurably; thousands-section scaling and human motion review remain.
+  submission 9.3%, while both sides retained 543 meshes with zero evictions. A later
+  3,132-section automated route bounded renderer queues and converged, but aggregate FPS
+  is not a controlled comparison and human motion review remains.
 - Incremental render-dirty scheduling passes 20 focused assertions and a functional
   601-section moving/rotation route that settled every waypoint and converged all guarded
   queues. It has no controlled old/new timing comparison, no thousands-section scale
   evidence, and no human review of this build.
 - Mesh snapshot/upload budgets pass deterministic accounting/progress checks and a
-  zero-warning Release build. No game process has yet measured the new GL upload/disposal
-  telemetry, result queue age, convergence, or visual replacement behavior.
+  zero-warning Release build. A 12,800-block cache-growth route processed 94,285
+  snapshots/uploads, bounded sampled queues to 18/four items, measured direct GL upload
+  below 6.9 ms, recorded no 25 ms renderer phase, and converged. No person watched visual
+  replacement behavior and no second driver has been measured.
+- Revisioned persistence passes injected failure/retry, repeated mutation, pending
+  coalescing, 300-key drain, and newest-row restart checks. A 3,132-section runtime route
+  reopened the cache, wrote 138 revisions, and ended with zero unsaved/backlog/errors.
+  Persistent-failure timeout reporting has source/check evidence but has not been forced
+  inside a game process.
 - Capture publication is source-bounded and passed a warm-cache same-route before/after
   run: its maximum fell from 12.038 to 5.732 ms and backlog peaked at 9 results / 0.70 MiB /
   93 ms. One admitted result remains non-preemptible; unseen terrain and interrupted

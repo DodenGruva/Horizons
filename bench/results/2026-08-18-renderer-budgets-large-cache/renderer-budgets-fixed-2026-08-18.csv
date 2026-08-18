@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+renderer-budgets-fixed-2026-08-18,east-full-turn,512020,230,512010,1,13664,455.4,454.9,275.7,2.20,3.63,0.0,0.0,2254,4050,21.0,0
+renderer-budgets-fixed-2026-08-18,south-full-turn,512420,230,512010,1,13103,436.8,432.2,266.3,2.29,3.75,0.0,0.0,1766,4094,21.0,0
+renderer-budgets-fixed-2026-08-18,west-full-turn,512420,230,512410,1,12561,418.7,423.9,271.3,2.39,3.69,0.0,0.0,2044,4142,21.0,0
+renderer-budgets-fixed-2026-08-18,north-full-turn,512020,230,512410,1,14156,471.9,461.4,294.2,2.12,3.40,0.0,0.0,2066,4113,21.0,0

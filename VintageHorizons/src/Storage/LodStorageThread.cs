@@ -6,6 +6,10 @@ namespace VintageHorizons;
 public readonly record struct LodLoadResult(
     long Key, LodSection? Section, long EstimatedBytes, long ReadyAtMilliseconds);
 
+/// <summary>An exact background-save acknowledgement awaiting owning-thread publication.</summary>
+public readonly record struct LodSaveCompletion(
+    long Key, long Revision, bool Succeeded, string? Error);
+
 /// <summary>Which bounded producer submitted a foreign blob for structural decode.</summary>
 public enum LodForeignSource
 {
@@ -30,14 +34,19 @@ readonly record struct LodForeignDecodeJob(
 /// here, outside the store's transaction lock, so a main-thread demand load waits at
 /// most for a row write.
 ///
-/// Ordering: a single consumer over a FIFO queue, so repeated saves of the same
-/// section land in the order the main thread produced them and the newest snapshot
-/// wins.
+/// Ordering: a single consumer writes keys in FIFO order. A newer snapshot replaces an
+/// older snapshot for the same key while it is still pending; if the older one is already
+/// executing, at most one newer snapshot waits behind it. Every executed revision emits
+/// an owning-thread acknowledgement.
 /// </summary>
 public class LodStorageThread : IDisposable
 {
     readonly LodStore store;
-    readonly ConcurrentQueue<LodSaveSnapshot> queue = new();
+    readonly Action<LodSaveSnapshot> saveAction;
+    readonly object saveGate = new();
+    readonly Queue<long> saveOrder = new();
+    readonly Dictionary<long, LodSaveSnapshot> pendingSaves = new();
+    readonly ConcurrentQueue<LodSaveCompletion> saveCompletions = new();
     readonly AutoResetEvent signal = new(false);
     readonly Thread thread;
     volatile bool running = true;
@@ -138,24 +147,29 @@ public class LodStorageThread : IDisposable
         }
     }
 
-    public int Pending => queue.Count;
+    public int Pending
+    {
+        get { lock (saveGate) return pendingSaves.Count; }
+    }
     public int SaveErrors;
     public string? FirstSaveError;
     public long SectionsWritten;
 
-    // Drain waits on these rather than on an empty queue: the queue goes empty the
-    // moment the last item is dequeued, while its write is still in progress.
-    long enqueuedCount;
-    long completedCount;
+    // Includes pending and executing writes. A pending same-key replacement does not
+    // increase it, which is the memory bound coalescing is meant to preserve.
+    long saveOutstanding;
     readonly string? interruptMipMarker =
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_MARKER");
     readonly string? interruptMipRelease =
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
     int interruptMipMarked;
 
-    public LodStorageThread(LodStore store)
+    public LodStorageThread(LodStore store, Action<LodSaveSnapshot>? saveAction = null)
     {
         this.store = store;
+        this.saveAction = saveAction ?? (snapshot => store.SaveBlob(
+            snapshot.Level, snapshot.SX, snapshot.SZ, LodStore.Serialize(snapshot),
+            snapshot.ApplyToParent));
         thread = new Thread(Loop)
         {
             Name = "vintagehorizons-storage",
@@ -165,12 +179,33 @@ public class LodStorageThread : IDisposable
         thread.Start();
     }
 
-    public void Enqueue(LodSaveSnapshot snapshot)
+    /// <summary>
+    /// Queue a frozen row. Newer pending revisions for the same key supersede their
+    /// snapshot in place, avoiding unbounded copies while preserving the latest state.
+    /// </summary>
+    public bool Enqueue(LodSaveSnapshot snapshot)
     {
-        Interlocked.Increment(ref enqueuedCount);
-        queue.Enqueue(snapshot);
+        lock (saveGate)
+        {
+            if (!running) return false;
+            long key = snapshot.Key;
+            if (pendingSaves.TryGetValue(key, out LodSaveSnapshot? pending))
+            {
+                if (snapshot.Revision > pending.Revision) pendingSaves[key] = snapshot;
+            }
+            else
+            {
+                pendingSaves[key] = snapshot;
+                saveOrder.Enqueue(key);
+                Interlocked.Increment(ref saveOutstanding);
+            }
+        }
         signal.Set();
+        return true;
     }
+
+    public bool TryTakeSaveCompletion(out LodSaveCompletion completion) =>
+        saveCompletions.TryDequeue(out completion);
 
     void Loop()
     {
@@ -194,7 +229,7 @@ public class LodStorageThread : IDisposable
                 ReadOne(key);
             }
 
-            if (queue.TryDequeue(out LodSaveSnapshot? snap))
+            if (TryTakePendingSave(out LodSaveSnapshot snap))
             {
                 didWork = true;
                 WriteOne(snap);
@@ -204,7 +239,23 @@ public class LodStorageThread : IDisposable
         }
 
         // Shutting down: never drop queued work, the rows are the player's cache.
-        while (queue.TryDequeue(out LodSaveSnapshot? snap)) WriteOne(snap);
+        while (TryTakePendingSave(out LodSaveSnapshot snap)) WriteOne(snap);
+    }
+
+    bool TryTakePendingSave(out LodSaveSnapshot snapshot)
+    {
+        lock (saveGate)
+        {
+            while (saveOrder.Count > 0)
+            {
+                long key = saveOrder.Dequeue();
+                if (!pendingSaves.Remove(key, out LodSaveSnapshot? pending) || pending == null) continue;
+                snapshot = pending;
+                return true;
+            }
+        }
+        snapshot = null!;
+        return false;
     }
 
     void ReadOne(long key)
@@ -258,10 +309,13 @@ public class LodStorageThread : IDisposable
 
     void WriteOne(LodSaveSnapshot snap)
     {
+        bool succeeded = false;
+        string? error = null;
         try
         {
-            store.SaveBlob(snap.Level, snap.SX, snap.SZ, LodStore.Serialize(snap), snap.ApplyToParent);
+            saveAction(snap);
             SectionsWritten++;
+            succeeded = true;
 
             // Sandbox-only crash-recovery hook. The marker is published only after a row
             // carrying the durable propagation flag has been written. Pausing this one
@@ -282,12 +336,15 @@ public class LodStorageThread : IDisposable
         }
         catch (Exception e)
         {
+            error = e.ToString();
             Interlocked.Increment(ref SaveErrors);
-            try { FirstSaveError ??= e.ToString(); } catch { /* never let diagnostics kill the thread */ }
+            try { FirstSaveError ??= error; } catch { /* never let diagnostics kill the thread */ }
         }
         finally
         {
-            Interlocked.Increment(ref completedCount);
+            saveCompletions.Enqueue(new LodSaveCompletion(
+                snap.Key, snap.Revision, succeeded, error));
+            Interlocked.Decrement(ref saveOutstanding);
         }
     }
 
@@ -295,19 +352,19 @@ public class LodStorageThread : IDisposable
     /// Block until every queued section has been written. Called before the store is
     /// closed on leave-world; without it a crash-free exit could still lose sections.
     /// </summary>
-    public void Drain(int timeoutMs = 15000)
+    public bool Drain(int timeoutMs = 15000)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
         signal.Set();
-        while (Interlocked.Read(ref completedCount) < Interlocked.Read(ref enqueuedCount)
-               && clock.ElapsedMilliseconds < timeoutMs)
+        while (Backlog > 0 && clock.ElapsedMilliseconds < timeoutMs)
         {
             Thread.Sleep(10);
         }
+        return Backlog == 0;
     }
 
     /// <summary>Sections enqueued but not yet written - surfaced in the stats line.</summary>
-    public long Backlog => Interlocked.Read(ref enqueuedCount) - Interlocked.Read(ref completedCount);
+    public long Backlog => Math.Max(0, Interlocked.Read(ref saveOutstanding));
 
     public void Dispose()
     {

@@ -1,0 +1,41 @@
+{
+  "label": "persistence-acks-runtime-2026-08-18",
+  "route": "bench/routes/moving-rotation.txt",
+  "clientCacheRequirement": "Warm",
+  "prelaunchClientCacheFiles": [
+    {
+      "name": "1a799300-2b75-47c0-99cf-b94674986863.db",
+      "bytes": 157724672,
+      "lastWriteUtc": "2026-08-18T17:27:19.2450790Z"
+    }
+  ],
+  "reportedSectionsFromCache": 3132,
+  "requireMipConvergence": true,
+  "mipConvergence": {
+    "pendingColumns": 0,
+    "pendingCaptures": 0,
+    "pendingMeshes": 0,
+    "pendingMips": 0,
+    "captureErrors": 0,
+    "meshErrors": 0,
+    "mipErrors": 0,
+    "awaitingMip": 0,
+    "mipInFlight": 0,
+    "renderDirty": 0,
+    "unsaved": 0,
+    "pendingCaptureResults": 0,
+    "storageWriteBacklog": 0,
+    "storageWriteErrors": 0,
+    "asyncLoadsInFlight": 0,
+    "storageReadErrors": 0
+  },
+  "settleSeconds": 5.0,
+  "settleMaxSeconds": 30.0,
+  "measureSeconds": 15.0,
+  "measuredLaps": 1,
+  "warmupLaps": 1,
+  "cooldownSeconds": 45,
+  "serverMod": false,
+  "statsEnabled": true,
+  "completedUtc": "2026-08-18T17:47:35.6948162Z"
+}

@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, and boundary-budgeted mesh snapshots/GPU uploads are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots/GPU uploads, and revision-acknowledged persistence are implemented and verified on `codex/main-thread-performance`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -334,7 +334,10 @@ one first item always progresses. Controlled large-cache timing remains open.
 live vertex/index data, or four results, with one-first-item progress. The new
 opaque/water pair becomes live before the old pair is disposed; partial failure retains
 the old pair and restores dirty work. Telemetry reports upload/disposal timing, bytes,
-backlog, and oldest age. Runtime driver timing and tuning remain open.
+backlog, and oldest age. A 601-section route and sustained growth to 3,132 persisted
+sections bounded sampled queues to 18 snapshots/four uploads, measured direct GL upload
+below 6.9 ms, recorded no 25 ms renderer phase, and converged. Human visual and
+cross-driver validation remain open.
 
 ### Later draw-call work
 
@@ -369,6 +372,16 @@ Only after measurement:
 - Repeated mutation while a save is queued persists the newest revision.
 - Close with a full backlog either persists everything or reports exact unresolved keys/revisions.
 - Cache rows remain readable after restart.
+
+**Implementation status:** Complete in source and deterministic checks. Runtime-only
+persistence revisions are distinct from content revisions; exact success/failure
+acknowledgements retain newer/failed dirty state, pending same-key snapshots coalesce,
+retries use 250 ms exponential delay capped at 30 seconds, and close repeats
+drain/ack/enqueue until clean or a 15-second exact unresolved report. Injected failure,
+repeated mutation, 300-key drain, and newest-row SQLite restart checks pass. A
+3,132-section game cache reopened, wrote 138 revisions, and reached zero unsaved/backlog/
+errors before graceful shutdown. Persistent-failure timeout logging remains unforced in
+a game process.
 
 ## 12. Final validation matrix
 

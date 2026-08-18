@@ -159,16 +159,22 @@ progress remains visible.
 
 ### G16 — A queued save is not durable local data
 
-**Trigger:** changing foreign adoption, remote fallbacks, eviction, or save routing before
-storage acknowledgements exist.
+**Trigger:** changing foreign adoption, remote fallbacks, eviction, save coalescing, or
+shutdown routing.
 
-**Trap:** a foreign section is marked dirty when installed, but current save state clears
-when its snapshot is queued rather than when the exact row write is acknowledged. Removing
-the foreign source immediately can let eviction route a reload to a local row whose write
-is still pending or has failed.
+**Trap:** clearing dirty state at snapshot enqueue lets a failed write disappear, and a
+success for revision N can erase a newer mutation at N+1. Removing a foreign source at
+install has the same fault: eviction can route a reload to a local row whose write is
+still pending or failed. Draining only the accepted queue at close also misses dirty
+revisions held back by its capacity ceiling.
 
-**Do:** retain the foreign fallback until revisioned storage acknowledgements can prove the
-local row durable. Do not infer persistence from RAM installation or save enqueue.
+**Do:** give stored state its own revision, retain dirty membership through enqueue, and
+clear it only on exact successful acknowledgement. Coalesce only pending same-key
+snapshots, retry failures with bounded delay, and make close alternate drain/ack/enqueue
+until clean or an exact unresolved report. Retain the foreign fallback until any local row
+is durably acknowledged.
+
+**Found:** revisioned persistence hardening, Session 21.
 
 ### G17 — Vintage Story camera pitch is PI-centred
 
@@ -289,6 +295,34 @@ keys without clearing membership, ingest new keys incrementally, and rebuild pri
 only at a coarse spatial/policy boundary under an explicit examination ceiling.
 
 **Found:** render-dirty priority scheduling, Session 19.
+
+### G26 — A value type's optional constructor is not its default constructor
+
+**Trigger:** converting a helper class with optional constructor parameters to a struct.
+
+**Trap:** `new Helper()` can zero-initialize a struct instead of invoking the overload that
+declares only optional parameters. Reference fields that the old constructor initialized
+remain null, and the failure may not appear until the second budget item uses them.
+
+**Do:** add an explicit parameterless constructor that delegates to the intended defaults,
+remove optional defaults from the parameterized overload, and check the exact production
+form (`new Helper()` followed by multiple operations).
+
+**Found:** `LodDrainBudget` runtime validation, Session 21.
+
+### G27 — A runtime runner can deploy a stale build artifact
+
+**Trigger:** a harness copies an existing Debug/Release output instead of building source.
+
+**Trap:** a complete, plausible benchmark can exercise yesterday's DLL. Source-only
+telemetry is then absent, but aggregate FPS and clean shutdown make the run look valid.
+
+**Do:** build the exact configuration immediately before the run and verify a source-
+specific log field or artifact freshness before accepting evidence. The Windows runner
+now rejects assemblies older than project/C# inputs; preserve any stale run only as a
+diagnostic, never as result evidence.
+
+**Found:** renderer-budget runtime validation, Session 21.
 
 ## Reversals and disproved claims
 

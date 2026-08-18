@@ -173,6 +173,11 @@ public static class RemoteKeyChecks
             "the offered route stays until persistence can acknowledge the adopted row");
         c.False(world.LoadsInFlight.Contains(key),
             "the successful install releases the in-flight marker");
+        remote.MarkPersisted(key);
+        c.False(remote.RemoteOnly.Contains(key),
+            "the offered route retires only after a durable local acknowledgement");
+        c.False(remote.WantFromRemote(key),
+            "a durably persisted adopted row reloads from local disk");
 
         var networkWorld = new LodWorld();
         var networkRemote = new LodRemoteKeySet(networkWorld);

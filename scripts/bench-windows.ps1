@@ -58,6 +58,24 @@ function Assert-UnderSandbox {
     }
 }
 
+function Assert-FreshAssembly {
+    param(
+        [string]$Assembly,
+        [string]$ProjectFile,
+        [string]$SourceDirectory
+    )
+
+    $artifact = Get-Item -LiteralPath $Assembly -ErrorAction Stop
+    $inputs = @((Get-Item -LiteralPath $ProjectFile -ErrorAction Stop))
+    $inputs += @(Get-ChildItem -LiteralPath $SourceDirectory -Recurse -File -Filter '*.cs' -ErrorAction Stop)
+    $newest = $inputs | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($newest.LastWriteTimeUtc -gt $artifact.LastWriteTimeUtc) {
+        $relativeInput = [IO.Path]::GetRelativePath($repoRoot, $newest.FullName)
+        $relativeArtifact = [IO.Path]::GetRelativePath($repoRoot, $artifact.FullName)
+        throw "Benchmark assembly is stale: $relativeInput is newer than $relativeArtifact. Build Debug before running."
+    }
+}
+
 function Get-SandboxProcess {
     param([string]$PidFile)
     if (-not (Test-Path -LiteralPath $PidFile)) { return $null }
@@ -349,6 +367,14 @@ if ($serverConfigPath) { $requiredInputs += $serverConfigPath }
 foreach ($required in $requiredInputs) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Required benchmark input is missing: $required" }
 }
+Assert-FreshAssembly `
+    (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons/VintageHorizons.dll') `
+    (Join-Path $repoRoot 'VintageHorizons/VintageHorizons.csproj') `
+    (Join-Path $repoRoot 'VintageHorizons/src')
+Assert-FreshAssembly `
+    (Join-Path $repoRoot 'bench/VintageHorizonsBench/bin/Debug/net10.0/Mods/vintagehorizonsbench/VintageHorizonsBench.dll') `
+    (Join-Path $repoRoot 'bench/VintageHorizonsBench/VintageHorizonsBench.csproj') `
+    (Join-Path $repoRoot 'bench/VintageHorizonsBench/src')
 $prelaunchCacheFiles = @(Get-ClientCacheFiles)
 Assert-RequestedClientCacheState $prelaunchCacheFiles
 $prelaunchCacheRecord = @($prelaunchCacheFiles | ForEach-Object {

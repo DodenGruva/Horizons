@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+persistence-acks-runtime-2026-08-18,east-full-turn,512020,230,512010,1,6254,416.9,420.5,179.4,2.40,5.57,0.0,0.0,2320,4488,18.0,0
+persistence-acks-runtime-2026-08-18,south-full-turn,512420,230,512010,1,5752,383.4,393.4,169.5,2.61,5.90,0.0,0.0,1761,4502,18.0,0
+persistence-acks-runtime-2026-08-18,west-full-turn,512420,230,512410,1,5551,370.0,383.7,166.9,2.70,5.99,0.0,0.0,1949,4503,18.0,0
+persistence-acks-runtime-2026-08-18,north-full-turn,512020,230,512410,1,6503,433.5,466.0,172.2,2.31,5.81,0.0,0.0,2149,4530,18.0,0
