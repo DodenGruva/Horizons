@@ -8,6 +8,17 @@ first.
 
 ## [Unreleased]
 
+**Server-assist progress logging no longer blocks the server tick.** The elevated-rate
+transfer benchmark reproduced multi-millisecond assist tails at the synchronous
+every-200-sections notification. Correlated setup/publication/admission, send, allocation,
+and GC-crossing telemetry isolated a 3.655 ms callback whose two packet sends totalled
+0.075 ms while the progress-log boundary occupied 3.573 ms; no managed collection crossed
+the call. The hot-path notification is gone, while `/vhserver` and opt-in interval stats
+retain cumulative sections and bytes. The unchanged guarded fix run installed 273
+sections, exercised all 16 request slots, declined nothing, and kept active-transfer
+assist service at or below 2.061 ms. Formats and protocols are unchanged, and the Release
+tier now passes 1,058 assertions.
+
 **Integrated-singleplayer sibling retry and mip recovery are now guarded end to end.**
 The Windows runner can launch a named world in a separate integrated sandbox, distinguish
 client and `-server` cache files, parse both in-process logs, force one transient local

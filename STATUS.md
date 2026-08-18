@@ -14,7 +14,7 @@
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
 
-The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, and ordered off-thread server-assist blob reads. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 ## 2. Product and architecture state
 
@@ -28,6 +28,9 @@ Server-assist blob reads use one dedicated unpooled read-only SQLite connection 
 single reader thread. Queued, executing, and completed blobs share a 16-item cap. Results
 carry player-session identity and publish in per-player request order on the server thread;
 read failures produce explicit retryable replies rather than silence.
+Stats sessions can correlate setup, completed-result publication, request admission,
+individual sends, managed allocations, and collection-count crossings. Cumulative served
+sections and bytes remain visible without logging from the service callback.
 
 The Windows runner can wait until the storage owner has durably written an
 `ApplyToParent` row, verify and interrupt only its sandbox client, require a recovery
@@ -120,6 +123,10 @@ to zero unsaved/backlog/errors.
 generation run discovered 211 sibling keys, forced one exact-key retryable miss, installed
 that key plus 62 others, and converged. A client-scoped hard interruption recovered one
 persisted mip obligation; a third fresh integrated process required zero obligations.
+29. Correlated server-assist diagnostics isolated a synchronous every-200-sections
+progress notification inside request admission. Removing it kept cumulative status
+visibility while a repeat 273-section transfer held active service to 2.061 ms maximum,
+individual sends below 0.647 ms, and crossed no managed collection in measured callbacks.
 
 ## 4. Measured diagnosis and result
 
@@ -184,11 +191,17 @@ It again filled all 16 request slots and requested, received, and installed 395 
 with zero declines. One 17.481 ms background reader call coincided with only 0.989 ms
 maximum owning-thread assist service, directly proving that the database wait no longer
 blocks that thread. A later interval recorded a 32.450 ms assist-service outlier while
-reader calls stayed at 0.179 ms maximum and individual sends at 0.249 ms maximum; that
-tail remains unattributed rather than being assigned to SQLite. The client had no reported
-25 ms Vintage Horizons tick and the separate server capture pipeline had no 25 ms tick;
-the assist phase itself did record that 32.450 ms outlier. Queues drained and shutdown was
-graceful.
+reader calls stayed at 0.179 ms maximum and individual sends at 0.249 ms maximum. Its raw
+server log was not retained, so later work does not retroactively assign that exact sample.
+
+A new baseline reproduced a smaller 12.779 ms service tail, then correlated setup,
+publication, admission, send, allocation, and managed-collection diagnostics were added
+for stats sessions. Two attributed repeats installed 273 sections each, filled all 16
+slots, declined nothing, and crossed no managed collection during a measured callback or
+send. The clearest tail was 3.655 ms total: 3.573 ms was request admission, two sends
+totalled 0.075 ms, and the same callback emitted the synchronous every-200-sections
+progress notification. Removing that notification produced another 273-section passing
+run with 2.061 ms maximum active-transfer service and sub-0.647 ms individual sends.
 
 A later 120-second, 1,600-block movement run started from a proven 405-section warm
 client cache, captured 2,401 columns, and recorded no Vintage Horizons tick at or above
@@ -254,10 +267,10 @@ fresh integrated process required zero persisted obligations and converged again
 
 1. Capture-result publication remains a major measured owning-thread pipeline phase, but aggregate publication is boundary-budgeted. One admitted result remains non-preemptible and reached 9.028 ms on the clean-cache frontier route.
 2. Foreign live block resolution, recolouring, filtering, and publication remain owning-thread work. Aggregate work is bounded, but one admitted publication cannot be preempted once started.
-3. Server-assist packet publication remains owning-thread work. The off-thread-reader run
-contained a 32.450 ms service outlier in an interval whose reader and individual-send
-maxima were only 0.179/0.249 ms; packet serialization, GC, and process scheduling are not
-yet separately attributed.
+3. Server-assist packet publication remains owning-thread and atomic. Correlated stress
+runs found no managed-collection crossing and held individual sends below 0.647 ms after
+removing the synchronous progress notification. The old 32.450 ms sample cannot be
+conclusively relabelled because its raw server log was not retained.
 4. Ordinary render-dirty pruning/scheduling no longer scales with the whole collection;
 the index deliberately rebuilds after coarse camera/policy/world changes. Mesh snapshot
 creation and GPU upload are boundary-budgeted and have bounded 3,132-section runtime
@@ -285,8 +298,7 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 1. Complete human in-motion review of clipping, turn-around behavior, and visual mesh
 replacement on the thousands-section build.
-2. Isolate the remaining server-assist service/send/GC tail if it reproduces.
-3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+2. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
 warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
@@ -311,7 +323,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   snapshots coalesce, and shutdown repeats drain/ack/enqueue before exact timeout report.
 - Allocation counter reads are opt-in per measured owner and sit outside the elapsed-time interval.
 - Server pipeline, sweep, generation, and assist phase costs are independently timed;
-  allocation reads remain opt-in and assist queues report exact oldest-head age.
+  allocation reads remain opt-in, assist queues report exact oldest-head age, and stats
+  sessions correlate assist setup/publication/admission/send work with collection-count
+  crossings. The serve callback contains no synchronous logger call.
 - Mesh snapshot and GPU upload drains have elapsed-time, retained/uploaded-byte, and item
   ceilings with one-first-item progress. Replacement publishes before old-resource
   disposal, and render telemetry exposes both queues and direct GL/disposal timing.
@@ -330,8 +344,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 305 checks under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 1,056 assertions across all 25 suites, including 44
+- `dev/DocCheck.ps1` passes 319 checks under Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed fast tier passes 1,058 assertions across all 25 suites, including 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
@@ -359,6 +373,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The repeated off-thread-reader CSV and semantic proof are tracked under
   `bench/results/2026-08-18-assist-reader`. It transferred the same 395 sections and
   directly separated a 17.481 ms reader call from 0.989 ms owning-thread assist service.
+- Four correlated baseline/attribution/fix CSVs and scenario proofs are
+  tracked under `bench/results/2026-08-18-assist-tail-attribution`. The fix run installed
+  273 sections with all 16 slots exercised, zero declines, 2.061 ms maximum active service,
+  sub-0.647 ms sends, and no measured managed-collection crossing.
 - The long warm-cache mip soak and fresh-process restart CSV/scenario proofs are tracked
   under `bench/results/2026-08-18-mip-soak`. Both passed semantic capture/mip/save/load/
   storage convergence; the long run captured 2,401 columns and the restart loaded 601
@@ -426,9 +444,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Dedicated and integrated interruption/recovery each used one guarded warm client cache.
   Integrated default-sweep interaction and repeated/long interruption soaks remain
   untested.
-- Two saturated assist runs measured transfer and publication throughput/backlog before
-  and after the server reader change, but they did not isolate client worker-decode cost
-  from surrounding cold-client capture/save load. No controlled sibling-cache run exists.
+- Saturated assist runs now correlate server setup, publication, admission, send, and
+  managed-collection crossings, but they do not isolate client worker-decode cost from
+  surrounding cold-client capture/save load. No controlled sibling-cache, default-rate,
+  multiplayer, or long-soak comparison exists.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
@@ -460,8 +479,10 @@ measures, and one admitted job/result remains atomic even after crossing a ceili
 - A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
 - The saturated assist runs deliberately raised the serving rate to 64/s. Their queue and
 throughput numbers are stress evidence, not default-rate expectations. The old 68.755 ms
-read was a direct owning-thread observation; the repeated run proves reads are now
-off-thread but leaves one unrelated 32.450 ms service outlier unattributed.
+read was a direct owning-thread observation; later runs prove reads are now off-thread and
+reproduce/fix a progress-log tail without managed-collection crossings. The raw log for
+the old 32.450 ms sample is unavailable, so that exact sample remains unproven rather than
+being retroactively relabelled. The fix run is one-machine, one-player evidence.
 
 ## 10. Documentation map
 

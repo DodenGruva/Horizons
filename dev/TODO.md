@@ -83,11 +83,12 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
   absence-preservation run. A radius-12 integrated run separately generated 414 columns
   with no timeout/height-map failure and fed live sibling adoption, but all absence samples
   were excluded near the player; neither is a long/default-radius soak.
-- The repeated 64/s saturated-assist run again requested, received, and installed 395
-  sections with zero declines. One 17.481 ms background read coincided with a 0.989 ms
-  owning-thread assist maximum, proving separation. A later interval had a 32.450 ms
-  assist outlier while reader calls stayed below 0.2 ms, so packet publication, GC, or
-  process scheduling remains a distinct tail to isolate. No person watched the route.
+- Saturated assist now has off-thread-reader separation plus correlated setup/publication/
+  admission, send, allocation, and GC-crossing evidence. The reproduced progress-log tail
+  is fixed, but the old 32.450 ms sample lacks its raw correlated log and cannot be
+  relabelled conclusively. All accepted runs cover one machine and one player at the
+  elevated 64/s stress rate; default-rate, multiplayer, long-soak, and human review remain
+  open.
 - Two warmed steady-stationary on/off pairs measured about 0.7% lower average FPS and
   1.0% lower median FPS with allocation telemetry at roughly 445 uncapped FPS. Their 1%
   lows reversed direction, and ordinary capped-frame-rate overhead remains unmeasured.

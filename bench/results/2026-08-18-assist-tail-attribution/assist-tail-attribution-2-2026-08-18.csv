@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+assist-tail-attribution-2-2026-08-18,saturated-assist,512020,190,512010,1,13490,449.7,448.7,302.3,2.22,3.31,0.0,0.0,1572,3633,45.0,0

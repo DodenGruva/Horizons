@@ -339,6 +339,23 @@ the scenario, and add a check that the excluded owner cannot publish the marker.
 
 **Found:** integrated mip interruption/recovery, Session 22.
 
+### G29 — Progress logging is owning-thread work
+
+**Trigger:** adding periodic progress, throughput, queue, or diagnostic messages inside a
+frame-, tick-, or callback-critical path.
+
+**Trap:** logger calls may synchronously format and publish to console/file sinks. An
+every-200-sections assist notification reproduced multi-millisecond server-service tails;
+correlated attribution measured 3.573 ms at that boundary while the callback's two sends
+totalled 0.075 ms and no managed collection crossed the call. Rate-limited logging is
+still unbounded latency when it executes inside the rate-limited work.
+
+**Do:** accumulate counters in the critical path and report them from an existing status
+command or explicitly opt-in coarse telemetry callback. Add a source or structural check
+when a proven hot path must remain free of synchronous logger calls.
+
+**Found:** server-assist tail attribution, Session 23.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

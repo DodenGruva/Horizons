@@ -310,3 +310,21 @@
 - Added exact zero-obligation and sibling-retry runner guards, two deterministic checks,
   and preserved accepted evidence under
   `bench/results/2026-08-18-integrated-singleplayer`; 1,056 Release assertions pass.
+
+## 2026-08-18 — server-assist tail attribution and progress-log fix
+
+- Repeated the guarded cold-client/warm-server 64/s assist scenario and reproduced a
+  12.779 ms service maximum before instrumentation.
+- Added opt-in correlated setup/publication/admission, send, allocation, and collection-
+  crossing telemetry while preserving the stats-disabled fast path.
+- Isolated a 3.655 ms callback whose synchronous every-200-sections progress-log boundary
+  occupied 3.573 ms; two sends totalled 0.075 ms and no managed collection crossed the
+  callback.
+- Removed the owning-thread progress notification, retained cumulative totals in
+  `/vhserver` and interval stats, and added a static no-logger guard for the admission
+  method.
+- Repeated the unchanged scenario after the fix: 273 sections installed, all 16 request
+  slots exercised, zero declines, 2.061 ms active-transfer service maximum, 0.647 ms send
+  maximum, and no collection crossing any measured callback or send.
+- Built and content-verified the fixed Release playtest zip; the final tier passes 1,058
+  assertions and no wire, blob, or schema number changed.

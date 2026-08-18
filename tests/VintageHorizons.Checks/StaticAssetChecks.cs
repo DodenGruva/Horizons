@@ -14,6 +14,7 @@ public static class StaticAssetChecks
         TintSlotAgreement(c);
         AlphaPacking(c);
         VersionAgreement(c);
+        AssistServeLoopDoesNotLogProgress(c);
     }
 
     /// <summary>
@@ -138,6 +139,29 @@ public static class StaticAssetChecks
         {
             c.Eq(fromCsproj.Groups[1].Value, fromModinfo.Groups[1].Value,
                 $"{label}: csproj Version matches modinfo.json version");
+        }
+    }
+
+    /// <summary>
+    /// The old every-200-sections progress notification ran inside the 50 ms owning-thread
+    /// assist callback. The synchronous logger reproduced multi-millisecond service tails;
+    /// cumulative progress already belongs to the stats callback and /vhserver.
+    /// </summary>
+    static void AssistServeLoopDoesNotLogProgress(Check c)
+    {
+        string path = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src", "Net",
+            "LodAssistServerSystem.cs");
+        string source = File.ReadAllText(path);
+        int start = source.IndexOf("void AdmitPending(", StringComparison.Ordinal);
+        int end = start < 0 ? -1 : source.IndexOf("LodAssistBlobReader? EnsureBlobReader(",
+            start, StringComparison.Ordinal);
+
+        c.True(start >= 0 && end > start, "the assist admission method is found for static inspection");
+        if (start >= 0 && end > start)
+        {
+            string admission = source[start..end];
+            c.False(admission.Contains("Mod.Logger.", StringComparison.Ordinal),
+                "the 50 ms assist admission loop contains no synchronous logger call");
         }
     }
 }

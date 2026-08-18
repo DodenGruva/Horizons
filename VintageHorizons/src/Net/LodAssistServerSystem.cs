@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 
@@ -20,9 +21,25 @@ public class LodAssistServerSystem : ModSystem
     bool allocationTelemetryEnabled;
 
     /// <summary>Assist costs since the last server telemetry report.</summary>
-    public LodPhaseCost ServeCost, BlobReadCost, SectionSendCost, OfferCost;
+    public LodPhaseCost ServeCost, ServeSetupCost, ServePublishCost, ServeAdmissionCost,
+        ServeWithCollectionCost, ServeWithoutCollectionCost, BlobReadCost, SectionSendCost,
+        SendWithCollectionCost, SendWithoutCollectionCost, OfferCost;
     LodAssistBlobReader? blobReader;
     string? blobReaderPath;
+
+    // Per-call attribution is populated only while the owning-thread serve callback is
+    // active. Send cost is nested inside publication/admission; the other three costs
+    // partition the outer callback. Collection counts are sampled only in explicit stats
+    // sessions because three GC counter reads on every packet are diagnostics, not free.
+    bool serveMeasurementActive;
+    long currentServeSetupTicks, currentServePublishTicks, currentServeAdmissionTicks;
+    long currentServeSendTicks, currentServeMaxSendTicks, currentServeSendBytes;
+    int currentServeSendCount, currentServeGen0, currentServeGen1, currentServeGen2;
+    long serveCallsWithCollection, serveCallsWithoutCollection;
+    long serveGen0Collections, serveGen1Collections, serveGen2Collections;
+    long sendCallsWithCollection, sendCallsWithoutCollection;
+    long sendGen0Collections, sendGen1Collections, sendGen2Collections;
+    const double AssistTailLogThresholdMs = ServeWorkBudgetMs;
 
     public override bool ShouldLoad(EnumAppSide forSide) => forSide == EnumAppSide.Server;
 
@@ -248,20 +265,114 @@ public class LodAssistServerSystem : ModSystem
     /// </summary>
     void MeasureServePending()
     {
-        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
-        ServePending();
-        ServeCost.Add(phaseStart);
+        if (!allocationTelemetryEnabled)
+        {
+            LodPhaseStart phaseStart = LodPhaseCost.Start();
+            ServePending();
+            ServeCost.Add(phaseStart);
+            return;
+        }
+
+        long started = Stopwatch.GetTimestamp();
+        long allocationStart = GC.GetAllocatedBytesForCurrentThread();
+        int gen0Start = GC.CollectionCount(0);
+        int gen1Start = GC.CollectionCount(1);
+        int gen2Start = GC.CollectionCount(2);
+
+        currentServeSetupTicks = 0;
+        currentServePublishTicks = 0;
+        currentServeAdmissionTicks = 0;
+        currentServeSendTicks = 0;
+        currentServeMaxSendTicks = 0;
+        currentServeSendBytes = 0;
+        currentServeSendCount = 0;
+        currentServeGen0 = 0;
+        currentServeGen1 = 0;
+        currentServeGen2 = 0;
+        serveMeasurementActive = true;
+        try
+        {
+            ServePending();
+        }
+        finally
+        {
+            serveMeasurementActive = false;
+        }
+
+        long elapsed = Stopwatch.GetTimestamp() - started;
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        ServeCost.AddSample(elapsed, allocated);
+
+        int gen0 = GC.CollectionCount(0) - gen0Start;
+        int gen1 = GC.CollectionCount(1) - gen1Start;
+        int gen2 = GC.CollectionCount(2) - gen2Start;
+        if (gen0 + gen1 + gen2 > 0)
+        {
+            ServeWithCollectionCost.AddSample(elapsed, allocated);
+            serveCallsWithCollection++;
+        }
+        else
+        {
+            ServeWithoutCollectionCost.AddSample(elapsed, allocated);
+            serveCallsWithoutCollection++;
+        }
+        serveGen0Collections += gen0;
+        serveGen1Collections += gen1;
+        serveGen2Collections += gen2;
+
+        double elapsedMs = elapsed * 1000.0 / Stopwatch.Frequency;
+        if (elapsedMs < AssistTailLogThresholdMs) return;
+
+        Mod.Logger.Notification(
+            "Assist serve tail {0:0.000}ms: setup {1:0.000}, publish {2:0.000}, "
+            + "admit {3:0.000}; {4} sends {5:0.00} MiB total/max {6:0.000}/{7:0.000}ms; "
+            + "GC callback {8}/{9}/{10}, send {11}/{12}/{13}; {14:0.0} KiB allocated",
+            elapsedMs,
+            TicksToMilliseconds(currentServeSetupTicks),
+            TicksToMilliseconds(currentServePublishTicks),
+            TicksToMilliseconds(currentServeAdmissionTicks),
+            currentServeSendCount, currentServeSendBytes / (1024.0 * 1024.0),
+            TicksToMilliseconds(currentServeSendTicks),
+            TicksToMilliseconds(currentServeMaxSendTicks),
+            gen0, gen1, gen2,
+            currentServeGen0, currentServeGen1, currentServeGen2,
+            allocated / 1024.0);
     }
 
     void ServePending()
     {
+        long phaseStarted = allocationTelemetryEnabled ? Stopwatch.GetTimestamp() : 0;
         LodServerCaptureSystem? capture = sapi.ModLoader.GetModSystem<LodServerCaptureSystem>();
         LodServerConfig config = capture?.Config ?? new LodServerConfig();
         LodAssistBlobReader? reader = EnsureBlobReader(capture);
         var tickBudget = new LodWorkBudget(ServeWorkBudgetMs);
+        if (allocationTelemetryEnabled)
+        {
+            currentServeSetupTicks = Stopwatch.GetTimestamp() - phaseStarted;
+            ServeSetupCost.AddElapsedTicks(currentServeSetupTicks);
+        }
 
+        if (allocationTelemetryEnabled) phaseStarted = Stopwatch.GetTimestamp();
         PublishBlobResults(capture, tickBudget);
+        if (allocationTelemetryEnabled)
+        {
+            currentServePublishTicks = Stopwatch.GetTimestamp() - phaseStarted;
+            ServePublishCost.AddElapsedTicks(currentServePublishTicks);
+        }
         if (tickBudget.Expired) return;
+
+        if (allocationTelemetryEnabled) phaseStarted = Stopwatch.GetTimestamp();
+        AdmitPending(capture, config, reader, tickBudget);
+        if (allocationTelemetryEnabled)
+        {
+            currentServeAdmissionTicks = Stopwatch.GetTimestamp() - phaseStarted;
+            ServeAdmissionCost.AddElapsedTicks(currentServeAdmissionTicks);
+        }
+    }
+
+    void AdmitPending(LodServerCaptureSystem? capture, LodServerConfig config,
+        LodAssistBlobReader? reader, LodWorkBudget tickBudget)
+    {
 
         long now = sapi.World.ElapsedMilliseconds;
         int globalBudget = globalServeAllowance.Available(now, config.MaxSectionsPerSecondTotal);
@@ -364,15 +475,9 @@ public class LodAssistServerSystem : ModSystem
 
         if (emptied != null) foreach (string uid in emptied) pendingByPlayer.Remove(uid);
 
-        // Report what serving actually costs the tick, so the caps above can be judged
-        // against a measurement instead of an estimate.
-        if (sectionsServed - lastReportedServed >= 200)
-        {
-            lastReportedServed = sectionsServed;
-            Mod.Logger.Notification(
-                "Assist served {0} sections ({1:0.0} MB), blob reads {2:0.00}ms total, {3:0.00}ms avg",
-                sectionsServed, bytesServed / 1e6, blobReadMs, blobReadMs / sectionsServed);
-        }
+        // Cumulative progress is reported by the opt-in stats callback and /vhserver.
+        // Do not write a synchronous notification from this 50 ms owning-thread path:
+        // the 200-section progress line itself reproduced multi-millisecond serve tails.
     }
 
     LodAssistBlobReader? EnsureBlobReader(LodServerCaptureSystem? capture)
@@ -482,15 +587,57 @@ public class LodAssistServerSystem : ModSystem
 
     long sectionsOutsideRadius;
     uint serveRound;
-    long sectionsServed, lastReportedServed, bytesServed;
+    long sectionsServed, bytesServed;
     double blobReadMs;
 
     void SendSection(IServerPlayer player, AssistSection packet)
     {
-        LodPhaseStart phaseStart = LodPhaseCost.Start(allocationTelemetryEnabled);
+        long started = Stopwatch.GetTimestamp();
+        long allocationStart = allocationTelemetryEnabled
+            ? GC.GetAllocatedBytesForCurrentThread()
+            : -1;
+        int gen0Start = allocationTelemetryEnabled ? GC.CollectionCount(0) : 0;
+        int gen1Start = allocationTelemetryEnabled ? GC.CollectionCount(1) : 0;
+        int gen2Start = allocationTelemetryEnabled ? GC.CollectionCount(2) : 0;
         channel.SendPacket(packet, player);
-        SectionSendCost.Add(phaseStart);
+        long elapsed = Stopwatch.GetTimestamp() - started;
+        long allocated = allocationStart < 0
+            ? -1
+            : GC.GetAllocatedBytesForCurrentThread() - allocationStart;
+        SectionSendCost.AddSample(elapsed, allocated);
+
+        int gen0 = allocationTelemetryEnabled ? GC.CollectionCount(0) - gen0Start : 0;
+        int gen1 = allocationTelemetryEnabled ? GC.CollectionCount(1) - gen1Start : 0;
+        int gen2 = allocationTelemetryEnabled ? GC.CollectionCount(2) - gen2Start : 0;
+        if (allocationTelemetryEnabled)
+        {
+            if (gen0 + gen1 + gen2 > 0)
+            {
+                SendWithCollectionCost.AddSample(elapsed, allocated);
+                sendCallsWithCollection++;
+            }
+            else
+            {
+                SendWithoutCollectionCost.AddSample(elapsed, allocated);
+                sendCallsWithoutCollection++;
+            }
+            sendGen0Collections += gen0;
+            sendGen1Collections += gen1;
+            sendGen2Collections += gen2;
+        }
+
+        if (!serveMeasurementActive) return;
+        currentServeSendTicks += elapsed;
+        currentServeMaxSendTicks = Math.Max(currentServeMaxSendTicks, elapsed);
+        currentServeSendBytes += packet.Blob?.LongLength ?? 0;
+        currentServeSendCount++;
+        currentServeGen0 += gen0;
+        currentServeGen1 += gen1;
+        currentServeGen2 += gen2;
     }
+
+    static double TicksToMilliseconds(long ticks) =>
+        ticks * 1000.0 / Stopwatch.Frequency;
 
     void MeasureOfferNewKeys()
     {
@@ -518,13 +665,15 @@ public class LodAssistServerSystem : ModSystem
             "Server assist stats p95/p99/max us: serve {0:0}/{1:0}/{2:0} | blob read "
             + "{3:0}/{4:0}/{5:0} | section send {6:0}/{7:0}/{8:0} | offer scan "
             + "{9:0}/{10:0}/{11:0}; {12} requests queued, {13} reads outstanding "
-            + "for {14} players, oldest {15}ms, {16:0.00} MiB results",
+            + "for {14} players, oldest {15}ms, {16:0.00} MiB results; {17} served, "
+            + "{18:0.0} MB",
             ServeCost.P95Us, ServeCost.P99Us, ServeCost.MaxUs,
             BlobReadCost.P95Us, BlobReadCost.P99Us, BlobReadCost.MaxUs,
             SectionSendCost.P95Us, SectionSendCost.P99Us, SectionSendCost.MaxUs,
             OfferCost.P95Us, OfferCost.P99Us, OfferCost.MaxUs,
             pending, readerOutstanding, waitingPlayers, oldestAgeMs,
-            (blobReader?.PendingResultBytes ?? 0) / (1024.0 * 1024.0));
+            (blobReader?.PendingResultBytes ?? 0) / (1024.0 * 1024.0),
+            sectionsServed, bytesServed / 1e6);
 
         Mod.Logger.Notification(
             "  assist allocation interval MiB/max KiB: serve {0:0.00}/{1:0.0} | blob "
@@ -534,10 +683,45 @@ public class LodAssistServerSystem : ModSystem
             SectionSendCost.AllocatedBytes / (1024.0 * 1024.0), SectionSendCost.MaxAllocatedBytes / 1024.0,
             OfferCost.AllocatedBytes / (1024.0 * 1024.0), OfferCost.MaxAllocatedBytes / 1024.0);
 
+        Mod.Logger.Notification(
+            "  assist serve phase p95/p99/max us: setup {0:0}/{1:0}/{2:0} | publish "
+            + "{3:0}/{4:0}/{5:0} | admit {6:0}/{7:0}/{8:0}",
+            ServeSetupCost.P95Us, ServeSetupCost.P99Us, ServeSetupCost.MaxUs,
+            ServePublishCost.P95Us, ServePublishCost.P99Us, ServePublishCost.MaxUs,
+            ServeAdmissionCost.P95Us, ServeAdmissionCost.P99Us, ServeAdmissionCost.MaxUs);
+
+        Mod.Logger.Notification(
+            "  assist GC attribution: serve calls with/without {0}/{1}, collections "
+            + "{2}/{3}/{4}, max with/without {5:0}/{6:0}us; send calls {7}/{8}, "
+            + "collections {9}/{10}/{11}, max with/without {12:0}/{13:0}us",
+            serveCallsWithCollection, serveCallsWithoutCollection,
+            serveGen0Collections, serveGen1Collections, serveGen2Collections,
+            ServeWithCollectionCost.MaxUs, ServeWithoutCollectionCost.MaxUs,
+            sendCallsWithCollection, sendCallsWithoutCollection,
+            sendGen0Collections, sendGen1Collections, sendGen2Collections,
+            SendWithCollectionCost.MaxUs, SendWithoutCollectionCost.MaxUs);
+
         ServeCost.Reset();
+        ServeSetupCost.Reset();
+        ServePublishCost.Reset();
+        ServeAdmissionCost.Reset();
+        ServeWithCollectionCost.Reset();
+        ServeWithoutCollectionCost.Reset();
         BlobReadCost.Reset();
         SectionSendCost.Reset();
+        SendWithCollectionCost.Reset();
+        SendWithoutCollectionCost.Reset();
         OfferCost.Reset();
+        serveCallsWithCollection = 0;
+        serveCallsWithoutCollection = 0;
+        serveGen0Collections = 0;
+        serveGen1Collections = 0;
+        serveGen2Collections = 0;
+        sendCallsWithCollection = 0;
+        sendCallsWithoutCollection = 0;
+        sendGen0Collections = 0;
+        sendGen1Collections = 0;
+        sendGen2Collections = 0;
     }
 
     /// <summary>Keys the server holds, in chunks. Main thread only.</summary>
