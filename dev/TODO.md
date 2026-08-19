@@ -30,6 +30,29 @@ The approved rendering design is
   unload/reload/remesh churn.
 - Benchmark cache-only, vanilla-settled, moving-frontier, large-cache, teleport, and
   view-distance-change scenarios before claiming neutral or improved performance.
+- Human-reported 2026-08-19, per-cell mask enabled, all at far above normal flight speed
+  and none judged likely in ordinary play:
+  - Approaching terrain fast, cached and vanilla briefly fight where vanilla has just
+    loaded. This is ownership gain latency and resolves within a moment. It fails in the
+    safe direction, so it is accepted for now; if it becomes objectionable, confirm cells
+    near the camera on a shorter path rather than widening the budget again.
+  - Flying backwards produced a clear band of missing terrain where vanilla had unloaded
+    and cached coverage had not returned. This is the serious one - a hole outranks an
+    overlap - and the loss-detection shell now sweeps completely whenever the camera
+    crosses a chunk. If gaps survive that, the next step is expiring committed ownership
+    that has not been reconfirmed within a bounded time, which caps hole duration by
+    construction at the cost of some churn.
+  - Cached water shows the boundary of every chunk, and colouring differs across those
+    boundaries. Deliberately not addressed yet. Two candidates, and one cheap experiment
+    separates them: if the seams disappear with `.vhmask off`, the mask is drawing cached
+    water only in unowned cells and the 32-block ownership edges are visible on a flat
+    surface that hides nothing; if they persist, it is the existing per-section water tint
+    and predates this work.
+- Cached terrain was also observed becoming coarser than expected during fast flight.
+  Level selection happens in traversal, before any ownership decision, and skipping a draw
+  touches neither residency nor mesh scheduling, so this is most likely mesh production
+  falling behind at speed. Confirm whether it also happens with the mask off before
+  investigating further.
 - Re-run the visual matrix against the readiness-driven handoff and after any hybrid
   implementation. The 2026-08-18 playtest was reported acceptable overall, but seams,
   boundary flicker, and approach popping were not separately confirmed, and no cliff, water,

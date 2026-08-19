@@ -48,6 +48,20 @@ public class LodTerrainRenderer : IRenderer
     internal const int ReadinessProbeCatchUpQueueDepth = 512;
     internal const int ReadinessSeedCellsPerFrame = 256;
     internal const int ReadinessBoundaryCellsPerFrame = 128;
+
+    /// <summary>
+    /// Cells examined in the loss-detection shell during the frame the camera crosses a
+    /// chunk boundary, which is the moment vanilla's own unload radius has just swept past
+    /// ground we may still be marking as vanilla-owned.
+    ///
+    /// The ordinary per-frame scan walks a cursor and takes tens of frames to circle the
+    /// camera. Flying backwards outruns it: chunks unload in front of the eyes while their
+    /// cells still read owned, so the mask keeps suppressing cached terrain that nothing
+    /// else is drawing and a band of world goes missing. A crossing happens once every 32
+    /// blocks of travel, so completing the sweep then is affordable, and it costs a queue
+    /// of probes rather than the probes themselves.
+    /// </summary>
+    internal const int ReadinessBoundarySweepOnCrossing = 4096;
     internal const int ReadinessInteriorCellsPerFrame = 32;
     internal const int ReadinessGuardChunks = 2;
 
@@ -193,6 +207,7 @@ public class LodTerrainRenderer : IRenderer
     double readinessHandoffCameraX;
     double readinessHandoffCameraZ;
     bool readinessHandoffStale = true;
+    bool readinessSweepShellNow;
 
     /// <summary>Meshes unselected for this many frames (~1 min) get evicted; the quadtree re-requests on demand.</summary>
     const int EvictAfterFrames = 3600;
@@ -865,6 +880,7 @@ public class LodTerrainRenderer : IRenderer
                 // may restart.
                 readinessBoundaryCursor = readinessInteriorCursor = 0;
                 readinessHandoffStale = true;
+                readinessSweepShellNow = true;
                 ReadinessWindowChanges++;
                 // Departing columns were cleared inside the tracker; rebuilding is what
                 // keeps a reused ring slot from carrying another place's ownership.
@@ -875,7 +891,12 @@ public class LodTerrainRenderer : IRenderer
                 ref readinessSeedCursor, ReadinessSeedCellsPerFrame, frameCounter);
             readiness.QueueReadyShell(window.CenterX, window.CenterZ,
                 Math.Max(0, window.VanillaRadius - ReadinessGuardChunks), window.OuterRadius,
-                ref readinessBoundaryCursor, ReadinessBoundaryCellsPerFrame, frameCounter);
+                ref readinessBoundaryCursor,
+                readinessSweepShellNow
+                    ? ReadinessBoundarySweepOnCrossing
+                    : ReadinessBoundaryCellsPerFrame,
+                frameCounter);
+            readinessSweepShellNow = false;
             readiness.QueueMaintenanceCells(
                 ref readinessInteriorCursor, ReadinessInteriorCellsPerFrame, frameCounter);
             readiness.PromoteObserved(frameCounter, ReadinessProbeCatchUpItemsPerFrame);
