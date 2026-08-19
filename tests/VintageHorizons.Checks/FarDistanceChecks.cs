@@ -8,6 +8,7 @@ public static class FarDistanceChecks
         EffectiveDistanceAndCap(c);
         ConservativeNearHandoff(c);
         StableProjection(c);
+            NearHandoffHysteresis(c);
     }
 
     static void CachedBounds(Check c)
@@ -134,5 +135,34 @@ public static class FarDistanceChecks
         update = state.Update(3000, 20000);
         c.True(update.Changed, "a new world applies a fresh projection after state reset");
         c.Eq(3072f, update.Distance, "reset does not retain the previous world's far plane");
+    }
+    /// <summary>
+    /// The readiness-derived handoff must restore cached coverage the instant measured
+    /// ownership shrinks, and must make a player wait before it hides cached terrain that
+    /// vanilla may not have drawn yet. A hole is worse than an overlap in every ordering
+    /// the plan states, so the asymmetry is the whole point of this state.
+    /// </summary>
+    static void NearHandoffHysteresis(Check c)
+    {
+        var state = new LodNearHandoffState();
+        c.Eq(0f, state.Update(200, 0), "the first grow waits rather than suppressing cache immediately");
+        c.Eq(0f, state.Update(200, 499), "growth is withheld for the whole hold period");
+        c.Eq(192f, state.Update(200, 500),
+            "growth applies after the hold, quantized down to a whole vanilla chunk");
+
+        c.Eq(64f, state.Update(64, 501), "a measured shrink restores cached coverage in the same frame");
+        c.Eq(0f, state.Update(0, 502), "losing all measured ownership hands everything back to the cache");
+
+        // The smallest radius seen during a hold is what applies, so continuous movement
+        // neither stalls growth forever nor lets a transient peak through.
+        c.Eq(0f, state.Update(300, 600), "a new grow candidate starts its own hold");
+        c.Eq(0f, state.Update(128, 700), "a lower reading during the hold does not apply early");
+        c.Eq(128f, state.Update(300, 1100),
+            "the hold applies the smallest radius it saw rather than the largest");
+
+        var settled = new LodNearHandoffState();
+        settled.Update(96, 0);
+        c.Eq(96f, settled.Update(96, 1000), "a stable measurement settles at its quantized value");
+        c.Eq(96f, settled.Update(127, 3000), "a sub-chunk increase does not move the applied radius");
     }
 }

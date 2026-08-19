@@ -19,6 +19,7 @@ public static class Program
         ("pure", "mip downsample", MipChecks.Run),
         ("pure", "residency", ResidencyChecks.Run),
         ("pure", "render dirty scheduling", RenderDirtySchedulerChecks.Run),
+        ("pure", "vanilla render readiness", VanillaReadinessChecks.Run),
         ("pure", "phase timing", PhaseCostChecks.Run),
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),

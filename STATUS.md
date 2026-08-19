@@ -2,10 +2,10 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-18
+**Status date:** 2026-08-19
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `38` C# files under `VintageHorizons/src`
+**Source files:** `39` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -17,8 +17,12 @@
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
-geometry sink, and replace the old outer cutoff with a conservative inner radial playtest
-handoff. A detailed but unimplemented chunk-aware hybrid ownership design is approved in
+geometry sink, and replace the old outer cutoff with a near handoff whose radius is
+measured rather than assumed. The 32x32x32 readiness tracker is runtime-validated across
+five isolated runs, and its measurement now drives the existing `cacheHandoffDistance`
+uniform: the radius is the distance to the nearest vanilla chunk column the client has not
+finished rendering, less one chunk. GPU mask publication, mixed-mesh shader sampling, and
+CPU whole-mesh skipping remain open under
 `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
 
 ## 2. Product and architecture state
@@ -71,10 +75,28 @@ pending bytes, oldest age, direct GL upload time, and disposal time.
 Cached-terrain color variation now combines section-local geometry with a stable section
 world origin instead of camera-relative render coordinates. The vertex shader no longer
 sinks cached geometry near the vanilla transition. The current playtest suppresses a
-conservative inner radial core while retaining at least 192 blocks of cached fallback;
-this mitigates overlap but cannot know exact vanilla chunk readiness. The approved hybrid
-follow-up uses exclusive 32x32x32 ownership, bounded readiness tracking, CPU whole-mesh
-skips, and mixed-only GPU masking while preserving independent cache residency.
+radius derived from measured vanilla readiness. A stationary route moved the applied
+handoff from 64 to 192 blocks at a 256-block vanilla view distance, shrinking the band in
+which both terrains draw the same ground from about 192 blocks to between 22 and 96.
+
+The renderer now maintains a shadow-only 32x32x32 readiness window in fixed tagged-ring
+storage. `ChunkDirty` feeds duplicate-coalesced candidates; unknown discovery, a
+boundary-first ready shell, slower interior maintenance, and `IsChunkRendered` probing are
+item-bounded, with probes additionally capped at 0.25 ms. Two render-frame-separated true
+observations are required for readiness gain, the first false proposes immediate loss,
+and generation-tagged publication tokens prevent stale window/world results from changing
+L0-L6 aggregates. Periodic logs and `.vhinfo` expose cost, state, queues/ages, bytes,
+events, transitions, windows, errors, the vertical distribution of ownership, and the
+nearest column that is not wholly owned. Interior maintenance is state-agnostic: a
+committed-only sweep could lose ownership but never gain it, because the client announces a
+dirty chunk before that chunk finishes tessellating.
+
+Per-section ownership classification still does not reach the draw path. The single radius
+is the only pixel decision readiness drives: it shrinks in the same frame that measured
+ownership shrinks, waits 500 ms before growing, applies the smallest radius seen while
+waiting, and returns to the established constant if the tracker is unavailable or the
+player leaves the default dimension. Later phases add atomic GPU masking and CPU whole-mesh
+skips while preserving independent cache residency.
 
 ## 3. Completed local performance work
 
@@ -141,8 +163,17 @@ progress notification inside request admission. Removing it kept cumulative stat
 visibility while a repeat 273-section transfer held active service to 2.061 ms maximum,
 individual sends below 0.647 ms, and crossed no managed collection in measured callbacks.
 30. Cached-terrain noise is world-anchored, the near approach no longer deforms vertices,
-and a conservative radial handoff playtest retains a broad fallback band. Exact per-chunk
-ownership remains planned rather than implemented.
+and a conservative radial handoff playtest retains a broad fallback band.
+31. The renderer's vanilla-readiness model tracks exact 32x32x32 cells with bounded
+event-fed discovery, frame-separated gain stabilization, boundary-first loss revalidation,
+stale-publication rejection, L0-L6 aggregates, and diagnostics.
+32. That model is runtime-validated. Five isolated runs recorded no probe errors, no
+dropped events, no renderer phase reaching 25 ms, 18-28 microseconds of average frame cost,
+and zero steady-state allocation after one 377 KiB construction. The runs exposed and then
+confirmed the fix for a maintenance sweep that could lose ownership but never gain it.
+33. The near handoff radius is measured rather than assumed, and 232 of 441 tracked columns
+reach complete vertical ownership with a flat per-Y distribution, so the planned CPU
+whole-mesh skip is reachable without a geometry-derived aggregate.
 
 ## 4. Measured diagnosis and result
 
@@ -293,10 +324,10 @@ creation and GPU upload are boundary-budgeted and have bounded 3,132-section run
 queue/driver evidence. Visibility-aware traversal has a controlled 601-section reduction;
 the thousands-section run is functional scaling evidence rather than a controlled causal
 comparison.
-5. The current radial handoff still submits suppressed cached meshes and discards their
-fragments early. The approved hybrid could reduce draw submission and GPU work by skipping
-fully replaced sections, but its tracker/mask overhead and net frame-time effect are
-unmeasured.
+5. The handoff still submits suppressed cached meshes and discards their fragments early,
+so no draw-call or GPU saving exists yet. The readiness tracker's integrated convergence and
+cost are now measured; GPU mask publication, mixed-mesh sampling, CPU skipping, and any
+resulting net frame-time effect remain open.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -314,13 +345,15 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
   command-generation run with exact-key retry/installation proof. Natural miss frequency
   and default-sweep behavior remain unmeasured.
 - The color-noise and sink causes are source-traced and corrected. A distance-only handoff
-  remains unable to express individual vanilla readiness; exact ownership, unload recovery,
-  and seam behavior are open under the approved hybrid plan.
+  remains unable to express individual vanilla readiness: one unowned column near the camera
+  pulls the global radius in and restores overlap everywhere, and that case has not been
+  deliberately reproduced. Exact per-cell draw ownership and seam behavior remain open.
 
 ## 7. Current open work
 
-1. Implement and performance-gate the chunk-aware cached-to-vanilla handoff in
-`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+1. Implement and performance-gate GPU mask publication, mixed-only shader sampling, and CPU
+whole-section skips under `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`. Phase 1's runtime
+gate is met and no longer blocks this work.
 2. Complete human in-motion review of clipping, turn-around behavior, visual mesh
 replacement, and the current near-handoff playtest.
 3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
@@ -369,15 +402,18 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Cached-terrain noise now derives from a stable section origin plus local vertices; the
   approach sink is absent. The radial handoff is bounded to no more than half the approved
   vanilla distance while retaining at least 192 blocks of fallback.
-- The installed public `IsChunkRendered` query tests a 32x32x32 client chunk's
-  `quantityDrawn`; client source inspection places that counter advance during
-  tessellation before completed mesh upload, so it requires lifecycle-safe confirmation.
+- The exact installed 1.22.7 libraries were hash-matched to the checked references.
+  `ChunkDirty(NewlyLoaded)` follows world-map installation but precedes tessellation;
+  `IsChunkRendered` tests `quantityDrawn`, which advances before completed-result upload;
+  the post-upload callback is internal; and the unload path removes the chunk without a
+  public client event. Supported public shader wrappers expose 2D/cube binding rather than
+  a portable integer 3D texture update path.
 
 ### Harness-tested
 
-- `dev/DocCheck.ps1` passes 321 checks in the current PowerShell environment; cross-shell
-  portability was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed fast tier passes 1,058 assertions across all 25 suites, including 44
+- `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
+  was previously established under Windows PowerShell 5.1 and PowerShell 7.
+- The full game-backed Release tier passes 1,225 assertions, including 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
@@ -386,9 +422,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
   accounting, 15 tick-allowance, 23 drain-budget, 30 cached-bounds/far-plane, SQLite
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
-- Twenty-three additional focused assertions cover conservative handoff arithmetic and
-  shader/renderer ownership invariants. They have not been executed since the Session 24
-  edits and are not included in the established 1,058-assertion result.
+  This result also includes the 23 conservative-handoff/shader assertions from Session 24,
+  89 readiness-model assertions, and static guards for event subscription, probe budgets,
+  and the Phase 1 shadow state's exclusion from draw classification.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - The Session 24 rendering source was built in Release and packaged as
   `vintagehorizons_0.2.1-playtest-near-handoff.zip`; no game process was launched by the
@@ -431,6 +467,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - A short isolated warm-cache functional route exercised the incremental scheduler with
   601 cached sections and 543 resident meshes. Every waypoint settled, all guarded queues
   converged, and shutdown was graceful; no before/after performance claim is attached.
+- Readiness tracker and near-handoff evidence is tracked under
+  `bench/results/2026-08-18-readiness-shadow` and
+  `bench/results/2026-08-18-readiness-handoff`. Five isolated runs cover moving and
+  stationary routes, the defect one of them exposed, its fix, the measurement that justified
+  the derived handoff, and the handoff itself holding 192 blocks with zero fallback samples.
 - Renderer-budget, cache-growth, and acknowledged-persistence evidence is tracked under
   `bench/results/2026-08-18-renderer-budgets-large-cache`. The growth route expanded 601
   rows to 3,132, processed 94,285 snapshot/upload items with bounded queues, and had no
@@ -492,9 +533,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
-- The latest conservative radial handoff package has not received human results. The
-  chunk-aware tracker/mask/CPU-skip design is not implemented, so its z-fighting, seam,
-  popping, unload-recovery, and performance acceptance remain open.
+- A person evaluated the readiness-driven handoff package in game on 2026-08-19 and
+  reported it acceptable. That is overall acceptance of one build on one machine, one world,
+  and one view distance; seams, boundary flicker, approach popping, and the individual
+  cliff, water, cave, and structure cases were not separately confirmed. GPU masking, CPU
+  skipping, exact per-cell ownership, and performance acceptance remain open.
 
 ## 9. Known uncertainty
 
@@ -531,6 +574,18 @@ being retroactively relabelled. The fix run is one-machine, one-player evidence.
   submission, vertex processing, rasterization, and the early fragment discard remain.
   The proposed hybrid may remove much of that work for fully replaced sections, but a
   performance gain is not established until paired CPU/GPU-aware evidence exists.
+- The readiness tracker's 256-probe and 0.25-ms ceilings were never the limiting factor in
+  measured runs: queues drained every interval, oldest work stayed at or below three frames,
+  and average frame cost was 18-28 microseconds. The scheduling policy, not the budget, was
+  what limited ownership before Session 26.
+- The readiness-driven handoff's join and post-teleport convergence window is unmeasured.
+  The derived radius starts small, showing more cached terrain near the camera than the old
+  constant did until the tracker converges; failing toward coverage makes that the safe
+  direction, but its duration and visibility are unknown.
+- Frame-rate effect of state-agnostic maintenance and the derived handoff is neutral within
+  run-to-run noise rather than proven neutral. Per-waypoint averages moved +1.3%, -2.6%,
+  +0.1%, and -1.4% against the previous run, with intra-run lap spread reaching 1.9%, from
+  one run per side.
 
 ## 10. Documentation map
 

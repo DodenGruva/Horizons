@@ -8,6 +8,44 @@ first.
 
 ## [Unreleased]
 
+**The near handoff now measures where vanilla terrain actually is.** Cached terrain was
+hidden inside a fixed radius of half the vanilla view distance, which left a wide band
+where both terrains drew the same ground. The radius is now the distance to the nearest
+vanilla chunk column the client has not finished rendering, less one chunk of margin. At a
+256-block view distance a stationary measurement moved the handoff from 64 to 192 blocks,
+shrinking the overlap band from about 192 blocks to between 22 and 96. Coverage is restored
+in the same frame when measured ownership shrinks, while growth waits half a second and
+applies the smallest radius seen while waiting, so an unloaded chunk cannot leave a hole and
+the boundary does not flicker. If the tracker is unavailable or the player leaves the
+default dimension, the previous constant returns immediately. This is a visual change only:
+cached terrain inside the radius is still drawn and discarded, so no draw-call or GPU saving
+is claimed. A person evaluated the packaged build in game and found it acceptable.
+
+**The readiness tracker was validated in a real client, and a defect it exposed is fixed.**
+Its interior maintenance sweep only revisited cells it had already committed as vanilla
+owned, so it could lose ownership but never gain it; because the client announces a dirty
+chunk before that chunk finishes tessellating, a cell's first probe usually failed and
+nothing ever looked at it again unless the camera crossed a chunk boundary. One measured
+fifteen-second interval spent 432,744 probes re-confirming cells it already owned and none
+on the 1,801 cells awaiting an answer. Maintenance no longer filters by state. Across five
+isolated runs the tracker held 232 of 441 columns fully owned with no probe errors, no
+dropped events, no renderer phase reaching 25 ms, and 18-20 microseconds of average frame
+cost. Engine-announced chunk events are now counted separately from the tracker's own
+sweeps, and the benchmark runner gained readiness convergence, budget, and
+wasted-budget assertions. Formats and protocols are unchanged.
+
+**Chunk-aware vanilla readiness now runs as a pixel-neutral shadow tracker.** An exact
+source trace of the installed 1.22.7 client found that `ChunkDirty` precedes tessellation,
+`IsChunkRendered` can become true before tessellated output is uploaded, the post-upload
+callback is internal, and no public chunk-unload event covers the observed removal path.
+The renderer therefore combines dirty-event candidates with bounded polling, requires two
+render-frame-separated true observations before readiness gain, and revalidates the
+streaming boundary first for prompt loss detection. Fixed tagged-ring storage, coalesced
+queues, stale-publication rejection, L0-L6 aggregates, and diagnostics are implemented and
+covered by the 1,176-assertion Release tier. The state is intentionally excluded from draw
+classification: the existing radial handoff remains the sole pixel owner until runtime
+convergence and cost are measured. Formats and protocols are unchanged.
+
 **Cached-terrain transition artifacts have source fixes and an exact handoff plan.**
 Terrain color variation now uses a stable section world origin instead of camera-relative
 render coordinates, and the five-block approach sink has been removed. The old 78.5%
@@ -17,8 +55,9 @@ overlap. That radius remains a stopgap because it cannot identify individual ren
 chunks. The approved follow-up is a bounded hybrid: fully cache-owned meshes use the
 unchanged draw path, fully vanilla-owned meshes are skipped on the CPU, and only mixed
 frontier meshes sample a compact 32x32x32 readiness mask. Twenty-three focused assertions
-were added but have not been rerun; the latest Release playtest package was built for human
-evaluation. Formats and protocols are unchanged.
+were added and now pass as part of the later 1,176-assertion Release tier; the latest
+Release playtest package was built for human evaluation. Formats and protocols are
+unchanged.
 
 **Server-assist progress logging no longer blocks the server tick.** The elevated-rate
 transfer benchmark reproduced multi-millisecond assist tails at the synchronous

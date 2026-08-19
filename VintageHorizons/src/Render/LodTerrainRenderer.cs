@@ -1,5 +1,8 @@
+using System.Diagnostics;
+using System.Text;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.Common.Entities;
 using Vintagestory.API.MathTools;
 using Vintagestory.Client.NoObf;
 
@@ -29,6 +32,26 @@ public class LodTerrainRenderer : IRenderer
     internal const double MeshSnapshotMaxMillisecondsPerFrame = 1.0;
     internal const long MeshUploadMaxBytesPerFrame = 4 * 1024 * 1024;
     internal const double MeshUploadMaxMillisecondsPerFrame = 2.0;
+    internal const int ReadinessProbeMaxItemsPerFrame = 256;
+    internal const double ReadinessProbeMaxMillisecondsPerFrame = 0.25;
+    internal const int ReadinessSeedCellsPerFrame = 256;
+    internal const int ReadinessBoundaryCellsPerFrame = 128;
+    internal const int ReadinessInteriorCellsPerFrame = 32;
+    internal const int ReadinessGuardChunks = 2;
+
+    /// <summary>
+    /// Pulled back from the nearest column that is not wholly owned. A cell becomes ready
+    /// when two render-frame-separated probes agree, which is a tessellation signal rather
+    /// than proof that vanilla's replacement mesh is on screen, so the handoff stops one
+    /// vanilla chunk short of the boundary it measured.
+    /// </summary>
+    internal const float ReadinessHandoffMarginBlocks = 32;
+
+    /// <summary>
+    /// Camera movement that re-measures owned ownership. Well under one vanilla chunk, so
+    /// the radius cannot lag the camera by a whole ownership cell.
+    /// </summary>
+    internal const float ReadinessHandoffRecheckBlocks = 4;
     /// <summary>
     /// Queue depth allowed at the mesh workers. Per thread, not absolute: a fixed 12 was
     /// sized for one builder and would leave a four-thread pool idling three quarters of
@@ -51,7 +74,7 @@ public class LodTerrainRenderer : IRenderer
     /// inferred. Reported by .vhinfo and by the periodic stats line.
     /// </summary>
     public LodPhaseCost PruneCost, ScheduleCost, UploadCost, GlUploadCost, MeshDisposeCost,
-        EvictCost, SeasonalCost, FarDistanceCost, WalkCost, DrawCost;
+        EvictCost, SeasonalCost, FarDistanceCost, ReadinessCost, WalkCost, DrawCost;
     public bool TrackPhaseAllocations { get; set; }
 
     public int ProjectionResetCount { get; private set; }
@@ -59,6 +82,14 @@ public class LodTerrainRenderer : IRenderer
     public long MeshSnapshotBytes { get; private set; }
     public int MeshSnapshotItems { get; private set; }
     public int MeshUploadItems { get; private set; }
+    public long ReadinessProbes { get; private set; }
+    public long ReadinessTrueResults { get; private set; }
+    public long ReadinessFalseResults { get; private set; }
+    public long ReadinessReadyTransitions { get; private set; }
+    public long ReadinessLostTransitions { get; private set; }
+    public long ReadinessProbeErrors { get; private set; }
+    public long ReadinessWindowChanges { get; private set; }
+    public long ReadinessResizes { get; private set; }
 
     public void ResetPhaseCosts()
     {
@@ -70,6 +101,7 @@ public class LodTerrainRenderer : IRenderer
         EvictCost.Reset();
         SeasonalCost.Reset();
         FarDistanceCost.Reset();
+        ReadinessCost.Reset();
         WalkCost.Reset();
         DrawCost.Reset();
         ProjectionResetCount = 0;
@@ -77,6 +109,15 @@ public class LodTerrainRenderer : IRenderer
         MeshSnapshotBytes = 0;
         MeshSnapshotItems = 0;
         MeshUploadItems = 0;
+        ReadinessProbes = 0;
+        ReadinessTrueResults = 0;
+        ReadinessFalseResults = 0;
+        ReadinessReadyTransitions = 0;
+        ReadinessLostTransitions = 0;
+        ReadinessProbeErrors = 0;
+        ReadinessWindowChanges = 0;
+        ReadinessResizes = 0;
+        readiness?.ResetTelemetry();
     }
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
@@ -93,6 +134,26 @@ public class LodTerrainRenderer : IRenderer
     readonly Dictionary<long, long> lastResidencyFrame = new();
     readonly List<long> evictBatch = new();
     long frameCounter;
+
+    // Phase 1 shadow tracker. It follows vanilla readiness and maintains aggregate
+    // classifications, but no draw path reads those classifications yet. Pixel ownership
+    // remains on the existing radial fallback until the GPU mask is implemented.
+    VanillaRenderReadiness? readiness;
+    readonly EntityPos readinessProbePos = new();
+    int readinessSeedCursor;
+    int readinessBoundaryCursor;
+    int readinessInteriorCursor;
+    bool readinessDisabled;
+    bool readinessFailureReported;
+    int[] readinessColumnReady = Array.Empty<int>();
+    readonly StringBuilder readinessColumnText = new();
+    readonly LodNearHandoffState nearHandoff = new();
+    float readinessHandoffDistance;
+    bool readinessOwnsHandoff;
+    float readinessOwnedRadius;
+    double readinessHandoffCameraX;
+    double readinessHandoffCameraZ;
+    bool readinessHandoffStale = true;
 
     /// <summary>Meshes unselected for this many frames (~1 min) get evicted; the quadtree re-requests on demand.</summary>
     const int EvictAfterFrames = 3600;
@@ -200,9 +261,19 @@ public class LodTerrainRenderer : IRenderer
         maxWorkerMeshBacklog = worker.MeshThreads * MeshBacklogPerThread;
 
         capi.Event.ReloadShader += LoadShader;
+        capi.Event.ChunkDirty += OnReadinessChunkDirty;
         LoadShader();
 
         capi.Event.RegisterRenderer(this, EnumRenderStage.Opaque, "vintagehorizons-lod");
+    }
+
+    void OnReadinessChunkDirty(Vec3i chunkCoord, IWorldChunk chunk, EnumChunkDirtyReason reason)
+    {
+        // ClientWorldMap raises this from the main thread after installing the chunk but
+        // before tessellation. Store only value coordinates; never retain the engine chunk.
+        readiness?.EnqueueCandidate(
+            new VanillaChunkCell(chunkCoord.X, chunkCoord.Y, chunkCoord.Z), frameCounter,
+            engineEvent: true);
     }
 
     public bool LoadShader()
@@ -691,22 +762,209 @@ public class LodTerrainRenderer : IRenderer
 
     // ---- Frame ----
 
+    float ApprovedViewDistance()
+    {
+        var playerData = capi.World.Player.WorldData;
+        float distance = playerData.DesiredViewDistance;
+        if (playerData.LastApprovedViewDistance > 0)
+            distance = Math.Min(distance, playerData.LastApprovedViewDistance);
+        return Math.Max(0, distance);
+    }
+
+    void UpdateReadinessShadow(float viewDistance)
+    {
+        if (readinessDisabled) return;
+        if (capi.World.Player.Entity.Pos.Dimension != 0)
+        {
+            readiness?.Clear();
+            readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+            readinessOwnsHandoff = false;
+            return;
+        }
+
+        try
+        {
+            var blockAccessor = capi.World.BlockAccessor;
+            int verticalChunks = Math.Max(1, (blockAccessor.MapSizeY + 31) / 32);
+            VanillaReadinessWindow window = VanillaRenderReadiness.CalculateWindow(
+                camPos.X, camPos.Z, viewDistance,
+                blockAccessor.MapSizeX, blockAccessor.MapSizeZ, ReadinessGuardChunks);
+
+            if (readiness == null || readiness.VerticalChunks != verticalChunks
+                || readiness.HorizontalCapacity < window.RequiredCapacity)
+            {
+                readiness = new VanillaRenderReadiness(window.RequiredCapacity, verticalChunks);
+                readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+                ReadinessResizes++;
+            }
+
+            if (readiness.SetWindow(window.MinX, window.MinZ, window.Width, window.Depth))
+            {
+                readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+                readinessHandoffStale = true;
+                ReadinessWindowChanges++;
+            }
+
+            readiness.SeedUnknownCells(
+                ref readinessSeedCursor, ReadinessSeedCellsPerFrame, frameCounter);
+            readiness.QueueReadyShell(window.CenterX, window.CenterZ,
+                Math.Max(0, window.VanillaRadius - ReadinessGuardChunks), window.OuterRadius,
+                ref readinessBoundaryCursor, ReadinessBoundaryCellsPerFrame, frameCounter);
+            readiness.QueueMaintenanceCells(
+                ref readinessInteriorCursor, ReadinessInteriorCellsPerFrame, frameCounter);
+            readiness.PromoteObserved(frameCounter, ReadinessProbeMaxItemsPerFrame);
+
+            long started = Stopwatch.GetTimestamp();
+            long maxTicks = Math.Max(1,
+                (long)Math.Ceiling(ReadinessProbeMaxMillisecondsPerFrame * Stopwatch.Frequency / 1000.0));
+            int probed = 0;
+            while (probed < ReadinessProbeMaxItemsPerFrame)
+            {
+                if (probed > 0 && Stopwatch.GetTimestamp() - started >= maxTicks) break;
+                if (!readiness.TryDequeueCandidate(out VanillaChunkCell cell)) break;
+
+                bool rendered;
+                try
+                {
+                    readinessProbePos.Dimension = 0;
+                    readinessProbePos.SetPos(
+                        (cell.X + 0.5) * 32.0,
+                        (cell.Y + 0.5) * 32.0,
+                        (cell.Z + 0.5) * 32.0);
+                    rendered = capi.IsChunkRendered(readinessProbePos);
+                }
+                catch
+                {
+                    // An unknown/error result must restore or retain cached ownership.
+                    rendered = false;
+                    ReadinessProbeErrors++;
+                }
+
+                probed++;
+                ReadinessProbes++;
+                if (rendered) ReadinessTrueResults++;
+                else ReadinessFalseResults++;
+
+                if (!readiness.Observe(cell, rendered, frameCounter,
+                    out VanillaReadinessPublication publication)) continue;
+
+                // Phase 1 has no texture. Accepting into this shadow model lets diagnostics
+                // validate aggregate transitions without changing any pixel or draw call.
+                if (!readiness.ResolvePublication(publication, accepted: true)) continue;
+                readinessHandoffStale = true;
+                if (publication.Ready) ReadinessReadyTransitions++;
+                else ReadinessLostTransitions++;
+            }
+
+            // Ownership the tracker can actually prove, converted into the radius the
+            // fragment shader already understands. Uncertainty anywhere - an unowned
+            // column, an untracked window edge, an unconverged join - pulls this in and
+            // returns coverage to the cache rather than opening a hole.
+            //
+            // The measurement only changes when committed ownership changes or the camera
+            // moves, so a settled view reuses it instead of rescanning every column every
+            // frame. Both triggers are conservative: either one rescans.
+            if (readinessHandoffStale
+                || Math.Abs(camPos.X - readinessHandoffCameraX) >= ReadinessHandoffRecheckBlocks
+                || Math.Abs(camPos.Z - readinessHandoffCameraZ) >= ReadinessHandoffRecheckBlocks)
+            {
+                double nearestIncomplete = readiness.NearestIncompleteColumnBlocks(
+                    camPos.X, camPos.Z, out _);
+                readinessOwnedRadius =
+                    (float)Math.Max(0, nearestIncomplete - ReadinessHandoffMarginBlocks);
+                readinessHandoffCameraX = camPos.X;
+                readinessHandoffCameraZ = camPos.Z;
+                readinessHandoffStale = false;
+            }
+
+            readinessHandoffDistance = nearHandoff.Update(
+                Math.Min(readinessOwnedRadius, viewDistance), capi.ElapsedMilliseconds);
+            readinessOwnsHandoff = true;
+        }
+        catch (Exception e)
+        {
+            readiness?.Clear();
+            readiness = null;
+            readinessDisabled = true;
+            readinessOwnsHandoff = false;
+            if (!readinessFailureReported)
+            {
+                readinessFailureReported = true;
+                capi.Logger.Warning(
+                    "[VintageHorizons] vanilla-readiness shadow tracker disabled; radial handoff remains active: {0}",
+                    e.Message);
+            }
+        }
+    }
+
+    public string DescribeReadiness()
+    {
+        if (readinessDisabled) return "shadow disabled (radial fallback active)";
+        if (readiness == null) return "shadow not initialized";
+        readiness.GetStateCounts(out int unknown, out int pending, out int observed, out int ready);
+        long candidateFrame = readiness.OldestCandidateFrame();
+        long observedFrame = readiness.OldestObservedFrame();
+        long oldestAge = Math.Max(
+            candidateFrame < 0 ? 0 : frameCounter - candidateFrame,
+            observedFrame < 0 ? 0 : frameCounter - observedFrame);
+        if (readinessColumnReady.Length < readiness.VerticalChunks)
+            readinessColumnReady = new int[readiness.VerticalChunks];
+        readiness.GetColumnReadiness(readinessColumnReady, out int columnsTracked,
+            out int fullColumns, out int partialColumns, out int maxReadyPerColumn);
+        readinessColumnText.Clear();
+        for (int y = 0; y < readiness.VerticalChunks; y++)
+        {
+            if (y > 0) readinessColumnText.Append('/');
+            readinessColumnText.Append(readinessColumnReady[y]);
+        }
+
+        double nearestIncomplete = readiness.NearestIncompleteColumnBlocks(
+            camPos.X, camPos.Z, out double nearestUnready);
+        // Kept out of the format literal: an interpolation hole containing a quoted string
+        // is not machine-readable, and the benchmark gate parses this exact line.
+        float radialHandoff = LodNearHandoff.InnerDiscardRadius(ApprovedViewDistance());
+        float appliedHandoff = readinessOwnsHandoff ? readinessHandoffDistance : radialHandoff;
+        string handoffSource = readinessOwnsHandoff ? "readiness" : "radial";
+
+        return $"shadow {readiness.ActiveWidth}x{readiness.VerticalChunks}x{readiness.ActiveDepth}, "
+            + $"{ready} ready/{observed} observed/{pending} pending/{unknown} unknown, "
+            + $"{readiness.PendingCandidates} probes/{readiness.PendingObservations} observations queued, "
+            + $"oldest work {oldestAge} frames, {readiness.TrackedArrayBytes / 1024.0:0.0} KiB arrays, "
+            + $"interval {ReadinessProbes} probes ({ReadinessTrueResults} true/{ReadinessFalseResults} false), "
+            + $"{ReadinessReadyTransitions} ready/{ReadinessLostTransitions} lost transitions, "
+            + $"{ReadinessProbeErrors} errors, {ReadinessWindowChanges} window changes/{ReadinessResizes} resizes, "
+            + $"events {readiness.CandidateEventsAccepted} accepted/{readiness.CandidateEventsCoalesced} coalesced/"
+            + $"{readiness.CandidateEventsDropped} dropped, "
+            + $"sweeps {readiness.ScheduledCandidatesAccepted} accepted/"
+            + $"{readiness.ScheduledCandidatesCoalesced} coalesced, "
+            + $"columns {columnsTracked} tracked/{fullColumns} full/{partialColumns} partial, "
+            + $"max {maxReadyPerColumn}/{readiness.VerticalChunks} ready per column, "
+            + $"ready per Y {readinessColumnText}, "
+            + $"nearest incomplete {nearestIncomplete:0} blocks/unready {nearestUnready:0} blocks, "
+            + $"handoff {appliedHandoff:0} blocks ({handoffSource}, radial {radialHandoff:0})";
+    }
+
     public void OnRenderFrame(float deltaTime, EnumRenderStage stage)
     {
         if (AutoUnpause && capi.IsGamePaused) capi.PauseGame(false);
-
-        if (prog == null || !shaderOk || prog.LoadError) return;
 
         var rapi = capi.Render;
         if (rapi.FrameWidth == 0) return;
 
         camPos = capi.World.Player.Entity.CameraPos;
         frameCounter++;
+        float viewDistance = ApprovedViewDistance();
+
+        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        UpdateReadinessShadow(viewDistance);
+        ReadinessCost.Add(phaseStart);
+
+        if (prog == null || !shaderOk || prog.LoadError) return;
 
         // Timed apart: pruning/index refresh is normally incremental but deliberately
         // rebuilds when the camera crosses a coarse cell; scheduling then consumes a
         // bounded nearest-first queue without scanning the complete dirty set.
-        LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         PruneRenderDirty();
         PruneCost.Add(phaseStart);
 
@@ -726,13 +984,6 @@ public class LodTerrainRenderer : IRenderer
         RefreshSeasonalState();
         SeasonalCost.Add(phaseStart);
         if (sectionMeshes.Count == 0 && waterMeshes.Count == 0) return;
-
-        var playerData = capi.World.Player.WorldData;
-        float viewDistance = playerData.DesiredViewDistance;
-        if (playerData.LastApprovedViewDistance > 0)
-        {
-            viewDistance = Math.Min(viewDistance, playerData.LastApprovedViewDistance);
-        }
 
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UpdateEffectiveFarDistance(viewDistance);
@@ -775,7 +1026,9 @@ public class LodTerrainRenderer : IRenderer
 
         prog.Uniform("viewDistance", viewDistance);
         prog.Uniform("farViewDistance", EffectiveFarDistance);
-        prog.Uniform("cacheHandoffDistance", LodNearHandoff.InnerDiscardRadius(viewDistance));
+        prog.Uniform("cacheHandoffDistance", readinessOwnsHandoff
+            ? readinessHandoffDistance
+            : LodNearHandoff.InnerDiscardRadius(viewDistance));
 
         // Uniforms persist in the program between Use() calls, so re-upload only when
         // the table actually changed (every ~240 frames) rather than every frame.
@@ -892,6 +1145,16 @@ public class LodTerrainRenderer : IRenderer
         EffectiveFarDistance = LodFarDistance.MinimumProjectionDistance;
         meshJobInFlight.Clear();
         lastResidencyFrame.Clear();
+        ClearReadiness();
+    }
+
+    void ClearReadiness()
+    {
+        readiness?.Clear();
+        readiness = null;
+        readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+        readinessDisabled = false;
+        readinessFailureReported = false;
     }
 
     public void Dispose()
@@ -900,6 +1163,8 @@ public class LodTerrainRenderer : IRenderer
         // and the game's shutdown crash path disposes mods from another one, so putting
         // the engine call first meant a crashing client freed none of its GPU meshes.
         ClearMeshes();
+        capi.Event.ChunkDirty -= OnReadinessChunkDirty;
+        capi.Event.ReloadShader -= LoadShader;
         capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
     }
 }

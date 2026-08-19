@@ -11,19 +11,29 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 The approved rendering design is
 `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
 
-- Source-prove the client post-tessellation/upload and unload lifecycle around
-  `IsChunkRendered`; use the plan's bounded stabilization/revalidation fallback if no
-  reliable public event exists.
-- Implement bounded 32x32x32 readiness tracking, atomic GPU mask publication, O(1) LOD
-  aggregate classification, CPU skip for fully replaced meshes, and mixed-only mask
-  sampling behind the radial fallback.
+- Implement atomic GPU mask publication, shader sampling for mixed meshes, and CPU skip
+  for fully replaced meshes behind the radial fallback. Start with the plan's
+  public-wrapper-compatible 2D Y-slice atlas. Phase 1's runtime gate is met, so this is
+  no longer blocked; whole-column ownership is reachable, with 232 of 441 columns complete
+  and a flat per-Y histogram.
+- Measure the readiness-driven handoff's convergence window at join and after a teleport.
+  The derived radius starts small, which shows more cached terrain near the camera than the
+  old constant did until the tracker converges. Duration and visibility are unknown.
+- Reproduce the single-unowned-pocket case deliberately: one column near the camera that
+  never becomes ready collapses the global radius and restores overlap everywhere. How
+  often this happens in play is the evidence for whether the per-cell mask earns its cost.
+- Cover teleport and live view-distance change at runtime; both are harness-only today.
+- Establish whether state-agnostic maintenance and the derived handoff cost measurable
+  frame time. Repeated alternating runs are required; the current pair is one run per side
+  inside the lap spread.
 - Preserve independent residency so suppressed fallback remains warm without triggering
   unload/reload/remesh churn.
 - Benchmark cache-only, vanilla-settled, moving-frontier, large-cache, teleport, and
   view-distance-change scenarios before claiming neutral or improved performance.
-- Human-check the latest radial playtest for the original gap, color alternation, downward
-  shrink, cached/vanilla mixing, water/cliff seams, and approach popping. Repeat the visual
-  matrix after the hybrid implementation.
+- Re-run the visual matrix against the readiness-driven handoff and after any hybrid
+  implementation. The 2026-08-18 playtest was reported acceptable overall, but seams,
+  boundary flicker, and approach popping were not separately confirmed, and no cliff, water,
+  cave, or structure case was reported individually.
 
 ### Documentation and baseline
 
@@ -47,6 +57,17 @@ The approved rendering design is
 
 ## Verification debt
 
+- The readiness tracker has five isolated runs across moving and stationary routes: no probe
+  errors, no dropped events, no renderer phase at 25 ms, 18-28 microseconds average frame
+  cost, zero steady-state allocation after a single 377 KiB construction, and 232 of 441
+  columns fully owned. A recurring multi-millisecond outlier is attributed to a blocking
+  `IsChunkRendered` call by inference only. Teleport, live view-distance change, multiplayer,
+  and long soaks remain uncovered.
+- The readiness-driven handoff held 192 blocks stationary and 160-192 blocks moving against
+  a 64-block constant, with zero fallback samples and the applied radius never exceeding the
+  measured ownership bound. Frame rate is neutral within noise rather than proven neutral,
+  and no CPU or GPU saving exists yet because suppressed fragments are still rasterized.
+
 - Two one-way 1,600-block capture-frontier runs started with zero active VH databases and
   `0 sections from cache`. Both had zero VH ticks at or above 25 ms; capture backlog stayed
   within 20 results / 1.61 MiB / 234 ms and converged during the endpoint cooldown. The
@@ -57,14 +78,15 @@ The approved rendering design is
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Both dedicated client/server and integrated-singleplayer durability
   are established for the guarded routes.
-- The last executed complete game-backed fast tier passes 1,058 assertions across 25
-  suites. Session 24 adds 23 focused handoff/shader assertions that have not yet been run.
-  A real game process still supplies the only end-to-end proof of thread ownership and GPU
-  behavior.
+- The complete game-backed Release tier passes 1,176 assertions, including the Session 24
+  handoff/shader coverage, 89 readiness-model assertions, and static guards that prevent
+  the Phase 1 shadow state from entering draw classification. A real game process still
+  supplies the only end-to-end proof of callback ordering, renderer cost, and GPU behavior.
 - The world-stable color coordinate, removed approach sink, and conservative radial
   handoff have source/build evidence and a packaged playtest. The user found the first
   render-fixes package better but still observed cached/vanilla mixing; the latest radial
-  package and proposed hybrid have no completed human result. Chunk-readiness timing,
+  package has no completed human result. The hybrid's readiness model now has source/
+  harness evidence and pixel-neutral renderer wiring, but runtime convergence/timing,
   visual seams, GPU cost, and net performance remain open.
 - Live server-assist transfer exercises network request state end to end. An integrated
   command-generation run discovered 211 sibling keys, forced one retryable miss, and

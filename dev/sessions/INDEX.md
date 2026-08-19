@@ -4,6 +4,8 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 26 | 2026-08-19 | 0.2.1 | — | Runtime-validated the readiness tracker, fixed a sweep that could lose ownership but never gain it, and gave the near handoff a measured radius; 1,225 assertions pass. |
+| 25 | 2026-08-18 | 0.2.1 | — | Source-traced the installed 1.22.7 chunk-render lifecycle and added a bounded, pixel-neutral vanilla-readiness shadow tracker; 1,176 assertions pass. |
 | 24 | 2026-08-18 | 0.2.1 | — | Source-fixed camera-relative color noise and near-transition sinking, added a conservative radial playtest handoff, and approved a bounded chunk-aware hybrid ownership plan. |
 | 23 | 2026-08-18 | 0.2.1 | — | Attributed the remaining server-assist tail to synchronous hot-path progress logging, removed it, added GC/phase diagnostics, and passed 1,058 checks plus a guarded 273-section fix run. |
 | 22 | 2026-08-18 | 0.2.1 | — | Proved integrated sibling-cache exact-key retry/adoption and hard mip interruption/recovery through a fresh zero-obligation postcheck; 1,056 checks pass. |

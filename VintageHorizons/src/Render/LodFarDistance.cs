@@ -121,6 +121,55 @@ internal static class LodNearHandoff
     }
 }
 
+/// <summary>
+/// Stabilizes the readiness-derived near handoff. Shrinkage applies immediately, because a
+/// late shrink leaves cached terrain suppressed where vanilla no longer draws - a hole.
+/// Growth waits for the larger radius to hold, because an early or oscillating grow
+/// suppresses cached terrain that vanilla has not actually replaced yet, and pops.
+/// While waiting, the smallest radius seen during the hold is what eventually applies, so
+/// continuous movement cannot stall growth and cannot smuggle a too-large value through.
+/// </summary>
+internal sealed class LodNearHandoffState
+{
+    public const float Step = 32;
+    public const long GrowHoldMilliseconds = 500;
+
+    float applied;
+    float growCandidate;
+    long growCandidateSince;
+    bool hasGrowCandidate;
+
+    public float Applied => applied;
+
+    public float Update(float ownedRadius, long nowMilliseconds)
+    {
+        float target = QuantizeDown(Math.Max(0, ownedRadius));
+        if (target <= applied)
+        {
+            applied = target;
+            hasGrowCandidate = false;
+            return applied;
+        }
+
+        if (!hasGrowCandidate)
+        {
+            hasGrowCandidate = true;
+            growCandidate = target;
+            growCandidateSince = nowMilliseconds;
+            return applied;
+        }
+
+        if (target < growCandidate) growCandidate = target;
+        if (nowMilliseconds - growCandidateSince < GrowHoldMilliseconds) return applied;
+
+        applied = growCandidate;
+        hasGrowCandidate = false;
+        return applied;
+    }
+
+    static float QuantizeDown(float distance) => MathF.Floor(distance / Step) * Step;
+}
+
 internal readonly record struct LodFarPlaneUpdate(float Distance, bool Changed);
 
 /// <summary>

@@ -345,3 +345,23 @@
 - Approved and documented a bounded hybrid design with exclusive 32x32x32 ownership, CPU
   whole-mesh skipping, mixed-only GPU masking, independent residency, seam gates, and
   paired performance acceptance.
+
+## 2026-08-18 - pixel-neutral vanilla readiness shadow tracker
+
+- Source-traced the exact installed Vintage Story 1.22.7 client chunk lifecycle: dirty
+  notification precedes tessellation, `quantityDrawn` precedes tessellated-result upload,
+  the post-upload callback is internal, unload removes the chunk without a public client
+  event, and public shader wrappers do not expose a supported 3D texture update path.
+- Added a renderer-owned 32x32x32 readiness model with power-of-two tagged-ring storage,
+  fixed duplicate-coalesced candidate/deferred queues, two-frame gain stabilization,
+  first-false loss proposals, stale-publication rejection, and L0-L6 ancestor counts.
+- Wired `ChunkDirty`, bounded initial discovery, boundary-first loss revalidation, slower
+  interior maintenance, and public `IsChunkRendered` probes under 256-item and 0.25-ms
+  per-frame ceilings.
+- Kept the integration pixel-neutral: readiness is absent from draw classification and the
+  conservative radial handoff remains the sole pixel owner and exception fallback.
+- Added readiness phase/state/queue-age/transition/error/window/event/byte telemetry to
+  periodic logs and `.vhinfo`.
+- Added 89 focused readiness assertions plus static wiring guards; the complete Release
+  tier passes 1,176 assertions with no protocol, blob, schema, shader, package, or release
+  change.

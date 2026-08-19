@@ -380,15 +380,67 @@ geometry.
 Moving it outward opens a band while streaming lags; moving it inward leaves approximate
 cached and vanilla meshes overlapping and z-fighting. Sinking or fading the cached mesh
 still leaves two owners. The public `IsChunkRendered` signal is closer, but in the 1.22.5
-client its counter advances during tessellation before completed mesh upload.
+client its counter advances during tessellation before completed mesh upload. The exact
+1.22.7 trace confirms the same ordering: `ChunkDirty(NewlyLoaded)` fires earlier still,
+and the public client API exposes neither the internal post-upload callback nor a
+chunk-unload event for the observed removal path.
 
-**Do:** use exclusive chunk ownership. Treat dirty/load signals as candidates, confirm the
-render lifecycle, keep uncertain cells cache-owned, publish CPU/GPU readiness atomically,
-skip wholly replaced meshes, and mask only mixed frontier sections. Keep visibility and
-residency separate so ownership changes do not cause remesh thrash.
+**Do:** use exclusive chunk ownership. Treat dirty/load signals as candidates, require
+render-frame-separated confirmation before readiness gain, and revalidate ready cells
+under a boundary-first elapsed-time/item budget so unload restores cached coverage.
+Publish CPU/GPU readiness atomically, skip wholly replaced meshes, and mask only mixed
+frontier sections. Keep visibility and residency separate so ownership changes do not
+cause remesh thrash.
 
 **Found:** cached/vanilla handoff investigation, Session 24. Detailed implementation plan:
 `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+
+### G32 — Stabilization work must not re-enter its active queue in the same frame
+
+**Trigger:** implementing a frame-delayed readiness check, retry, debounce, or publication
+confirmation inside a bounded queue drain.
+
+**Trap:** immediately requeueing an item that is not yet old enough lets the same item be
+dequeued repeatedly in one frame. It can consume the entire nominal item/time budget
+without making progress and defeats the intended render-boundary delay.
+
+**Do:** retain not-yet-eligible work in a separate fixed deferred queue, promote it only
+after the required frame boundary, and track oldest age for both active and deferred work.
+
+**Found:** vanilla-readiness shadow tracker, Session 25.
+
+### G33 — A revalidation sweep filtered to committed state can only lose
+
+**Trigger:** writing a bounded maintenance sweep for state that can be both gained and
+lost, such as readiness, residency, or reachability.
+
+**Trap:** filtering the sweep to cells already committed makes it a confirmation loop. It
+detects loss promptly and can never detect gain, so progress depends entirely on whatever
+external event happens to requeue a cell. Worse, the wasted budget looks like healthy
+activity: a measured 15-second interval spent 432,744 probes re-confirming 1,727 owned
+cells and none on the 1,801 cells awaiting an answer, while every counter read normally.
+
+**Do:** sweep without a state filter and let coalescing suppress duplicates. Assert in a
+runtime gate that probes actually reach non-committed cells, because a healthy-looking
+probe count proves nothing about where the probes went.
+
+**Found:** vanilla-readiness interior maintenance, Session 26.
+
+### G34 — Gate on retained state, not on counters that reset every interval
+
+**Trigger:** writing an automated acceptance gate against periodic telemetry.
+
+**Trap:** rates and states fail in opposite directions. A gate on "ready transitions this
+interval" failed a correct, fully settled system that had nothing left to transition, while
+the same gate passed a broken one that churned continuously. Reported maxima have the
+mirror problem: a single blocking engine call the code cannot preempt fails a tight maximum
+that says nothing about steady-state cost.
+
+**Do:** gate on retained state and on a percentile that reflects the steady path, report
+rates and maxima as evidence, and when a defect is found, encode the specific invariant it
+violated rather than only fixing the code.
+
+**Found:** readiness convergence gate, Session 26.
 
 ## Reversals and disproved claims
 

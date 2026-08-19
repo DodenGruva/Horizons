@@ -34,6 +34,16 @@ param(
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$WorldName = 'vhbench-integrated',
     [switch]$RequireLocalOfferRetry,
+    [switch]$RequireReadinessConvergence,
+    # 25 ms is the plan's own renderer-hitch rule. A tighter maximum fails on a single
+    # blocking IsChunkRendered call, which the tracker cannot preempt, so the steady-state
+    # gate is p99 instead: a 2026-08-18 route measured 20.5 us average and 75 us p99.
+    [ValidateRange(1, 60000)]
+    [int]$ReadinessMaxPhaseMicroseconds = 25000,
+    [ValidateRange(1, 60000)]
+    [int]$ReadinessMaxP99Microseconds = 500,
+    [ValidateRange(1, 100000)]
+    [int]$ReadinessMaxWorkAgeFrames = 900,
     [switch]$ReuseServer,
     [switch]$Watch
 )
@@ -348,6 +358,157 @@ function Get-ClientMipConvergenceRecord {
             [int64]$storageMatches[$storageMatches.Count - 1].Groups['readErrors'].Value
         } else { $null }
     }
+}
+
+function Get-ClientReadinessRecord {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $logText = Get-Content -LiteralPath $clientMainLog -Raw -ErrorAction Stop
+
+    # The tracker prints one shadow line per stats interval and resets its interval
+    # counters afterwards, so rates are summed and states are read from the last sample.
+    $disabled = [regex]::Matches($logText,
+        'vanilla readiness: shadow (?<reason>disabled|not initialized)')
+    $shadowPattern =
+        'vanilla readiness: shadow (?<width>\d+)x(?<vertical>\d+)x(?<depth>\d+), ' +
+        '(?<ready>\d+) ready/(?<observed>\d+) observed/(?<pending>\d+) pending/' +
+        '(?<unknown>\d+) unknown, (?<candidateQueue>\d+) probes/' +
+        '(?<observationQueue>\d+) observations queued, oldest work (?<age>\d+) frames, ' +
+        '(?<kib>[\d.,]+) KiB arrays, interval (?<probes>\d+) probes ' +
+        '\((?<trueResults>\d+) true/(?<falseResults>\d+) false\), ' +
+        '(?<readyTransitions>\d+) ready/(?<lostTransitions>\d+) lost transitions, ' +
+        '(?<errors>\d+) errors, (?<windowChanges>\d+) window changes/(?<resizes>\d+) resizes, ' +
+        'events (?<accepted>\d+) accepted/(?<coalesced>\d+) coalesced/(?<dropped>\d+) dropped, ' +
+        'sweeps (?<sweepsAccepted>\d+) accepted/(?<sweepsCoalesced>\d+) coalesced, ' +
+        'columns (?<columnsTracked>\d+) tracked/(?<columnsFull>\d+) full/(?<columnsPartial>\d+) partial, ' +
+        'max (?<maxReadyPerColumn>\d+)/(?<verticalCells>\d+) ready per column, ' +
+        'ready per Y (?<readyPerY>[\d/]+), ' +
+        'nearest incomplete (?<nearestIncomplete>\d+) blocks/unready (?<nearestUnready>\d+) blocks, ' +
+        'handoff (?<handoff>\d+) blocks \((?<handoffSource>[^,]+), radial (?<radialHandoff>\d+)\)'
+    $found = [regex]::Matches($logText, $shadowPattern)
+    if ($found.Count -eq 0) {
+        if ($disabled.Count -eq 0) { return $null }
+        return [ordered]@{
+            samples = 0L
+            disabledSamples = [int64]$disabled.Count
+            disabledReason = $disabled[$disabled.Count - 1].Groups['reason'].Value
+        }
+    }
+
+    $last = $found[$found.Count - 1]
+    $record = [ordered]@{
+        samples = [int64]$found.Count
+        disabledSamples = [int64]$disabled.Count
+        disabledReason = if ($disabled.Count -gt 0) {
+            $disabled[$disabled.Count - 1].Groups['reason'].Value
+        } else { $null }
+        activeWidth = [int64]$last.Groups['width'].Value
+        activeVerticalChunks = [int64]$last.Groups['vertical'].Value
+        activeDepth = [int64]$last.Groups['depth'].Value
+        trackedKiB = [double]$last.Groups['kib'].Value
+        committedReadyCells = [int64]$last.Groups['ready'].Value
+        observedCells = [int64]$last.Groups['observed'].Value
+        pendingCells = [int64]$last.Groups['pending'].Value
+        unknownCells = [int64]$last.Groups['unknown'].Value
+        columnsTracked = [int64]$last.Groups['columnsTracked'].Value
+        fullyReadyColumns = [int64]$last.Groups['columnsFull'].Value
+        partiallyReadyColumns = [int64]$last.Groups['columnsPartial'].Value
+        maxReadyPerColumn = [int64]$last.Groups['maxReadyPerColumn'].Value
+        verticalCellsPerColumn = [int64]$last.Groups['verticalCells'].Value
+        readyCellsPerY = $last.Groups['readyPerY'].Value
+        nearestIncompleteBlocks = [int64]$last.Groups['nearestIncomplete'].Value
+        nearestUnreadyBlocks = [int64]$last.Groups['nearestUnready'].Value
+        radialHandoffBlocks = [int64]$last.Groups['radialHandoff'].Value
+        handoffBlocks = [int64]$last.Groups['handoff'].Value
+        handoffSource = $last.Groups['handoffSource'].Value
+        radialFallbackSamples = 0L
+        minHandoffBlocks = [int64]::MaxValue
+        maxHandoffBlocks = 0L
+        minNearestIncompleteBlocks = [int64]::MaxValue
+        maxNearestIncompleteBlocks = 0L
+        peakFullyReadyColumns = 0L
+        probes = 0L
+        trueResults = 0L
+        falseResults = 0L
+        readyTransitions = 0L
+        lostTransitions = 0L
+        probeErrors = 0L
+        windowChanges = 0L
+        resizes = 0L
+        eventsAccepted = 0L
+        eventsCoalesced = 0L
+        eventsDropped = 0L
+        sweepCandidates = 0L
+        maxCandidateQueue = 0L
+        maxObservationQueue = 0L
+        maxOldestWorkFrames = 0L
+        confirmationOnlyIntervals = 0L
+    }
+    foreach ($match in $found) {
+        $record.probes += [int64]$match.Groups['probes'].Value
+        $record.trueResults += [int64]$match.Groups['trueResults'].Value
+        $record.falseResults += [int64]$match.Groups['falseResults'].Value
+        $record.readyTransitions += [int64]$match.Groups['readyTransitions'].Value
+        $record.lostTransitions += [int64]$match.Groups['lostTransitions'].Value
+        $record.probeErrors += [int64]$match.Groups['errors'].Value
+        $record.windowChanges += [int64]$match.Groups['windowChanges'].Value
+        $record.resizes += [int64]$match.Groups['resizes'].Value
+        $record.eventsAccepted += [int64]$match.Groups['accepted'].Value
+        $record.eventsCoalesced += [int64]$match.Groups['coalesced'].Value
+        $record.eventsDropped += [int64]$match.Groups['dropped'].Value
+        $record.sweepCandidates += [int64]$match.Groups['sweepsAccepted'].Value
+        $record.maxCandidateQueue = [Math]::Max(
+            $record.maxCandidateQueue, [int64]$match.Groups['candidateQueue'].Value)
+        $record.maxObservationQueue = [Math]::Max(
+            $record.maxObservationQueue, [int64]$match.Groups['observationQueue'].Value)
+        $record.maxOldestWorkFrames = [Math]::Max(
+            $record.maxOldestWorkFrames, [int64]$match.Groups['age'].Value)
+        if ($match.Groups['handoffSource'].Value -ne 'readiness') { $record.radialFallbackSamples++ }
+        $record.minHandoffBlocks = [Math]::Min(
+            $record.minHandoffBlocks, [int64]$match.Groups['handoff'].Value)
+        $record.maxHandoffBlocks = [Math]::Max(
+            $record.maxHandoffBlocks, [int64]$match.Groups['handoff'].Value)
+        $record.minNearestIncompleteBlocks = [Math]::Min(
+            $record.minNearestIncompleteBlocks, [int64]$match.Groups['nearestIncomplete'].Value)
+        $record.maxNearestIncompleteBlocks = [Math]::Max(
+            $record.maxNearestIncompleteBlocks, [int64]$match.Groups['nearestIncomplete'].Value)
+        $record.peakFullyReadyColumns = [Math]::Max(
+            $record.peakFullyReadyColumns, [int64]$match.Groups['columnsFull'].Value)
+        # An interval that probed heavily, returned nothing but true, and still held
+        # pending cells spent its whole budget re-confirming ownership it already had.
+        # That is the ready-only maintenance defect found on 2026-08-18.
+        if ([int64]$match.Groups['probes'].Value -gt 1000 -and
+            [int64]$match.Groups['falseResults'].Value -eq 0 -and
+            [int64]$match.Groups['pending'].Value -gt 0) {
+            $record.confirmationOnlyIntervals++
+        }
+    }
+
+    # Phase cost and allocation come from the surrounding render telemetry lines. They are
+    # formatted with the client's own culture, so plain casts parse them the same way.
+    $phase = [regex]::Matches($logText, 'readiness shadow (?<avg>[\d.,]+)/(?<max>[\d.,]+) \|')
+    foreach ($match in $phase) {
+        $record.avgPhaseMicroseconds = [Math]::Max(
+            [double]($record.avgPhaseMicroseconds), [double]$match.Groups['avg'].Value)
+        $record.maxPhaseMicroseconds = [Math]::Max(
+            [double]($record.maxPhaseMicroseconds), [double]$match.Groups['max'].Value)
+    }
+    $percentile = [regex]::Matches($logText,
+        'render p95/p99/max us:[^\r\n]*? readiness (?<p95>\d+)/(?<p99>\d+)/(?<max>\d+) \|')
+    foreach ($match in $percentile) {
+        $record.p95PhaseMicroseconds = [Math]::Max(
+            [int64]($record.p95PhaseMicroseconds), [int64]$match.Groups['p95'].Value)
+        $record.p99PhaseMicroseconds = [Math]::Max(
+            [int64]($record.p99PhaseMicroseconds), [int64]$match.Groups['p99'].Value)
+    }
+    $allocation = [regex]::Matches($logText,
+        'render allocation interval MiB/max KiB:[^\r\n]*? readiness (?<mib>[\d.,]+)/(?<kib>[\d.,]+) \|')
+    foreach ($match in $allocation) {
+        $record.maxIntervalAllocatedMiB = [Math]::Max(
+            [double]($record.maxIntervalAllocatedMiB), [double]$match.Groups['mib'].Value)
+        $record.maxCallAllocatedKiB = [Math]::Max(
+            [double]($record.maxCallAllocatedKiB), [double]$match.Groups['kib'].Value)
+    }
+    return $record
 }
 
 function Get-CacheRecord {
@@ -683,6 +844,7 @@ try {
     $assistRecord = Get-ClientAssistRecord
     $localOfferRecord = Get-ClientLocalOfferRecord
     $mipConvergenceRecord = Get-ClientMipConvergenceRecord
+    $readinessRecord = Get-ClientReadinessRecord
     $reportedPersistedMipObligations = Get-ReportedPersistedMipObligations
     $scenarioRecord = [ordered]@{
         label = $Label
@@ -709,6 +871,11 @@ try {
         persistedMipObligationsLoaded = $reportedPersistedMipObligations
         requiredAssistPeakInFlight = $RequireAssistPeakInFlight
         assist = $assistRecord
+        requireReadinessConvergence = [bool]$RequireReadinessConvergence
+        readinessMaxPhaseMicroseconds = $ReadinessMaxPhaseMicroseconds
+        readinessMaxP99Microseconds = $ReadinessMaxP99Microseconds
+        readinessMaxWorkAgeFrames = $ReadinessMaxWorkAgeFrames
+        readiness = $readinessRecord
         requireLocalOfferRetry = [bool]$RequireLocalOfferRetry
         localOffers = $localOfferRecord
         localOfferMissKey = if (Test-Path -LiteralPath $localOfferMissMarker) {
@@ -832,6 +999,48 @@ try {
         $installedKey = (Get-Content -LiteralPath $localOfferInstallMarker -Raw).Trim()
         if (-not $missedKey -or $missedKey -ne $installedKey) {
             throw "The sibling-cache key that missed was not the exact key later installed. See $scenario"
+        }
+    }
+
+    if ($RequireReadinessConvergence) {
+        if ($null -eq $readinessRecord) {
+            throw "The client log did not contain parseable vanilla-readiness telemetry. See $scenario and $clientMainLog"
+        }
+        if ($readinessRecord.samples -le 0 -or $readinessRecord.disabledSamples -gt 0) {
+            throw "The vanilla-readiness shadow tracker reported '$($readinessRecord.disabledReason)' state instead of tracking. See $scenario and $clientMainLog"
+        }
+        if ($readinessRecord.probeErrors -ne 0) {
+            throw "The readiness tracker recorded $($readinessRecord.probeErrors) probe errors; every one leaves a cell cache-owned. See $scenario"
+        }
+        if ($readinessRecord.eventsDropped -ne 0) {
+            throw "The readiness tracker dropped $($readinessRecord.eventsDropped) candidate events, so its queues were undersized. See $scenario"
+        }
+        # Committed cells are state; transitions are an interval rate that is legitimately
+        # zero once a stationary route's world has settled. Gate on the state, and report
+        # the rate. A 2026-08-18 stationary route held 1,608 committed cells across seven
+        # intervals without a single new transition.
+        if ($readinessRecord.committedReadyCells -le 0) {
+            throw "The readiness tracker holds no committed vanilla-ready cell, so the run proves nothing about convergence. See $scenario"
+        }
+        if ($readinessRecord.handoffSource -ne 'readiness') {
+            throw "The near handoff ended the run on the radial fallback rather than measured readiness. See $scenario"
+        }
+        if ($readinessRecord.handoffBlocks -gt $readinessRecord.nearestIncompleteBlocks) {
+            throw "The applied handoff of $($readinessRecord.handoffBlocks) blocks reaches past the nearest column that is not wholly owned at $($readinessRecord.nearestIncompleteBlocks) blocks. See $scenario"
+        }
+        if ($readinessRecord.confirmationOnlyIntervals -gt 0) {
+            throw "$($readinessRecord.confirmationOnlyIntervals) readiness intervals spent their whole probe budget re-confirming ready cells while pending cells were never probed. See $scenario"
+        }
+        if ($readinessRecord.maxOldestWorkFrames -gt $ReadinessMaxWorkAgeFrames) {
+            throw "Readiness work waited $($readinessRecord.maxOldestWorkFrames) frames, above the required $ReadinessMaxWorkAgeFrames. See $scenario"
+        }
+        if ($null -ne $readinessRecord.maxPhaseMicroseconds -and
+            $readinessRecord.maxPhaseMicroseconds -gt $ReadinessMaxPhaseMicroseconds) {
+            throw "The readiness phase reached $($readinessRecord.maxPhaseMicroseconds)us, above the required $ReadinessMaxPhaseMicroseconds. See $scenario"
+        }
+        if ($null -ne $readinessRecord.p99PhaseMicroseconds -and
+            $readinessRecord.p99PhaseMicroseconds -gt $ReadinessMaxP99Microseconds) {
+            throw "Readiness p99 frame cost reached $($readinessRecord.p99PhaseMicroseconds)us, above the required $ReadinessMaxP99Microseconds. See $scenario"
         }
     }
 

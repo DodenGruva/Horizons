@@ -1,6 +1,12 @@
 # Plan - chunk-aware cached-to-vanilla terrain handoff
 
-**Status:** Proposed. No implementation work in this document is complete.
+**Status:** In progress. The installed-engine lifecycle is source-traced. The pixel-neutral
+Phase 1 readiness model and renderer shadow integration are source- and harness-complete;
+runtime convergence/timing evidence and all pixel-changing phases remain open. The runtime
+gate itself is now automated: `scripts/bench-windows.ps1 -RequireReadinessConvergence`
+asserts the Phase 1 exit conditions from client telemetry, and a static check matches the
+runner's pattern against the renderer's own log format so drift fails the fast tier rather
+than a game run.
 **Date:** 2026-08-18.
 **Scope:** Client rendering and transient client-side readiness tracking only. No cache,
 database, network, or wire-format change.
@@ -73,9 +79,9 @@ benchmark establishes it.
 
 ## 4. Source-traced engine facts and remaining proof
 
-The installed Vintage Story 1.22.5 client provides
-`ICoreClientAPI.IsChunkRendered(EntityPos)`. The implementation resolves the 32x32x32
-`ClientChunk` and returns whether its `quantityDrawn` is greater than zero.
+The supported client API provides `ICoreClientAPI.IsChunkRendered(EntityPos)`. The exact
+installed 1.22.7 implementation resolves the 32x32x32 `ClientChunk` and returns whether
+its `quantityDrawn` is greater than zero.
 
 That signal is useful but not a perfect post-draw notification:
 
@@ -106,6 +112,55 @@ Prefer a proven post-upload/unload notification. If none exists, use the bounded
 state machine in this plan. Do not use Harmony or private-field reflection merely to avoid
 a small, measurable readiness tracker.
 
+### 4.1 Installed 1.22.7 lifecycle trace - 2026-08-18
+
+The current installed `VintagestoryLib.dll` reports file/product version 1.22.7 and SHA-256
+`E08F22B493B92FEAF0AAEB79D22437EA0F7EFC38AA7F72A04A47F98BC0E40DF0`; the installed
+`VintagestoryAPI.dll` SHA-256 is
+`034283E7E9D98EAE45EE63005576FD89BADC3C995B531CC4C3FE46F3EB2D3296`. The checked test
+references match those hashes. ILSpyCmd 11.0 was used against that exact library copy.
+
+The relevant source path is:
+
+1. `ClientWorldMap.loadChunkMT` installs the `ClientChunk`, sets `loadedFromServer`, calls
+   `MarkChunkDirty`, dirties neighbours, and only then triggers the public
+   `ChunkDirty(NewlyLoaded)` event. The event is therefore a candidate signal, not a ready
+   signal.
+2. `ChunkTesselatorManager.TesselateChunk` runs on the separate tessellation thread. It
+   increments `ClientChunk.quantityDrawn` before `ChunkTesselator.NowProcessChunk` and
+   before queuing the result for upload. Empty chunks also increment the counter and
+   return without a GPU upload.
+3. `ChunkTesselatorManager.OnBeforeFrame` is registered at `EnumRenderStage.Before`, order
+   0.99. It calls `ChunkRenderer.AddTesselatedChunk` and then the internal
+   `ClientEventManager.TriggerChunkRetesselated` callback. The callback is post-upload but
+   is not exposed by `IClientEventAPI`/`IEventAPI` as a global event.
+4. `LodTerrainRenderer` runs at opaque order 0.36. Vanilla `SystemRenderTerrain` runs at
+   opaque order 0.37, so a mask committed in the earlier `Before` stage is available to
+   both ownership decisions in that frame and cached terrain remains immediately before
+   vanilla terrain.
+5. `SystemUnloadChunks.HandleChunkUnload` removes the chunk's renderer pool locations,
+   disposes it, and removes it from `ClientWorldMap.chunks`. The public client event APIs
+   expose no chunk-unload event. A subsequent `IsChunkRendered` is false because
+   `ClientWorldMap.IsChunkRendered` no longer finds the chunk, but prompt loss detection
+   therefore requires bounded boundary-first revalidation.
+6. The public shader/render wrappers bind 2D and cube textures only. The client itself
+   uses OpenTK 3D/array textures internally, but there is no public 3D bind/update wrapper.
+   Phase 2 should prototype the plan's 2D Y-slice atlas first unless a direct OpenTK path
+   is proven portable against the project's supported game/GL range.
+
+**Supported-version policy.** This trace is exact for installed 1.22.7 only, while the mod
+declares 1.22.5 and the check tiers run against 1.22.5/1.22.6. The tracker is never allowed
+to be pixel-authoritative without a positive probe result on the running client, and every
+failure path restores cached coverage, so an older or newer lifecycle can cost coverage
+accuracy but cannot open a hole. Do not raise the declared minimum for this feature alone;
+if a supported version is ever found where `IsChunkRendered` never returns true, the
+tracker must report that condition and stay on the radial fallback for that session.
+
+This proves there is no supported notification-only implementation. Use the planned
+event-fed candidate queue plus two-render-frame true stabilization and prompt false
+revalidation. Do not bind to `ClientEventManager` or other `NoObf` internals for the
+handoff lifecycle.
+
 ## 5. Ownership model
 
 ### 5.1 Cell granularity
@@ -123,7 +178,11 @@ chunkZ = floor(worldZ / 32)
 ```
 
 The world-space convention is half-open on every axis:
-`[chunk * 32, chunk * 32 + 32)`. Coordinate conversion must be isolated in pure helpers
+`[chunk * 32, chunk * 32 + 32)`. Ancestor addressing divides chunk coordinates by the
+section edge, which truncates rather than floors; that is correct only because Vintage
+Story world coordinates are non-negative and the active window refuses a negative origin.
+Keep that guard: removing it as a redundant bounds check would silently mis-key sections
+rather than fail. Coordinate conversion must be isolated in pure helpers
 and tested at both sides of every boundary. Use section-local X/Z plus an integer per-draw
 section-chunk origin so large camera or world coordinates do not destabilize `floor()`.
 
@@ -222,6 +281,14 @@ Do not scan every 3D cell every frame. Start with conservative limits and expose
 oldest pending/revalidation age so a limit that is too small is visible rather than
 silently causing prolonged overlap or holes.
 
+**State the stale-ownership bound explicitly.** The interior sweep rate divided into the
+active cell count is the worst-case time an unloaded interior chunk can keep vanilla
+ownership, and that interval is exactly how long a hole can persist. At the current
+32 cells per frame over an approximately 11,000-cell window, that is roughly six seconds
+at 60 FPS, with the boundary shell covering the frontier far sooner. Any change to either
+number must restate this bound, and the runtime run must confirm it against measured
+oldest-work age rather than assuming the sweep keeps up.
+
 ### 6.4 State storage
 
 Use compact arrays for the camera-centered window and sparse sets/queues only for pending
@@ -257,6 +324,17 @@ otherwise
 The expected total includes the section's horizontal footprint and valid vertical world
 chunks. If source tracing proves some empty vertical chunks never report rendered, add a
 geometry-coverage aggregate rather than weakening readiness to one arbitrary surface Y.
+
+**This is a Phase 1 exit question, not a Phase 3 detail.** A complete classification needs
+every vertical chunk of every covered column, so if the client never holds or tessellates
+the empty chunks above terrain and below the caves, no section ever classifies as fully
+ready, the CPU whole-mesh skip never fires, and every near section pays mixed-mode masking
+instead. The tracker therefore reports a vertical distribution - columns tracked, complete,
+and partial, the deepest column, and ready cells per Y band - in its periodic diagnostics
+and in the benchmark scenario record. Read that distribution before building Phase 2 or
+Phase 3. If complete columns never appear, the covered-cell total must come from cached
+geometry coverage (only the cells a section's mesh actually occupies) and the plan's
+expected CPU saving must be re-estimated before the mask work is justified.
 Any geometry-derived coverage must be produced once with mesh work and stored compactly;
 it must not rescan runs on the render thread.
 
@@ -418,6 +496,9 @@ when performance telemetry is enabled.
 - Probes per frame, true/false results, and oldest pending/revalidation age.
 - Ready/unready transitions and oscillations.
 - Window shifts, resizes, full clears, and view-distance changes.
+- Vertical distribution: columns tracked, complete, and partial; the deepest ready column;
+  and ready cells per Y band. This is what proves or disproves reachable whole-section
+  ownership, so it belongs in ordinary diagnostics rather than a one-off investigation.
 
 ### GPU publication
 
@@ -443,6 +524,10 @@ normal status output remain O(1).
 
 ### Phase 0 - prove the engine lifecycle and baseline
 
+**Implementation status:** Installed 1.22.7 lifecycle and public-API limits are
+source-traced in section 4.1. Paired radial baseline capture and benchmark-noise work
+remain open and require an isolated game run.
+
 1. Record the exact engine source/decompilation path for readiness, upload, dirty, and
    unload behavior.
 2. Capture current radial-handoff draw counts, renderer phase timings, FPS/frame times,
@@ -456,6 +541,24 @@ without guessing, and the performance baseline is reproducible.
 
 ### Phase 1 - pure readiness model
 
+**Implementation status:** Source-, harness-, and runtime-validated on 2026-08-18 against
+installed 1.22.7; see `bench/results/2026-08-18-readiness-shadow/`. The first gated route
+exposed a real defect - interior maintenance requeued only committed cells, so the sweep
+could lose ownership but never gain it, and one 15-second stationary interval spent
+432,744 probes on already-ready cells and none on 1,801 pending ones. Maintenance is now
+state-agnostic, engine-announced candidates are counted separately from the tracker's own
+sweeps, and the repeat route converged to 232 of 441 complete columns with 0 errors,
+0 dropped events, 18.4 us average and 50 us p99 readiness cost, no 25 ms renderer phase,
+and zero steady-state allocation. The
+renderer owns a fixed-array/ring shadow tracker, receives value-only `ChunkDirty`
+candidates, incrementally seeds existing cells, defers the second true observation across
+a render boundary, revalidates the expected streaming shell before a slower interior
+sweep, and probes under 256-item/0.25 ms ceilings. Accepted publications currently update
+shadow aggregates and telemetry only; draw selection and shaders do not read them, so the
+radial handoff remains the sole pixel owner. Focused checks cover boundaries, ring alias
+rejection, movement/teardown invalidation, stale publication tokens, L0-L6 aggregates,
+boundary-first revalidation, and a zero-allocation converged scheduling/probe loop.
+
 1. Implement coordinate packing, active-window/ring addressing, states, candidate
    coalescing, probe budgeting, stabilization, invalidation, and teardown without changing
    rendering.
@@ -463,8 +566,62 @@ without guessing, and the performance baseline is reproducible.
 3. Compare tracker state with visible vanilla streaming under diagnostics.
 4. Prove zero steady-state allocations and bounded work in isolated checks.
 
-**Exit:** the tracker follows loading, unloading, movement, teleport, and view-distance
-changes without influencing pixels.
+**Exit:** met for loading, movement, and steady state on 2026-08-18. Teleport and live
+view-distance change are still only covered by harness checks, and no person has watched
+this build. Complete vertical columns are common - 232 of 441, with a flat per-Y
+histogram - so empty sky and deep chunks do report rendered and the Phase 3 whole-mesh
+skip is reachable without a geometry-derived aggregate.
+
+**Open runtime tuning, deliberately not guessed before the run.** The two-render-frame
+stabilization is expressed in frames, but the gap between `quantityDrawn` advancing and
+the completed mesh being uploaded depends on the tessellation queue depth, not on frame
+count, so a teleport or view-distance increase can stretch it. Premature suppression is a
+hole and late suppression is brief overlap, so if the run shows ready/lost oscillation or
+visible early suppression, add a short elapsed-time hold alongside the frame boundary and
+set its duration from that measurement.
+
+### Phase 2a - readiness-driven radial distance
+
+Approved and implemented 2026-08-18. This is the first phase in which measured readiness
+owns pixels. Before any GPU mask exists, the tracker can
+already improve the shipped behavior through the uniform the shader takes today. Replace
+the constant near-handoff fraction with the measured Chebyshev distance to the nearest
+non-ready cell, minus one cell, in blocks.
+
+- No new GPU resource, shader edit, atlas, or publication protocol; only the value of
+  `cacheHandoffDistance` changes.
+- It removes the render-radius-shaped hole, because a missing or unloaded chunk shrinks
+  the radius and cached terrain re-covers that area automatically.
+- Uncertainty shrinks the radius, so it fails toward coverage by construction.
+- It is deliberately conservative: one unloaded pocket near the camera shrinks coverage
+  globally and restores overlap elsewhere. How often that happens in real play is itself
+  the evidence for whether the full per-cell mask earns its complexity.
+- It gives the mask a measured baseline to beat instead of a guessed constant, and it
+  gives the player a testable improvement before Phase 2 completes.
+
+This is an addition to the rollout order, not a replacement for the mask.
+
+**As implemented.** The radius is the distance to the nearest tracked column that is not
+wholly owned, minus one vanilla chunk, clamped to the vanilla view distance and quantized
+down to a whole chunk. A column counts only when every one of its vertical chunks is
+committed ready, and the active window edge bounds the result, so an untracked frontier
+cannot be mistaken for owned ground. `LodNearHandoffState` applies shrinkage in the same
+frame and holds growth for 500 ms, applying the smallest radius seen during that hold;
+continuous movement therefore cannot stall growth or let a transient peak through. If the
+tracker is disabled, absent, or the player leaves the default dimension, the established
+`LodNearHandoff.InnerDiscardRadius` constant returns immediately.
+
+**Measured before building it.** A stationary route reported the nearest not-wholly-owned
+column at 234 blocks with 201 complete columns and zero partial ones, against a radial
+constant of 64 blocks at a 256-block vanilla view distance. Incompleteness begins at the
+frontier rather than as pockets near the player, which is the condition a single global
+radius needs. The implemented handoff then held 192 blocks with no fallback sample.
+
+**Known limitations.** One unowned pocket near the camera still shrinks coverage globally;
+that is the case the per-cell mask exists to fix, and how often it happens in real play is
+the evidence for whether Phase 2 earns its complexity. Nothing here reduces CPU draw
+submission or vertex work: cached fragments inside the radius are still rasterized before
+being discarded. Both remain Phase 2 and Phase 3 work.
 
 ### Phase 2 - GPU mask behind a disabled feature gate
 
@@ -537,6 +694,10 @@ playtest artifact is ready for human testing.
 - CPU readiness cannot publish before its GPU update is accepted.
 - Texture failure leaves ownership cache-visible.
 - Teardown rejects late events/results from the old world.
+- Vertical distribution separates an unprobed column from a partly ready one, attributes
+  each ready cell to its own Y band, and refuses a histogram shorter than the world.
+- The benchmark runner's readiness pattern matches the renderer's own emitted line, so a
+  format change fails the fast tier instead of a game run.
 
 ### Shader/static checks
 

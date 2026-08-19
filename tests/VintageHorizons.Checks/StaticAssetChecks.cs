@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace VintageHorizons.Checks;
@@ -14,6 +15,8 @@ public static class StaticAssetChecks
         TintSlotAgreement(c);
         AlphaPacking(c);
         LodFallbackAndStableColour(c);
+        ReadinessShadowWiring(c);
+        ReadinessTelemetryContract(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
     }
@@ -137,6 +140,83 @@ public static class StaticAssetChecks
             "terrain colour noise uses the stable terrain coordinate");
         c.False(fragment.Contains("valuenoise(worldPos", StringComparison.Ordinal),
             "terrain colour noise never follows the camera-relative render position");
+    }
+
+    static void ReadinessShadowWiring(Check c)
+    {
+        string renderDir = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src", "Render");
+        string renderer = File.ReadAllText(Path.Combine(renderDir, "LodTerrainRenderer.cs"));
+        string model = File.ReadAllText(Path.Combine(renderDir, "VanillaRenderReadiness.cs"));
+
+        c.True(renderer.Contains("capi.Event.ChunkDirty += OnReadinessChunkDirty", StringComparison.Ordinal),
+            "the shadow tracker receives event-fed client chunk candidates");
+        c.True(renderer.Contains("capi.Event.ChunkDirty -= OnReadinessChunkDirty", StringComparison.Ordinal),
+            "renderer teardown unsubscribes the readiness event");
+        c.True(renderer.Contains("capi.IsChunkRendered(readinessProbePos)", StringComparison.Ordinal),
+            "readiness probes use the supported public engine query");
+        c.True(renderer.Contains("ReadinessProbeMaxItemsPerFrame", StringComparison.Ordinal)
+            && renderer.Contains("ReadinessProbeMaxMillisecondsPerFrame", StringComparison.Ordinal),
+            "readiness probing has both item and elapsed-time ceilings");
+        c.True(model.Contains("PromoteObserved", StringComparison.Ordinal),
+            "first true observations wait in a deferred render-frame queue");
+        // Phase 2a lets measured readiness drive the existing radial uniform. Per-cell
+        // ownership - classification, whole-mesh skipping, and the GPU mask - is still
+        // absent, so the handoff radius remains the single pixel path.
+        c.False(renderer.Contains("readiness.Classify(", StringComparison.Ordinal),
+            "per-section ownership classification still does not reach the draw path");
+        c.True(renderer.Contains("nearHandoff.Update(", StringComparison.Ordinal)
+            && renderer.Contains("readinessOwnsHandoff", StringComparison.Ordinal),
+            "the near handoff is driven by measured readiness with an explicit fallback flag");
+        c.True(renderer.Contains("LodNearHandoff.InnerDiscardRadius(viewDistance)", StringComparison.Ordinal),
+            "the established radial constant remains available when readiness is unavailable");
+    }
+
+    /// <summary>
+    /// The benchmark runner's readiness gate reads one log line that the renderer formats.
+    /// A rename on either side would leave the gate matching nothing, which is only
+    /// discovered after a ten-minute game run, so the two are matched here instead: the
+    /// renderer's interpolated literal is rendered with sample values and must satisfy the
+    /// runner's own pattern. PowerShell uses this exact regex engine.
+    /// </summary>
+    static void ReadinessTelemetryContract(Check c)
+    {
+        string renderer = File.ReadAllText(Path.Combine(
+            GameAssemblies.RepoRoot, "VintageHorizons", "src", "Render", "LodTerrainRenderer.cs"));
+        string runner = File.ReadAllText(Path.Combine(
+            GameAssemblies.RepoRoot, "scripts", "bench-windows.ps1"));
+
+        c.True(runner.Contains("RequireReadinessConvergence", StringComparison.Ordinal),
+            "the benchmark runner exposes the readiness convergence gate");
+
+        Match describe = Regex.Match(renderer,
+            @"public string DescribeReadiness\(\).*?(?<statement>return \$""shadow .*?;)",
+            RegexOptions.Singleline);
+        c.True(describe.Success, "the renderer still formats a readiness line to parse");
+        if (!describe.Success) return;
+
+        var line = new StringBuilder();
+        foreach (Match part in Regex.Matches(describe.Groups["statement"].Value, @"\$""(?<text>[^""]*)"""))
+            line.Append(part.Groups["text"].Value);
+        // Holes formatted to one decimal print a fractional number; the rest are counts.
+        string sample = Regex.Replace(line.ToString(), @"\{[^{}]*\}",
+            m => m.Value.Contains(":0.0", StringComparison.Ordinal) ? "342.3" : "7");
+        c.False(sample.Contains('{'), "every readiness hole was substituted with a sample value");
+
+        Match pattern = Regex.Match(runner,
+            @"\$shadowPattern =(?<parts>(?:\s*'[^']*'\s*\+?)+)");
+        c.True(pattern.Success, "the runner still declares its readiness pattern");
+        if (!pattern.Success) return;
+
+        var expression = new StringBuilder();
+        foreach (Match part in Regex.Matches(pattern.Groups["parts"].Value, @"'(?<text>[^']*)'"))
+            expression.Append(part.Groups["text"].Value);
+
+        Match parsed = Regex.Match("  vanilla readiness: " + sample, expression.ToString());
+        c.True(parsed.Success, "the runner's readiness pattern matches the renderer's own line");
+        if (!parsed.Success) return;
+        foreach (string group in new[] { "ready", "unknown", "age", "probes", "errors", "dropped" })
+            c.True(parsed.Groups[group].Success && parsed.Groups[group].Value.Length > 0,
+                $"the readiness gate can read its {group} value");
     }
 
     /// <summary>

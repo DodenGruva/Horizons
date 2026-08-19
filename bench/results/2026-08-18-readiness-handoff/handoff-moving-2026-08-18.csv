@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+handoff-moving-2026-08-18,east-full-turn,512020,230,512010,2,14675,489.1,498.7,271.4,2.04,3.68,0.1,4.8,1740,3890,21.0,0
+handoff-moving-2026-08-18,south-full-turn,512420,230,512010,2,14018,467.3,469.6,252.8,2.14,3.96,1.9,4.0,2084,3885,21.0,0
+handoff-moving-2026-08-18,west-full-turn,512420,230,512410,2,13437,447.9,448.8,251.9,2.23,3.97,0.7,2.6,2294,3987,21.0,0
+handoff-moving-2026-08-18,north-full-turn,512020,230,512410,2,14966,498.8,496.4,264.3,2.00,3.78,1.5,4.0,1542,3919,21.0,0

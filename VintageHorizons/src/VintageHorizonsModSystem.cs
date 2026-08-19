@@ -900,18 +900,21 @@ public class VintageHorizonsModSystem : ModSystem
             Mod.Logger.Notification(
                 "  render thread per frame over {0} frames: prune {9:0.0}us avg / {10:0.0}us max | " +
                 "schedule {1:0.0}/{2:0.0} | " +
-                "far distance {3:0.0}/{4:0.0} | quadtree walk {5:0.0}/{6:0.0} | draw submit {7:0.0}/{8:0.0}",
+                "far distance {3:0.0}/{4:0.0} | readiness shadow {11:0.0}/{12:0.0} | "
+                + "quadtree walk {5:0.0}/{6:0.0} | draw submit {7:0.0}/{8:0.0}",
                 renderer.WalkCost.Calls,
                 renderer.ScheduleCost.AvgUs, renderer.ScheduleCost.MaxUs,
                 renderer.FarDistanceCost.AvgUs, renderer.FarDistanceCost.MaxUs,
                 renderer.WalkCost.AvgUs, renderer.WalkCost.MaxUs,
                 renderer.DrawCost.AvgUs, renderer.DrawCost.MaxUs,
-                renderer.PruneCost.AvgUs, renderer.PruneCost.MaxUs);
+                renderer.PruneCost.AvgUs, renderer.PruneCost.MaxUs,
+                renderer.ReadinessCost.AvgUs, renderer.ReadinessCost.MaxUs);
 
             Mod.Logger.Notification(
                 "  render p95/p99/max us: prune {0:0}/{1:0}/{2:0} | schedule {3:0}/{4:0}/{5:0} | "
                 + "upload {6:0}/{7:0}/{8:0} | evict {9:0}/{10:0}/{11:0} | seasonal {12:0}/{13:0}/{14:0} | "
-                + "far {15:0}/{16:0}/{17:0} | walk {18:0}/{19:0}/{20:0} | draw {21:0}/{22:0}/{23:0}",
+                + "far {15:0}/{16:0}/{17:0} | readiness {24:0}/{25:0}/{26:0} | "
+                + "walk {18:0}/{19:0}/{20:0} | draw {21:0}/{22:0}/{23:0}",
                 renderer.PruneCost.P95Us, renderer.PruneCost.P99Us, renderer.PruneCost.MaxUs,
                 renderer.ScheduleCost.P95Us, renderer.ScheduleCost.P99Us, renderer.ScheduleCost.MaxUs,
                 renderer.UploadCost.P95Us, renderer.UploadCost.P99Us, renderer.UploadCost.MaxUs,
@@ -919,20 +922,23 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.SeasonalCost.P95Us, renderer.SeasonalCost.P99Us, renderer.SeasonalCost.MaxUs,
                 renderer.FarDistanceCost.P95Us, renderer.FarDistanceCost.P99Us, renderer.FarDistanceCost.MaxUs,
                 renderer.WalkCost.P95Us, renderer.WalkCost.P99Us, renderer.WalkCost.MaxUs,
-                renderer.DrawCost.P95Us, renderer.DrawCost.P99Us, renderer.DrawCost.MaxUs);
+                renderer.DrawCost.P95Us, renderer.DrawCost.P99Us, renderer.DrawCost.MaxUs,
+                renderer.ReadinessCost.P95Us, renderer.ReadinessCost.P99Us, renderer.ReadinessCost.MaxUs);
+
+            Mod.Logger.Notification("  vanilla readiness: {0}", renderer.DescribeReadiness());
 
             Mod.Logger.Notification(
                 "  render interval: {0} projection resets, {1:0.00} MiB uploaded; phase hitches >=25/50/100ms: {2}/{3}/{4}",
                 renderer.ProjectionResetCount, renderer.MeshUploadBytes / (1024.0 * 1024.0),
                 renderer.PruneCost.Over25Ms + renderer.ScheduleCost.Over25Ms + renderer.UploadCost.Over25Ms
                     + renderer.EvictCost.Over25Ms + renderer.SeasonalCost.Over25Ms + renderer.FarDistanceCost.Over25Ms
-                    + renderer.WalkCost.Over25Ms + renderer.DrawCost.Over25Ms,
+                    + renderer.ReadinessCost.Over25Ms + renderer.WalkCost.Over25Ms + renderer.DrawCost.Over25Ms,
                 renderer.PruneCost.Over50Ms + renderer.ScheduleCost.Over50Ms + renderer.UploadCost.Over50Ms
                     + renderer.EvictCost.Over50Ms + renderer.SeasonalCost.Over50Ms + renderer.FarDistanceCost.Over50Ms
-                    + renderer.WalkCost.Over50Ms + renderer.DrawCost.Over50Ms,
+                    + renderer.ReadinessCost.Over50Ms + renderer.WalkCost.Over50Ms + renderer.DrawCost.Over50Ms,
                 renderer.PruneCost.Over100Ms + renderer.ScheduleCost.Over100Ms + renderer.UploadCost.Over100Ms
                     + renderer.EvictCost.Over100Ms + renderer.SeasonalCost.Over100Ms + renderer.FarDistanceCost.Over100Ms
-                    + renderer.WalkCost.Over100Ms + renderer.DrawCost.Over100Ms);
+                    + renderer.ReadinessCost.Over100Ms + renderer.WalkCost.Over100Ms + renderer.DrawCost.Over100Ms);
 
             Mod.Logger.Notification(
                 "  render budgets: snapshots {0} items/{1:0.00} MiB, {2} queued/{3:0.00} MiB, oldest {4}ms | "
@@ -1069,7 +1075,8 @@ public class VintageHorizonsModSystem : ModSystem
         Mod.Logger.Notification(
             "  render allocation interval MiB/max KiB: prune {0:0.00}/{1:0.0} | schedule {2:0.00}/{3:0.0} | "
             + "upload {4:0.00}/{5:0.0} | evict {6:0.00}/{7:0.0} | seasonal {8:0.00}/{9:0.0} | "
-            + "far {10:0.00}/{11:0.0} | walk {12:0.00}/{13:0.0} | draw {14:0.00}/{15:0.0}",
+            + "far {10:0.00}/{11:0.0} | readiness {16:0.00}/{17:0.0} | "
+            + "walk {12:0.00}/{13:0.0} | draw {14:0.00}/{15:0.0}",
             MiB(renderer.PruneCost.AllocatedBytes), KiB(renderer.PruneCost.MaxAllocatedBytes),
             MiB(renderer.ScheduleCost.AllocatedBytes), KiB(renderer.ScheduleCost.MaxAllocatedBytes),
             MiB(renderer.UploadCost.AllocatedBytes), KiB(renderer.UploadCost.MaxAllocatedBytes),
@@ -1077,7 +1084,8 @@ public class VintageHorizonsModSystem : ModSystem
             MiB(renderer.SeasonalCost.AllocatedBytes), KiB(renderer.SeasonalCost.MaxAllocatedBytes),
             MiB(renderer.FarDistanceCost.AllocatedBytes), KiB(renderer.FarDistanceCost.MaxAllocatedBytes),
             MiB(renderer.WalkCost.AllocatedBytes), KiB(renderer.WalkCost.MaxAllocatedBytes),
-            MiB(renderer.DrawCost.AllocatedBytes), KiB(renderer.DrawCost.MaxAllocatedBytes));
+            MiB(renderer.DrawCost.AllocatedBytes), KiB(renderer.DrawCost.MaxAllocatedBytes),
+            MiB(renderer.ReadinessCost.AllocatedBytes), KiB(renderer.ReadinessCost.MaxAllocatedBytes));
     }
 
     void OnLeaveWorld()
@@ -1123,6 +1131,7 @@ public class VintageHorizonsModSystem : ModSystem
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +
                 $"detail distance: {(int)LodWorld.DetailDistance} (.vhdetail to change), " +
+                $"readiness: {renderer.DescribeReadiness()}, " +
                 $"server assist: {assist?.Status ?? "off"}" +
                 (assist != null && assist.RemoteKeys.Count > 0
                     ? $", server offers {assist.RemoteKeys.Count} sections " +

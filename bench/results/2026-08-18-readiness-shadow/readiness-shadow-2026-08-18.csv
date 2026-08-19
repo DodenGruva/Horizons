@@ -1,0 +1,5 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+readiness-shadow-2026-08-18,east-full-turn,512020,230,512010,2,14591,485.6,494.8,267.3,2.06,3.74,0.1,6.5,1707,3834,21.0,0
+readiness-shadow-2026-08-18,south-full-turn,512420,230,512010,2,14560,483.9,492.6,260.4,2.07,3.84,0.3,14.2,2227,3897,21.0,0
+readiness-shadow-2026-08-18,west-full-turn,512420,230,512410,2,13566,452.2,454.0,278.8,2.21,3.59,0.0,10.1,2226,3875,21.0,0
+readiness-shadow-2026-08-18,north-full-turn,512020,230,512410,2,15351,508.9,508.2,290.3,1.97,3.44,0.6,12.7,2315,3901,21.0,0
