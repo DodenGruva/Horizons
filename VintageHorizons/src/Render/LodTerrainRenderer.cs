@@ -132,6 +132,10 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessWindowChanges { get; private set; }
     public long ReadinessResizes { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
+    public long CoarseWaitingLoad { get; private set; }
+    public long CoarseWaitingMesh { get; private set; }
+    public long CoarseWaitingSchedule { get; private set; }
+    public long CoarseWaitingOther { get; private set; }
 
     public void ResetPhaseCosts()
     {
@@ -160,6 +164,10 @@ public class LodTerrainRenderer : IRenderer
         ReadinessWindowChanges = 0;
         ReadinessResizes = 0;
         VanillaOwnedDrawsSkipped = 0;
+        CoarseWaitingLoad = 0;
+        CoarseWaitingMesh = 0;
+        CoarseWaitingSchedule = 0;
+        CoarseWaitingOther = 0;
         readiness?.ResetTelemetry();
         readinessMask?.ResetTelemetry();
     }
@@ -429,10 +437,30 @@ public class LodTerrainRenderer : IRenderer
                     // can resume; the parent keeps covering meanwhile.
                     RequestMesh(ck);
                     covered = false;
+                    CountCoarseWait(ck);
                 }
             }
         }
         return covered;
+    }
+
+    /// <summary>
+    /// Records why a child had no mesh, and therefore why its parent is still drawing the
+    /// area coarsely. Human testing reported terrain becoming coarser than expected during
+    /// fast flight, and the four causes want four different fixes: waiting on storage,
+    /// waiting on a mesh worker, waiting for a scheduling slot, or nothing pending at all,
+    /// which would mean the obligation was dropped. Guessing between them from a frame rate
+    /// is how the wrong one gets optimised.
+    ///
+    /// Only reached on the uncovered path, which is rare once terrain settles, and the
+    /// lookups sit beside a RequestMesh call that already costs more.
+    /// </summary>
+    void CountCoarseWait(long childKey)
+    {
+        if (world.LoadsInFlight.Contains(childKey)) CoarseWaitingLoad++;
+        else if (meshJobInFlight.Contains(childKey)) CoarseWaitingMesh++;
+        else if (world.RenderDirty.Contains(childKey)) CoarseWaitingSchedule++;
+        else CoarseWaitingOther++;
     }
 
     bool CollectDrawNodes(long key)

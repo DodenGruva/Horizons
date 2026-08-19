@@ -48,11 +48,15 @@ The approved rendering design is
     water only in unowned cells and the 32-block ownership edges are visible on a flat
     surface that hides nothing; if they persist, it is the existing per-section water tint
     and predates this work.
-- Cached terrain was also observed becoming coarser than expected during fast flight.
+- Cached terrain was also observed becoming coarser than expected during fast flight. The
+  renderer now reports why: a parent keeps covering ground when a visible child with data
+  has no mesh, and each interval logs whether those children were waiting on storage, on a
+  mesh worker, on a scheduling slot, or on nothing at all, beside the three backlog depths.
+  Read `coarse cover waits` from a fast-flight run before changing any budget; the per-frame
+  schedule cap only binds below roughly 60 FPS, so it is probably not the cause.
   Level selection happens in traversal, before any ownership decision, and skipping a draw
-  touches neither residency nor mesh scheduling, so this is most likely mesh production
-  falling behind at speed. Confirm whether it also happens with the mask off before
-  investigating further.
+  touches neither residency nor mesh scheduling. Confirm whether it also happens with the
+  mask off.
 - Re-run the visual matrix against the readiness-driven handoff and after any hybrid
   implementation. The 2026-08-18 playtest was reported acceptable overall, but seams,
   boundary flicker, and approach popping were not separately confirmed, and no cliff, water,

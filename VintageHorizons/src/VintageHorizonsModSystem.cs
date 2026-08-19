@@ -927,6 +927,20 @@ public class VintageHorizonsModSystem : ModSystem
 
             Mod.Logger.Notification("  vanilla readiness: {0}", renderer.DescribeReadiness());
 
+            // Why a coarser parent is covering ground its children could cover. Each cause
+            // wants a different fix, so they are reported apart rather than as one number.
+            if (renderer.CoarseWaitingLoad + renderer.CoarseWaitingMesh
+                + renderer.CoarseWaitingSchedule + renderer.CoarseWaitingOther > 0)
+            {
+                Mod.Logger.Notification(
+                    "  coarse cover waits: {0} on storage, {1} on a mesh worker, {2} on a schedule slot, "
+                    + "{3} with nothing pending | backlog {4} render-dirty, {5} meshes queued, {6} loads in flight",
+                    renderer.CoarseWaitingLoad, renderer.CoarseWaitingMesh,
+                    renderer.CoarseWaitingSchedule, renderer.CoarseWaitingOther,
+                    pipeline.World.RenderDirty.Count, pipeline.Worker.PendingMeshes,
+                    pipeline.World.LoadsInFlight.Count);
+            }
+
             Mod.Logger.Notification(
                 "  render interval: {0} projection resets, {1:0.00} MiB uploaded; phase hitches >=25/50/100ms: {2}/{3}/{4}",
                 renderer.ProjectionResetCount, renderer.MeshUploadBytes / (1024.0 * 1024.0),
