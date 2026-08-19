@@ -69,6 +69,29 @@ off by default.
    coarse cached geometry intruding where the baseline frame had none. A 48-block floor now
    applies, gated on the camera's own cell being committed ready.
 
+10. **Playtest cycle, four builds.** The user tested per-cell ownership and reported it
+   clearly better, with three artifacts, all at far above normal flight speed. Fixing them
+   took four builds and the version moved to an incrementing patch number so a symptom
+   could be tied to the build that produced it. Ownership acquisition was rebuilt around
+   movement (0.3.0), staleness was bounded by a one-second full re-confirmation rather than
+   by cursors that kept failing (0.3.1), the diagnostic command was rewritten twice and
+   then abandoned as the wrong tool (0.3.2), an empty-chunk ownership rule broke ownership
+   entirely (0.3.3), and that was reverted to a measurement (0.3.4).
+11. **The diagnostic that did not work.** `.vhwhy` sights along the view vector and reports
+   the first cell that would leave nothing on screen. A hole is a screen-space phenomenon,
+   so a ray through it mostly passes through legitimately empty air, and the answer depended
+   on aim. It produced two readings that were each read as evidence and were describing
+   something else. It remains in the build but is not a route worth pursuing.
+12. **The failure that mattered most.** 0.3.3 made an empty vanilla chunk own no ground, on
+   the reasoning that the tessellator advances the same drawn counter for an empty chunk and
+   cached terrain standing taller than the real world therefore sits in cells reported as
+   drawn. `IWorldChunk.Empty` is refreshed only when a chunk is modified and the client
+   frees block data for packed chunks, so the flag does not mean that on the client. The
+   query also sat inside the probe's try block, where a failure is treated as "vanilla is
+   not drawing here" - so a misread or a throw did not fail locally, it returned the whole
+   world to the cache in one pass. Every cached section drew over vanilla terrain. Reverted
+   in 0.3.4 to a counter that cannot influence ownership.
+
 ---
 
 ## Delivered
@@ -84,7 +107,11 @@ off by default.
   Windows and silently leaves instances running.
 - Evidence under `bench/results/2026-08-19-chunk-mask/`, and the Release tier at 1,307
   assertions.
-- Version moved to `0.3.0-dev`, following the suffix convention in `docs/RELEASING.md`.
+- Version moved to an incrementing patch number per test build, reaching 0.3.4.
+- An ownership audit that checks the per-section counts the whole-mesh skip trusts against
+  the cell states they summarise, repairs disagreements, and reports them.
+- Periodic telemetry for stale committed cells found, count repairs, and chunks that report
+  drawn while also reporting empty.
 
 ## Decisions
 
@@ -132,4 +159,9 @@ Claims lacking their evidence level:
   across them, and cached terrain becoming coarser than expected during fast flight.
   Neither is diagnosed; `dev/TODO.md` carries the experiment that separates a mask cause
   from a pre-existing one for each.
-- The backward-flight fix has not been re-tested by a person.
+- The persistent hole is unresolved. Flying backwards makes a gap that survives standing
+  still; `.vhmask off` fills it, so cached terrain is resident and drawable and ownership is
+  suppressing it. Four ownership fixes have not closed it. The next signal is telemetry, not
+  another guess: `stale committed found`, `count repairs`, and `drawn-but-empty chunks` from
+  a session where it reproduces.
+- 0.3.4 restored correct behaviour after 0.3.3 broke it, confirmed by the user.

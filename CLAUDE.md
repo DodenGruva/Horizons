@@ -19,6 +19,19 @@ For the exact current version, compatibility numbers, evidence, open work, and k
 - `dev/TODO.md` owns open work and verification debt.
 - `dev/WIRE_HISTORY.md` owns protocol, blob-format, and database-schema compatibility history.
 
+## Talking to the human
+
+The human who owns this project is not a developer and does not read code. Write to them
+in plain language.
+
+- Explain what changed and what it means for the game, not how it was implemented. Name a
+  file or a symbol only when they need it to do something.
+- Be brief. Lead with the answer or the state of things; leave the reasoning for when it
+  changes what they should do.
+- Their testing is the acceptance evidence for anything visual. Ask for specific, small
+  observations rather than open-ended reports.
+- Say plainly when something is broken, unproven, or your own mistake.
+
 ## Authority map
 
 Human authority:

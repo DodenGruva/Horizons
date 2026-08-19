@@ -2,6 +2,30 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
+## Top priority — the hole that per-chunk ownership leaves behind
+
+Flying backwards at high speed leaves a gap in the world that survives standing still.
+`.vhmask off` fills it, which proves cached terrain is resident and drawable and that
+ownership is suppressing it. This is the one thing blocking per-chunk ownership from
+becoming the default.
+
+Four fixes have not closed it, so do not write a fifth from reasoning alone. Reproduce it
+and read the periodic log first:
+
+- `stale committed found` should be zero once settled. A non-zero figure means committed
+  ownership is surviving after vanilla stopped drawing, and the one-second re-confirmation
+  is not reaching those cells.
+- `count repairs` should always be zero. Any figure at all means the per-section counts the
+  whole-mesh skip trusts are drifting, which would hide a section permanently.
+- `drawn-but-empty chunks` measures the leading theory: the engine counts an empty chunk as
+  drawn, so cached terrain standing taller than the real world sits in cells that report
+  drawn while nothing is drawn there. A high figure makes that theory the likely cause and
+  the next task is finding a reliable way to identify those chunks - `IWorldChunk.Empty` is
+  not one, see G40.
+
+`.vhwhy` is not a useful route and should not be extended; a hole is a screen-space thing
+and a ray through it mostly passes through legitimately empty air.
+
 ## Top priority — main-thread stutter and renderer scaling
 
 The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.

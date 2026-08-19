@@ -559,6 +559,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
+- Per-cell ownership has an open defect. Flying backwards at high speed leaves a gap that
+  survives standing still, and `.vhmask off` fills it, so cached terrain is resident and
+  drawable and ownership is wrongly suppressing it. Four fixes across 0.3.0 to 0.3.4 have
+  not closed it: frontier-following discovery, a backlog probe budget, a full loss sweep on
+  chunk crossing, and a one-second re-confirmation of all committed ownership. One attempt
+  (0.3.3) made it far worse by removing ownership everywhere, and was reverted. The next
+  step is telemetry rather than another fix; the periodic log now reports stale committed
+  cells found, ownership count repairs, and chunks that report drawn while also reporting
+  empty.
 - A person evaluated per-cell ownership in game on 2026-08-19 and reported it clearly
   better than the measured radius, with three artifacts, all at far above normal flight
   speed: brief cached and vanilla fighting on fast approach, a band of missing world when
