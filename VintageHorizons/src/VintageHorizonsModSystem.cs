@@ -1232,23 +1232,22 @@ public class VintageHorizonsModSystem : ModSystem
             });
 
         capi.ChatCommands.Create("vhwhy")
-            .WithDescription("Explain the ground you are looking at: who owns it, what the game says about it, and whether cached terrain is available there.")
+            .WithDescription("Look at a hole and run this. Searches your line of sight for the first ground that nothing is drawing and says which part of the mod is responsible. Optional argument is how far to search, 512 blocks by default.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalInt("blocksAhead"))
             .HandleWith(args =>
             {
                 if (renderer == null)
                     return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
 
-                // Sighting down the view vector is what makes this usable while staring at
-                // a hole: the interesting cell is rarely the one the player stands in.
-                int ahead = args.Parsers[0].IsMissing ? 32 : GameMath.Clamp((int)args[0], 0, 4096);
+                // Searching the whole line of sight rather than one chosen distance: the
+                // hole a player is looking at is wherever it is, and a confident report
+                // about the wrong chunk reads exactly like a report about the right one.
+                int range = args.Parsers[0].IsMissing ? 512 : GameMath.Clamp((int)args[0], 16, 4096);
                 Vec3f look = capi.World.Player.Entity.Pos.GetViewVector();
-                double x = capi.World.Player.Entity.CameraPos.X + look.X * ahead;
-                double y = capi.World.Player.Entity.CameraPos.Y + look.Y * ahead;
-                double z = capi.World.Player.Entity.CameraPos.Z + look.Z * ahead;
+                var camera = capi.World.Player.Entity.CameraPos;
 
-                return TextCommandResult.Success(
-                    $"[VintageHorizons] {ahead} blocks ahead - {renderer.DescribeOwnershipAt(x, y, z)}");
+                return TextCommandResult.Success("[VintageHorizons] " + renderer.ExplainViewRay(
+                    camera.X, camera.Y, camera.Z, look.X, look.Y, look.Z, range));
             });
 
         capi.ChatCommands.Create("vhdetail")

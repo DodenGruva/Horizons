@@ -1050,6 +1050,85 @@ public class LodTerrainRenderer : IRenderer
     public bool ChunkMaskFailed => readinessMaskFailed;
 
     /// <summary>
+    /// Walks the line of sight and reports the first cell whose ownership would produce a
+    /// hole, with the distance it was found at. Asking about one fixed distance was not
+    /// usable: the hole a player is looking at is wherever it happens to be, and a report
+    /// about some other chunk looks identical to a report about the right one.
+    ///
+    /// Sampling stops at the first cell the mask suppresses while the engine says it is not
+    /// drawing that chunk, because that is the combination that leaves nothing on screen.
+    /// If the ray finds no such cell, the first place with no cached section is reported
+    /// instead, which is the other way a hole appears and is not the mask's doing.
+    /// </summary>
+    public string ExplainViewRay(double startX, double startY, double startZ,
+        float lookX, float lookY, float lookZ, int maxBlocks)
+    {
+        if (readiness == null) return "no readiness tracker; the distance handoff is drawing";
+
+        var previous = new VanillaChunkCell(int.MinValue, int.MinValue, int.MinValue);
+        string? firstEmpty = null;
+        int examined = 0;
+        int verticalChunks = Math.Max(1, (worldHeight + 31) / 32);
+
+        for (int distance = 0; distance <= maxBlocks && examined < 512; distance += 4)
+        {
+            double x = startX + lookX * distance;
+            double y = startY + lookY * distance;
+            double z = startZ + lookZ * distance;
+            if (y < 0 || y >= worldHeight) break;
+
+            var cell = new VanillaChunkCell(
+                VanillaRenderReadiness.ChunkCoordinate(x),
+                VanillaRenderReadiness.ChunkCoordinate(y),
+                VanillaRenderReadiness.ChunkCoordinate(z));
+            if (cell == previous) continue;
+            previous = cell;
+            examined++;
+            if (cell.Y < 0 || cell.Y >= verticalChunks) continue;
+
+            bool rendered;
+            try
+            {
+                readinessProbePos.Dimension = 0;
+                readinessProbePos.SetPos((cell.X + 0.5) * 32.0, (cell.Y + 0.5) * 32.0, (cell.Z + 0.5) * 32.0);
+                rendered = capi.IsChunkRendered(readinessProbePos);
+            }
+            catch
+            {
+                rendered = false;
+            }
+
+            bool suppressed = readinessMaskActive && readinessMask != null && readinessMask.IsReady(cell);
+            long sectionKey = LodWorld.SectionKey(0,
+                (int)Math.Floor(x / LodSection.SectionBlocks),
+                (int)Math.Floor(z / LodSection.SectionBlocks));
+            bool resident = world.Sections.ContainsKey(sectionKey);
+            bool meshed = HasAnyMesh(sectionKey);
+
+            if (suppressed && !rendered)
+            {
+                return $"STALE OWNERSHIP {distance} blocks out, chunk {cell.X},{cell.Y},{cell.Z}: "
+                    + $"the mask hides cached terrain here but the engine is not drawing this chunk. "
+                    + $"We say {readiness.State(cell)}. Cached section is "
+                    + $"{(resident ? "resident" : "absent")} and {(meshed ? "meshed" : "unmeshed")}. "
+                    + "This one is ours.";
+            }
+
+            if (firstEmpty == null && !rendered && !resident)
+            {
+                firstEmpty = $"no terrain of either kind {distance} blocks out, chunk "
+                    + $"{cell.X},{cell.Y},{cell.Z}: the engine is not drawing this chunk and no cached "
+                    + "section is held for it, so there is nothing to show. The mask is not involved; "
+                    + "this ground was never captured.";
+            }
+        }
+
+        if (firstEmpty != null) return firstEmpty;
+        return $"nothing wrong along {maxBlocks} blocks of view: every chunk sampled is either "
+            + "drawn by the engine or backed by cached terrain that is allowed to draw.";
+    }
+
+    /// <summary>
     /// What the mod believes about the ground at a world position, against what the client
     /// says right now. Written for standing in front of a hole and asking why it is there:
     /// if ownership reads committed while the engine reports the chunk unrendered, the mask
