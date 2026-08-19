@@ -8,6 +8,36 @@ first.
 
 ## [Unreleased]
 
+## [0.3.0-dev]
+
+In development, carrying the `-dev` suffix this project uses between releases. The work below is established and playable behind its own switch, but
+it has not been packaged for release, and the release drops the suffix: see
+`docs/RELEASING.md`.
+
+**Each vanilla chunk can now own its own ground, instead of one distance deciding for
+everything.** Turn it on with `.vhmask on`; it is off by default while it is being
+evaluated. The mod keeps a marker for every 32x32x32 chunk the game has finished drawing
+and hides cached terrain exactly there, so an unloaded chunk beside you no longer pulls
+cached coverage back in every direction the way a single radius had to. Cached pieces that
+are wholly replaced are no longer sent to the graphics card at all, which measured a 7.3%
+higher frame rate in a controlled standing comparison, with about 42 of every 149 draws
+skipped and no change to how much terrain stays in memory. The marker map costs 32 KiB for
+a 256-block view distance and three microseconds to update.
+
+Cached terrain also stays out of the near field: it remains suppressed within 48 blocks of
+the camera while the chunk you are standing in is confirmed drawn, so per-chunk ownership
+cannot put coarse cached geometry at arm's length. If anything goes wrong - a failed
+texture upload, a different dimension, an unavailable tracker - the previous measured
+radius takes over immediately, and terrain that has not been confirmed always falls back to
+the cache rather than disappearing.
+
+Testing at far above normal flight speed found that ownership could not keep up: cached
+terrain drew over real terrain, and flying backwards left a band of missing world where the
+game had unloaded chunks the mod still believed were drawn. Discovery now follows the
+direction of travel rather than restarting from the middle of the view, the probe budget
+opens up when it falls behind, and loss detection sweeps the whole boundary each time the
+camera crosses a chunk. Formats, protocols and the database schema are unchanged.
+
 **The near handoff now measures where vanilla terrain actually is.** Cached terrain was
 hidden inside a fixed radius of half the vanilla view distance, which left a wide band
 where both terrains drew the same ground. The radius is now the distance to the nearest

@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.2.1`
+**Mod version:** `0.3.0-dev` (in development; `0.2.1` is the released version)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `40` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -17,8 +17,11 @@
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
-geometry sink, and replace the old outer cutoff with a near handoff whose radius is
-measured rather than assumed. The 32x32x32 readiness tracker is runtime-validated across
+geometry sink, and replace the old outer cutoff with ownership the mod can actually
+prove. Two mechanisms exist. The default is a near handoff whose radius is measured rather
+than assumed. Behind `.vhmask on` or `VINTAGEHORIZONS_CHUNK_MASK=1`, per-cell ownership
+replaces that radius entirely: one marker per 32x32x32 vanilla chunk decides each fragment,
+and a cached section whose every cell is owned is never submitted at all. The 32x32x32 readiness tracker is runtime-validated across
 five isolated runs, and its measurement now drives the existing `cacheHandoffDistance`
 uniform: the radius is the distance to the nearest vanilla chunk column the client has not
 finished rendering, less one chunk. GPU mask publication, mixed-mesh shader sampling, and
@@ -97,6 +100,21 @@ ownership shrinks, waits 500 ms before growing, applies the smallest radius seen
 waiting, and returns to the established constant if the tracker is unavailable or the
 player leaves the default dimension. Later phases add atomic GPU masking and CPU whole-mesh
 skips while preserving independent cache residency.
+
+The per-cell mask is a 2D atlas of Y slices, 32 KiB for a 256-block window, addressed by
+the same wrapped ring the tracker uses and rebuilt from committed state whenever the window
+moves. Ownership is derived from an integer section origin plus the section-local offset,
+never a summed world coordinate, because float32 rounds a fragment near a chunk edge onto
+its neighbour at large world coordinates. A failed upload, a non-default dimension, or an
+unavailable tracker restores the measured radius, and cached terrain stays suppressed
+within 48 blocks of the camera only while the camera's own cell is confirmed drawn.
+
+Ownership acquisition follows movement. The window queues the columns it gains as it gains
+them, a measured backlog raises the probe ceilings to 1,024 items and 1 ms, and the
+loss-detection shell sweeps completely whenever the camera crosses a chunk boundary. Those
+three exist because human testing at far above normal flight speed found cached terrain
+drawn over real terrain and, flying backwards, a band of missing world where vanilla had
+unloaded chunks the mod still believed were drawn.
 
 ## 3. Completed local performance work
 
@@ -324,8 +342,11 @@ creation and GPU upload are boundary-budgeted and have bounded 3,132-section run
 queue/driver evidence. Visibility-aware traversal has a controlled 601-section reduction;
 the thousands-section run is functional scaling evidence rather than a controlled causal
 comparison.
-5. The handoff still submits suppressed cached meshes and discards their fragments early,
-so no draw-call or GPU saving exists yet. The readiness tracker's integrated convergence and
+5. The default handoff still submits suppressed cached meshes and discards their fragments
+early, so it saves no draw calls. The opt-in per-cell mask does: a controlled stationary
+pair measured 467.9 FPS against 436.2 while skipping about 42 of 149 submissions per frame,
+with residency, selected nodes and evictions unchanged. The mask alone was neutral; the
+gain is the whole-mesh skip. The readiness tracker's integrated convergence and
 cost are now measured; GPU mask publication, mixed-mesh sampling, CPU skipping, and any
 resulting net frame-time effect remain open.
 
@@ -351,9 +372,9 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Implement and performance-gate GPU mask publication, mixed-only shader sampling, and CPU
-whole-section skips under `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`. Phase 1's runtime
-gate is met and no longer blocks this work.
+1. Decide whether per-cell ownership ships enabled. It is implemented, opt-in, and has one
+round of human acceptance ("much better") plus three reported artifacts, two of which are
+undiagnosed. See `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` and `dev/TODO.md`.
 2. Complete human in-motion review of clipping, turn-around behavior, visual mesh
 replacement, and the current near-handoff playtest.
 3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
@@ -413,7 +434,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,225 assertions, including 44
+- The full game-backed Release tier passes 1,307 assertions, including 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
@@ -467,6 +488,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - A short isolated warm-cache functional route exercised the incremental scheduler with
   601 cached sections and 543 resident meshes. Every waypoint settled, all guarded queues
   converged, and shutdown was graceful; no before/after performance claim is attached.
+- Per-cell mask evidence is tracked under `bench/results/2026-08-19-chunk-mask`. The mask
+  owns exactly the tracker's committed cells, costs 3 microseconds per update and about 325
+  microseconds once at creation, and its performance pair is one controlled stationary
+  comparison. Benchmark screenshots later showed in-game weather differing between runs,
+  which is an uncontrolled variable in every pair measured to date.
 - Readiness tracker and near-handoff evidence is tracked under
   `bench/results/2026-08-18-readiness-shadow` and
   `bench/results/2026-08-18-readiness-handoff`. Five isolated runs cover moving and
@@ -533,6 +559,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
+- A person evaluated per-cell ownership in game on 2026-08-19 and reported it clearly
+  better than the measured radius, with three artifacts, all at far above normal flight
+  speed: brief cached and vanilla fighting on fast approach, a band of missing world when
+  flying backwards, and chunk-shaped seams with colour differences in cached water. The
+  backward-flight gap has a fix that no person has re-tested. The water seams and a report
+  of cached terrain coarsening under fast flight are undiagnosed, and `dev/TODO.md` carries
+  the experiment that separates a mask cause from a pre-existing one for each.
 - A person evaluated the readiness-driven handoff package in game on 2026-08-19 and
   reported it acceptable. That is overall acceptance of one build on one machine, one world,
   and one view distance; seams, boundary flicker, approach popping, and the individual

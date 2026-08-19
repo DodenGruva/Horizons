@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 27 | 2026-08-19 | 0.3.0-dev | — | Gave each vanilla chunk its own ground behind an opt-in gate, skipped fully replaced cached meshes for +7.3% frame rate, and fixed ownership latency found by playtesting at flight speed. |
 | 26 | 2026-08-19 | 0.2.1 | — | Runtime-validated the readiness tracker, fixed a sweep that could lose ownership but never gain it, and gave the near handoff a measured radius; 1,225 assertions pass. |
 | 25 | 2026-08-18 | 0.2.1 | — | Source-traced the installed 1.22.7 chunk-render lifecycle and added a bounded, pixel-neutral vanilla-readiness shadow tracker; 1,176 assertions pass. |
 | 24 | 2026-08-18 | 0.2.1 | — | Source-fixed camera-relative color noise and near-transition sinking, added a conservative radial playtest handoff, and approved a bounded chunk-aware hybrid ownership plan. |

@@ -477,6 +477,38 @@ to the safe direction - here, every cell returning to the cache.
 
 **Found:** chunk ownership mask, Session 27.
 
+### G37 — A discovery cursor that restarts on movement never reaches the frontier
+
+**Trigger:** sweeping a camera-following window with a cursor, and resetting that cursor
+whenever the window moves.
+
+**Trap:** the cells that matter while moving are the ones the window just gained, and they
+sit at the far end of the scan. Restarting the cursor on every movement means the sweep
+re-covers ground it already knows and never arrives, so the state ahead of the player is
+the last thing ever established. It looks correct while standing still and fails only in
+motion, in proportion to speed.
+
+**Do:** queue what the window gains at the moment it gains it, and let the cursor cover the
+interior at its own pace. Budget the work by elapsed time rather than an item count chosen
+against a settled view, because a count that is generous when the queue is empty is the
+binding limit exactly when it is not.
+
+**Found:** vanilla-readiness acquisition under flight speed, Session 27.
+
+### G38 — A renderer benchmark that starts before residency settles measures nothing
+
+**Trigger:** comparing frame rates between two renderer configurations.
+
+**Trap:** a run whose meshes are still loading draws almost nothing and posts a large
+apparent gain. One measured 536.7 FPS against a 438.6 baseline, a 22% "improvement" whose
+own telemetry read zero meshes and zero selected nodes for the first three intervals.
+
+**Do:** settle to full mesh residency before measuring, and report mesh and selected-node
+counts beside the frame rate so a reader can check the comparison instead of trusting it.
+Treat any large unexplained win as a measurement bug until those counts match.
+
+**Found:** chunk ownership mask, Session 27.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
