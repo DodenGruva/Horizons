@@ -509,6 +509,24 @@ Treat any large unexplained win as a measurement bug until those counts match.
 
 **Found:** chunk ownership mask, Session 27.
 
+### G39 — State that hides something must be re-confirmed on a clock, not by a cursor
+
+**Trigger:** caching an expensive observation - readiness, visibility, ownership - and using
+it to suppress a fallback that would otherwise draw.
+
+**Trap:** a cursor sweeping a camera-following window is not a bound. It restarts when the
+window moves, it falls behind when the camera moves faster than it scans, and either way
+the ground it has not reached keeps hiding its fallback. Three separate cursor fixes each
+looked correct and each left holes that outlived the movement causing them, because none of
+them could state how long a wrong answer could survive.
+
+**Do:** re-confirm the entire suppressing set on a fixed interval, and size the set so that
+is affordable - here roughly 1,700 cells against a probe costing well under a microsecond.
+The interval then is the staleness bound, and it holds no matter how the camera moved.
+Keep the cursors for discovery, where being late costs coverage rather than correctness.
+
+**Found:** chunk ownership mask, Session 27.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

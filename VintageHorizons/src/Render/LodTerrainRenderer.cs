@@ -62,6 +62,14 @@ public class LodTerrainRenderer : IRenderer
     /// of probes rather than the probes themselves.
     /// </summary>
     internal const int ReadinessBoundarySweepOnCrossing = 4096;
+
+    /// <summary>
+    /// How often every committed cell is re-confirmed, in milliseconds. This is the upper
+    /// bound on how long the mask can hide cached terrain that vanilla has stopped drawing,
+    /// and it holds however the camera moved. Cursor sweeps could not provide that bound:
+    /// each one restarted or fell behind under movement, and holes outlived the movement.
+    /// </summary>
+    internal const long ReadinessFullRevalidateMilliseconds = 1000;
     internal const int ReadinessInteriorCellsPerFrame = 32;
     internal const int ReadinessGuardChunks = 2;
 
@@ -131,6 +139,7 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessProbeErrors { get; private set; }
     public long ReadinessWindowChanges { get; private set; }
     public long ReadinessResizes { get; private set; }
+    public long ReadinessFullRevalidations { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
     public long CoarseWaitingLoad { get; private set; }
     public long CoarseWaitingMesh { get; private set; }
@@ -163,6 +172,7 @@ public class LodTerrainRenderer : IRenderer
         ReadinessProbeErrors = 0;
         ReadinessWindowChanges = 0;
         ReadinessResizes = 0;
+        ReadinessFullRevalidations = 0;
         VanillaOwnedDrawsSkipped = 0;
         CoarseWaitingLoad = 0;
         CoarseWaitingMesh = 0;
@@ -216,6 +226,7 @@ public class LodTerrainRenderer : IRenderer
     double readinessHandoffCameraZ;
     bool readinessHandoffStale = true;
     bool readinessSweepShellNow;
+    long readinessLastFullRevalidateMs;
 
     /// <summary>Meshes unselected for this many frames (~1 min) get evicted; the quadtree re-requests on demand.</summary>
     const int EvictAfterFrames = 3600;
@@ -933,6 +944,14 @@ public class LodTerrainRenderer : IRenderer
             readinessSweepShellNow = false;
             readiness.QueueMaintenanceCells(
                 ref readinessInteriorCursor, ReadinessInteriorCellsPerFrame, frameCounter);
+
+            long now = capi.ElapsedMilliseconds;
+            if (now - readinessLastFullRevalidateMs >= ReadinessFullRevalidateMilliseconds)
+            {
+                readinessLastFullRevalidateMs = now;
+                ReadinessFullRevalidations++;
+                readiness.QueueAllReadyCells(frameCounter);
+            }
             readiness.PromoteObserved(frameCounter, ReadinessProbeCatchUpItemsPerFrame);
 
             bool catchingUp = readiness.PendingCandidates >= ReadinessProbeCatchUpQueueDepth;
@@ -1099,18 +1118,32 @@ public class LodTerrainRenderer : IRenderer
             }
 
             bool suppressed = readinessMaskActive && readinessMask != null && readinessMask.IsReady(cell);
-            long sectionKey = LodWorld.SectionKey(0,
-                (int)Math.Floor(x / LodSection.SectionBlocks),
-                (int)Math.Floor(z / LodSection.SectionBlocks));
-            bool resident = world.Sections.ContainsKey(sectionKey);
-            bool meshed = HasAnyMesh(sectionKey);
+
+            // Ground can legitimately be drawn by a coarser ancestor, so asking only the
+            // finest level reports "no mesh" for terrain that is on screen. Walk up until
+            // something covers this spot, and report the level that actually would draw it.
+            bool resident = false;
+            bool meshed = false;
+            int drawnLevel = -1;
+            for (int level = 0; level <= LodWorld.MaxLevel; level++)
+            {
+                int footprint = LodWorld.KeyFootprintBlocks(LodWorld.SectionKey(level, 0, 0));
+                long key = LodWorld.SectionKey(level,
+                    (int)Math.Floor(x / footprint), (int)Math.Floor(z / footprint));
+                resident |= world.Sections.ContainsKey(key);
+                if (!HasAnyMesh(key)) continue;
+                meshed = true;
+                drawnLevel = level;
+                break;
+            }
 
             if (suppressed && !rendered)
             {
                 return $"STALE OWNERSHIP {distance} blocks out, chunk {cell.X},{cell.Y},{cell.Z}: "
                     + $"the mask hides cached terrain here but the engine is not drawing this chunk. "
-                    + $"We say {readiness.State(cell)}. Cached section is "
-                    + $"{(resident ? "resident" : "absent")} and {(meshed ? "meshed" : "unmeshed")}. "
+                    + $"We say {readiness.State(cell)}. Cached terrain is "
+                    + $"{(resident ? "resident" : "absent")} and "
+                    + $"{(meshed ? $"meshed at level {drawnLevel}" : "unmeshed at every level")}. "
                     + "This one is ours.";
             }
 
@@ -1299,6 +1332,7 @@ public class LodTerrainRenderer : IRenderer
             + $"interval {ReadinessProbes} probes ({ReadinessTrueResults} true/{ReadinessFalseResults} false), "
             + $"{ReadinessReadyTransitions} ready/{ReadinessLostTransitions} lost transitions, "
             + $"{ReadinessProbeErrors} errors, {ReadinessWindowChanges} window changes/{ReadinessResizes} resizes, "
+            + $"{ReadinessFullRevalidations} full revalidations, "
             + $"events {readiness.CandidateEventsAccepted} accepted/{readiness.CandidateEventsCoalesced} coalesced/"
             + $"{readiness.CandidateEventsDropped} dropped, "
             + $"sweeps {readiness.ScheduledCandidatesAccepted} accepted/"

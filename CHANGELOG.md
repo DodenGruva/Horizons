@@ -8,9 +8,10 @@ first.
 
 ## [Unreleased]
 
-## [0.3.0-dev]
+## [0.3.1]
 
-In development, carrying the `-dev` suffix this project uses between releases. The work below is established and playable behind its own switch, but
+In development. Test builds now carry an incrementing patch number so a reported symptom can
+be tied to the exact build that produced it, which the `-dev` suffix could not do. The work below is established and playable behind its own switch, but
 it has not been packaged for release, and the release drops the suffix: see
 `docs/RELEASING.md`.
 

@@ -200,6 +200,39 @@ internal sealed class VanillaRenderReadiness
     }
 
     /// <summary>
+    /// Queues every committed cell for revalidation. Cursor-based sweeps kept failing to
+    /// reach ground the camera had moved away from, and each failure left the mask hiding
+    /// cached terrain nothing else drew - a hole that outlived the movement that caused it.
+    /// Re-confirming the whole committed set on a fixed interval removes the class of bug
+    /// rather than the instance: ownership can then be wrong for at most that interval, no
+    /// matter how the camera moved to make it wrong.
+    ///
+    /// The committed set is small - roughly 1,700 cells at a 256-block view distance - and
+    /// a probe costs well under a microsecond, so a full pass is a fraction of one frame's
+    /// probe budget and is spread across frames by that budget in any case.
+    /// </summary>
+    public int QueueAllReadyCells(long renderFrame = 0)
+    {
+        int queued = 0;
+        for (int slot = 0; slot < columnTags.Length; slot++)
+        {
+            if (columnTags[slot] == -1L || columnReady[slot] == 0) continue;
+            UnpackColumn(columnTags[slot], out int chunkX, out int chunkZ);
+            if (chunkX < minChunkX || chunkX >= minChunkX + width
+                || chunkZ < minChunkZ || chunkZ >= minChunkZ + depth) continue;
+
+            int baseIndex = slot * verticalChunks;
+            for (int y = 0; y < verticalChunks; y++)
+            {
+                if ((VanillaReadinessState)states[baseIndex + y] != VanillaReadinessState.VanillaReady)
+                    continue;
+                if (EnqueueCandidate(new VanillaChunkCell(chunkX, y, chunkZ), renderFrame)) queued++;
+            }
+        }
+        return queued;
+    }
+
+    /// <summary>
     /// Low-cadence interior maintenance under an examined-cell budget. This deliberately
     /// ignores cell state. A ready-only sweep can lose ownership but never gain it: a
     /// chunk that finishes tessellating after its dirty event was probed leaves its cell

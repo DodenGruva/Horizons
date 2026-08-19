@@ -36,8 +36,13 @@ The approved rendering design is
     loaded. This is ownership gain latency and resolves within a moment. It fails in the
     safe direction, so it is accepted for now; if it becomes objectionable, confirm cells
     near the camera on a shorter path rather than widening the budget again.
-  - Flying backwards produced a clear band of missing terrain where vanilla had unloaded
-    and cached coverage had not returned. This is the serious one - a hole outranks an
+  - Flying backwards produced a band of missing terrain, and a hole made that way could be
+    left standing still and would persist indefinitely. `.vhmask off` filled it, proving the
+    mask was suppressing cached terrain that was resident and drawable. Committed ownership
+    is now re-confirmed wholesale every second, which bounds staleness by construction; the
+    three cursor sweeps that preceded it could not. Needs re-testing.
+  - Historical, same symptom: flying backwards produced a clear band of missing terrain
+    where vanilla had unloaded and cached coverage had not returned. This is the serious one - a hole outranks an
     overlap - and the loss-detection shell now sweeps completely whenever the camera
     crosses a chunk. If gaps survive that, the next step is expiring committed ownership
     that has not been reconfirmed within a bounded time, which caps hole duration by

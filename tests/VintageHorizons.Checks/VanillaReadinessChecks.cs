@@ -8,6 +8,7 @@ public static class VanillaReadinessChecks
         WindowCalculation(c);
         CandidateWindowAndRing(c);
         MovingWindowQueuesFrontier(c);
+        CommittedOwnershipIsRevalidatedWholesale(c);
         StabilizationAndPublication(c);
         DeferredObservationQueue(c);
         AggregateClassification(c);
@@ -103,6 +104,50 @@ public static class VanillaReadinessChecks
         // Standing still queues nothing: an unchanged window is not new ground.
         c.False(model.SetWindow(1, 0, 4, 4), "an unchanged window reports no movement");
         c.Eq(0, model.PendingCandidates, "a stationary window queues no repeat work");
+    }
+
+    /// <summary>
+    /// Ownership that is never revisited is a hole that never closes. Three cursor-based
+    /// sweeps each failed to reach ground the camera had moved away from, and each failure
+    /// was reported from play as terrain that simply stayed missing. Re-confirming the whole
+    /// committed set bounds that by construction, so this asserts the set is complete: every
+    /// committed cell, wherever it sits in the ring, and nothing that is not committed.
+    /// </summary>
+    static void CommittedOwnershipIsRevalidatedWholesale(Check c)
+    {
+        var model = new VanillaRenderReadiness(8, 2);
+        model.SetWindow(0, 0, 8, 8);
+        DrainQueue(model);
+
+        var owned = new[]
+        {
+            new VanillaChunkCell(0, 0, 0),
+            new VanillaChunkCell(7, 1, 7),
+            new VanillaChunkCell(3, 0, 5),
+        };
+        int frame = 1;
+        foreach (VanillaChunkCell cell in owned) { CommitReady(model, cell, frame); frame += 2; }
+        DrainQueue(model);
+
+        c.Eq(owned.Length, model.QueueAllReadyCells(frame),
+            "every committed cell is queued for re-confirmation");
+
+        var queued = new List<VanillaChunkCell>();
+        while (model.TryDequeueCandidate(out VanillaChunkCell cell)) queued.Add(cell);
+        foreach (VanillaChunkCell cell in owned)
+            c.True(queued.Contains(cell), $"committed cell {cell.X},{cell.Y},{cell.Z} is revisited");
+        c.Eq(owned.Length, queued.Count, "cells that own nothing are not re-probed");
+
+        // A cell that has lost ownership drops out of the set, so the pass cannot grow
+        // without bound as terrain streams.
+        model.EnqueueCandidate(owned[0], frame);
+        model.TryDequeueCandidate(out _);
+        c.True(model.Observe(owned[0], rendered: false, frame, out VanillaReadinessPublication drop),
+            "a committed cell that stops rendering proposes its loss");
+        model.ResolvePublication(drop, accepted: true);
+        DrainQueue(model);
+        c.Eq(owned.Length - 1, model.QueueAllReadyCells(frame + 1),
+            "a cell that lost ownership is no longer re-confirmed");
     }
 
     static void WindowCalculation(Check c)
