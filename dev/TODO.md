@@ -40,7 +40,12 @@ The approved rendering design is
     left standing still and would persist indefinitely. `.vhmask off` filled it, proving the
     mask was suppressing cached terrain that was resident and drawable. Committed ownership
     is now re-confirmed wholesale every second, which bounds staleness by construction; the
-    three cursor sweeps that preceded it could not. Needs re-testing.
+    three cursor sweeps that preceded it could not. A hole still persisted after that, which
+    pointed at a different cause: an empty vanilla chunk reports as drawn, so cached terrain
+    standing taller than the real world sits in cells the engine has "drawn" as air. Empty
+    chunks now own nothing (G40). Needs re-testing. If holes survive this too, read
+    `stale committed found` and `count repairs` from the periodic log: both should be zero,
+    and a non-zero count repair is a bug in the ownership aggregate itself.
   - Historical, same symptom: flying backwards produced a clear band of missing terrain
     where vanilla had unloaded and cached coverage had not returned. This is the serious one - a hole outranks an
     overlap - and the loss-detection shell now sweeps completely whenever the camera

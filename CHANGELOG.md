@@ -8,7 +8,7 @@ first.
 
 ## [Unreleased]
 
-## [0.3.2]
+## [0.3.3]
 
 In development. Test builds now carry an incrementing patch number so a reported symptom can
 be tied to the exact build that produced it, which the `-dev` suffix could not do. The work below is established and playable behind its own switch, but

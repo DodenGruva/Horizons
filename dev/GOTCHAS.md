@@ -527,6 +527,26 @@ Keep the cursors for discovery, where being late costs coverage rather than corr
 
 **Found:** chunk ownership mask, Session 27.
 
+### G40 — "The engine drew this chunk" does not mean the engine drew anything
+
+**Trigger:** using `IsChunkRendered`, or any counter the tessellator advances, to decide
+that vanilla terrain now covers an area.
+
+**Trap:** `ChunkTesselatorManager.TesselateChunk` increments `quantityDrawn` for an empty
+chunk and returns before producing any geometry, so a chunk full of air reports exactly
+like a chunk full of mountain. Cached terrain is an approximation, so wherever it stands
+taller than the real world its geometry sits in cells the engine has "drawn" as air.
+Suppressing cached terrain there leaves nothing at all - a hole that is stable, survives
+standing still, and cannot be corrected by re-probing, because both sides are reporting
+their state correctly.
+
+**Do:** treat an empty chunk as owning nothing. `IBlockAccessor.GetChunk(cx, cy, cz)`
+returns the chunk and `IWorldChunk.Empty` distinguishes drew-terrain from drew-nothing.
+Keep the two questions separate: whether the engine holds the chunk, and whether there is
+anything in it.
+
+**Found:** chunk ownership mask, Session 27, from play reporting holes that would not close.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

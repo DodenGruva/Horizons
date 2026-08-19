@@ -9,6 +9,7 @@ public static class VanillaReadinessChecks
         CandidateWindowAndRing(c);
         MovingWindowQueuesFrontier(c);
         CommittedOwnershipIsRevalidatedWholesale(c);
+        SectionCountsSurviveEveryWindowOperation(c);
         StabilizationAndPublication(c);
         DeferredObservationQueue(c);
         AggregateClassification(c);
@@ -148,6 +149,65 @@ public static class VanillaReadinessChecks
         DrainQueue(model);
         c.Eq(owned.Length - 1, model.QueueAllReadyCells(frame + 1),
             "a cell that lost ownership is no longer re-confirmed");
+    }
+
+    /// <summary>
+    /// The per-section ready counts are what the whole-mesh skip trusts, and nothing
+    /// re-derives them: a count that drifts high hides its section permanently, which is
+    /// what a hole that survives standing still looks like. Cell states are re-probed every
+    /// second and repair themselves; these counts cannot. So every operation that can touch
+    /// them is run here and the counts are audited against the cell states afterwards.
+    /// </summary>
+    static void SectionCountsSurviveEveryWindowOperation(Check c)
+    {
+        var model = new VanillaRenderReadiness(8, 2);
+        model.SetWindow(0, 0, 8, 8);
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "an empty model has consistent section counts");
+
+        int frame = 1;
+        foreach (var cell in new[]
+        {
+            new VanillaChunkCell(0, 0, 0), new VanillaChunkCell(1, 1, 1),
+            new VanillaChunkCell(6, 0, 6), new VanillaChunkCell(7, 1, 7),
+        })
+        {
+            CommitReady(model, cell, frame);
+            frame += 2;
+        }
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "committing ownership keeps the counts consistent");
+
+        var lost = new VanillaChunkCell(1, 1, 1);
+        model.EnqueueCandidate(lost, frame);
+        model.TryDequeueCandidate(out _);
+        model.Observe(lost, rendered: false, frame, out VanillaReadinessPublication drop);
+        model.ResolvePublication(drop, accepted: true);
+        c.Eq(0, model.AuditReadyCounts(), "losing ownership keeps the counts consistent");
+
+        // Sliding the window drops columns; the counts must lose exactly their cells.
+        model.SetWindow(2, 0, 8, 8);
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "sliding the window keeps the counts consistent");
+
+        // Far enough that ring slots alias to different world coordinates, which is where a
+        // stale count would hide.
+        model.SetWindow(64, 64, 8, 8);
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "ring aliasing keeps the counts consistent");
+
+        CommitReady(model, new VanillaChunkCell(64, 0, 64), frame + 40);
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "committing in an aliased slot keeps the counts consistent");
+
+        model.SetWindow(0, 0, 8, 8);
+        DrainQueue(model);
+        c.Eq(0, model.AuditReadyCounts(), "returning to the original window keeps the counts consistent");
+        c.Eq(VanillaSectionOwnership.CacheOnly, model.Classify(LodWorld.SectionKey(0, 32, 32)),
+            "ownership committed in a window that has been left behind does not survive");
+
+        model.Clear();
+        c.Eq(0, model.AuditReadyCounts(), "clearing keeps the counts consistent");
     }
 
     static void WindowCalculation(Check c)

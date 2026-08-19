@@ -155,6 +155,12 @@ public static class StaticAssetChecks
             "renderer teardown unsubscribes the readiness event");
         c.True(renderer.Contains("capi.IsChunkRendered(readinessProbePos)", StringComparison.Ordinal),
             "readiness probes use the supported public engine query");
+        // The rendered query cannot tell "drew terrain" from "drew nothing": the tessellator
+        // advances the same counter for an empty chunk. An empty chunk that owns ground
+        // suppresses cached terrain where nothing replaces it, permanently.
+        c.True(renderer.Contains("IsVanillaChunkEmpty(cell)", StringComparison.Ordinal)
+            && renderer.Contains("rendered = false;", StringComparison.Ordinal),
+            "a chunk the engine holds with no blocks in it cannot own ground");
         c.True(renderer.Contains("ReadinessProbeMaxItemsPerFrame", StringComparison.Ordinal)
             && renderer.Contains("ReadinessProbeMaxMillisecondsPerFrame", StringComparison.Ordinal),
             "readiness probing has both item and elapsed-time ceilings");

@@ -453,6 +453,58 @@ internal sealed class VanillaRenderReadiness
             : 0;
     }
 
+    /// <summary>
+    /// Checks the per-section ready counts against the cell states they summarise, repairs
+    /// any disagreement, and returns how many section keys were wrong.
+    ///
+    /// These counts are what the whole-mesh skip trusts. Cell states are re-probed every
+    /// second, so a stale cell corrects itself, but nothing re-derives the counts: if one
+    /// drifts high, its section reports fully owned forever, its draw is skipped forever,
+    /// and no amount of re-probing fixes it. That is the shape of a hole that survives
+    /// standing still, which is what play reported, so the counts are audited rather than
+    /// trusted.
+    /// </summary>
+    public int AuditReadyCounts()
+    {
+        var recomputed = new Dictionary<long, int>[LodWorld.MaxLevel + 1];
+        for (int level = 0; level < recomputed.Length; level++)
+            recomputed[level] = new Dictionary<long, int>();
+
+        for (int slot = 0; slot < columnTags.Length; slot++)
+        {
+            long tag = columnTags[slot];
+            if (tag == -1L) continue;
+            UnpackColumn(tag, out int chunkX, out int chunkZ);
+            int baseIndex = slot * verticalChunks;
+            for (int y = 0; y < verticalChunks; y++)
+            {
+                if ((VanillaReadinessState)states[baseIndex + y] != VanillaReadinessState.VanillaReady)
+                    continue;
+                for (int level = 0; level <= LodWorld.MaxLevel; level++)
+                {
+                    int edgeCells = 2 << level;
+                    long key = LodWorld.SectionKey(level, chunkX / edgeCells, chunkZ / edgeCells);
+                    recomputed[level][key] = recomputed[level].GetValueOrDefault(key) + 1;
+                }
+            }
+        }
+
+        int repaired = 0;
+        for (int level = 0; level <= LodWorld.MaxLevel; level++)
+        {
+            foreach (KeyValuePair<long, int> held in readyCounts[level])
+            {
+                if (recomputed[level].GetValueOrDefault(held.Key) != held.Value) repaired++;
+            }
+            foreach (KeyValuePair<long, int> truth in recomputed[level])
+            {
+                if (!readyCounts[level].ContainsKey(truth.Key)) repaired++;
+            }
+            readyCounts[level] = recomputed[level];
+        }
+        return repaired;
+    }
+
     public VanillaSectionOwnership Classify(long sectionKey)
     {
         int level = LodWorld.KeyLevel(sectionKey);

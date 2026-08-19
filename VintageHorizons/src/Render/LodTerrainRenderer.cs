@@ -140,6 +140,8 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessWindowChanges { get; private set; }
     public long ReadinessResizes { get; private set; }
     public long ReadinessFullRevalidations { get; private set; }
+    public long ReadinessAggregateRepairs { get; private set; }
+    public long ReadinessStaleCommittedFound { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
     public long CoarseWaitingLoad { get; private set; }
     public long CoarseWaitingMesh { get; private set; }
@@ -173,6 +175,8 @@ public class LodTerrainRenderer : IRenderer
         ReadinessWindowChanges = 0;
         ReadinessResizes = 0;
         ReadinessFullRevalidations = 0;
+        ReadinessAggregateRepairs = 0;
+        ReadinessStaleCommittedFound = 0;
         VanillaOwnedDrawsSkipped = 0;
         CoarseWaitingLoad = 0;
         CoarseWaitingMesh = 0;
@@ -228,6 +232,7 @@ public class LodTerrainRenderer : IRenderer
     bool readinessHandoffStale = true;
     bool readinessSweepShellNow;
     long readinessLastFullRevalidateMs;
+    bool readinessAggregateReported;
 
     /// <summary>Meshes unselected for this many frames (~1 min) get evicted; the quadtree re-requests on demand.</summary>
     const int EvictAfterFrames = 3600;
@@ -952,6 +957,24 @@ public class LodTerrainRenderer : IRenderer
                 readinessLastFullRevalidateMs = now;
                 ReadinessFullRevalidations++;
                 readiness.QueueAllReadyCells(frameCounter);
+
+                // The counts the whole-mesh skip trusts are derived state that nothing else
+                // re-derives. A single drift high hides a section permanently, so they are
+                // checked against the cell states each pass and any repair is reported: a
+                // non-zero number here is a bug in this class, not a tuning problem.
+                int repaired = readiness.AuditReadyCounts();
+                if (repaired > 0)
+                {
+                    ReadinessAggregateRepairs += repaired;
+                    if (!readinessAggregateReported)
+                    {
+                        readinessAggregateReported = true;
+                        capi.Logger.Warning(
+                            "[VintageHorizons] ownership audit repaired {0} section counts; a section "
+                            + "was reporting itself fully covered by vanilla terrain when it was not. "
+                            + "Please report this with the surrounding log.", repaired);
+                    }
+                }
             }
             readiness.PromoteObserved(frameCounter, ReadinessProbeCatchUpItemsPerFrame);
 
@@ -981,6 +1004,16 @@ public class LodTerrainRenderer : IRenderer
                         (cell.Y + 0.5) * 32.0,
                         (cell.Z + 0.5) * 32.0);
                     rendered = capi.IsChunkRendered(readinessProbePos);
+
+                    // A chunk with no blocks draws nothing, yet the engine counts it as
+                    // drawn: the tessellator advances the same counter before returning
+                    // early on an empty chunk. Letting it own ground is how a permanent
+                    // hole appears. Cached terrain is an approximation, so wherever it
+                    // stands taller than the real world its geometry lives in cells the
+                    // engine has "drawn" as air - suppress those and nothing is left,
+                    // stably and forever, which is what play reported. An empty chunk
+                    // therefore owns nothing and cached terrain keeps covering it.
+                    if (rendered && IsVanillaChunkEmpty(cell)) rendered = false;
                 }
                 catch
                 {
@@ -993,6 +1026,9 @@ public class LodTerrainRenderer : IRenderer
                 ReadinessProbes++;
                 if (rendered) ReadinessTrueResults++;
                 else ReadinessFalseResults++;
+
+                if (!rendered && readiness.State(cell) == VanillaReadinessState.VanillaReady)
+                    ReadinessStaleCommittedFound++;
 
                 if (!readiness.Observe(cell, rendered, frameCounter,
                     out VanillaReadinessPublication publication)) continue;
@@ -1295,6 +1331,18 @@ public class LodTerrainRenderer : IRenderer
         readinessMaskActive = false;
     }
 
+    /// <summary>
+    /// Whether the engine holds this chunk with no blocks in it. Separate from the rendered
+    /// query on purpose: that one cannot distinguish "drew terrain" from "drew nothing".
+    /// A chunk the engine does not hold at all is not empty, it is absent, and the rendered
+    /// query has already answered for that case.
+    /// </summary>
+    bool IsVanillaChunkEmpty(VanillaChunkCell cell)
+    {
+        IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
+        return chunk != null && chunk.Empty;
+    }
+
     public string DescribeReadiness()
     {
         if (readinessDisabled) return "shadow disabled (radial fallback active)";
@@ -1344,6 +1392,7 @@ public class LodTerrainRenderer : IRenderer
             + $"{ReadinessReadyTransitions} ready/{ReadinessLostTransitions} lost transitions, "
             + $"{ReadinessProbeErrors} errors, {ReadinessWindowChanges} window changes/{ReadinessResizes} resizes, "
             + $"{ReadinessFullRevalidations} full revalidations, "
+            + $"{ReadinessStaleCommittedFound} stale committed found/{ReadinessAggregateRepairs} count repairs, "
             + $"events {readiness.CandidateEventsAccepted} accepted/{readiness.CandidateEventsCoalesced} coalesced/"
             + $"{readiness.CandidateEventsDropped} dropped, "
             + $"sweeps {readiness.ScheduledCandidatesAccepted} accepted/"
