@@ -158,6 +158,11 @@ public static class StaticAssetChecks
         c.True(renderer.Contains("ReadinessProbeMaxItemsPerFrame", StringComparison.Ordinal)
             && renderer.Contains("ReadinessProbeMaxMillisecondsPerFrame", StringComparison.Ordinal),
             "readiness probing has both item and elapsed-time ceilings");
+        c.True(renderer.Contains("ReadinessProbeCatchUpItemsPerFrame", StringComparison.Ordinal)
+            && renderer.Contains("ReadinessProbeCatchUpMillisecondsPerFrame", StringComparison.Ordinal),
+            "a deep queue raises both ceilings rather than only the item count");
+        c.True(renderer.Contains("readiness.PendingCandidates >= ReadinessProbeCatchUpQueueDepth", StringComparison.Ordinal),
+            "the raised budget is entered only on measured backlog");
         c.True(model.Contains("PromoteObserved", StringComparison.Ordinal),
             "first true observations wait in a deferred render-frame queue");
         // Classification now reaches the draw path, but only to skip a section the mask

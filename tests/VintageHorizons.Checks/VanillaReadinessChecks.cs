@@ -7,6 +7,7 @@ public static class VanillaReadinessChecks
         CoordinateMapping(c);
         WindowCalculation(c);
         CandidateWindowAndRing(c);
+        MovingWindowQueuesFrontier(c);
         StabilizationAndPublication(c);
         DeferredObservationQueue(c);
         AggregateClassification(c);
@@ -39,6 +40,7 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 2);
         model.SetWindow(8, 12, 4, 4);
+        DrainQueue(model);
         var first = new VanillaChunkCell(8, 0, 12);
         c.True(model.EnqueueCandidate(first), "an active cell enters the bounded candidate queue");
         c.Eq(VanillaReadinessState.Pending, model.State(first), "an event-fed candidate remains cache-owned while pending");
@@ -55,11 +57,52 @@ public static class VanillaReadinessChecks
         c.Eq(3, model.PendingCandidates, "budgeted discovery leaves exactly its admitted work queued");
 
         model.SetWindow(12, 12, 4, 4); // Same physical X slots, different world tags.
-        c.False(model.TryDequeueCandidate(out _), "ring-alias candidates from the old window are rejected as stale");
+
+        // The move queues the columns it gained. What must never come back out is a cell
+        // from the window that was left behind: those slots are now aliased to different
+        // world coordinates, and publishing one would attribute ownership to the wrong place.
+        int drained = 0;
+        while (model.TryDequeueCandidate(out VanillaChunkCell swept))
+        {
+            drained++;
+            c.True(swept.X >= 12 && swept.X < 16 && swept.Z >= 12 && swept.Z < 16,
+                "ring-alias candidates from the old window are rejected as stale");
+        }
+        c.True(drained > 0, "the columns the window gained are queued for probing");
+
         var aliased = new VanillaChunkCell(12, 0, 12);
         c.True(model.EnqueueCandidate(aliased), "the aliased slot accepts its new world coordinate");
         c.True(model.TryDequeueCandidate(out dequeued), "the new ring generation drains normally");
         c.Eq(aliased, dequeued, "ring wrapping cannot publish the old coordinate as the new cell");
+    }
+
+    /// <summary>
+    /// While the camera moves, the columns the window just gained are the ground the player
+    /// is heading into, and they are the ones showing cached terrain over real terrain
+    /// until they are probed. They must be queued when the window moves. A discovery cursor
+    /// alone cannot do this: at flight speed the window moves again long before a sweep
+    /// reaches the far edge, so the frontier would be the last thing ever probed.
+    /// </summary>
+    static void MovingWindowQueuesFrontier(Check c)
+    {
+        var model = new VanillaRenderReadiness(8, 2);
+        model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
+
+        // One step east: the window gains exactly the column strip at x = 4.
+        model.SetWindow(1, 0, 4, 4);
+        var gained = new List<VanillaChunkCell>();
+        while (model.TryDequeueCandidate(out VanillaChunkCell cell)) gained.Add(cell);
+
+        c.Eq(4 * 2, gained.Count, "every cell of the gained column strip is queued");
+        c.True(gained.TrueForAll(cell => cell.X == 4),
+            "only the newly covered column is queued, not the whole window again");
+        c.True(gained.Exists(cell => cell.Y == 0) && gained.Exists(cell => cell.Y == 1),
+            "the strip is queued through the full world height, not one surface layer");
+
+        // Standing still queues nothing: an unchanged window is not new ground.
+        c.False(model.SetWindow(1, 0, 4, 4), "an unchanged window reports no movement");
+        c.Eq(0, model.PendingCandidates, "a stationary window queues no repeat work");
     }
 
     static void WindowCalculation(Check c)
@@ -83,6 +126,8 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 2);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
+        DrainQueue(model);
         var cell = new VanillaChunkCell(0, 0, 0);
         model.EnqueueCandidate(cell);
         model.TryDequeueCandidate(out _);
@@ -118,6 +163,8 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 2);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
+        DrainQueue(model);
         long l0 = LodWorld.SectionKey(0, 0, 0);
         long l1 = LodWorld.SectionKey(1, 0, 0);
         c.Eq(VanillaSectionOwnership.CacheOnly, model.Classify(l0), "a zero-count section keeps the unmasked cache path");
@@ -159,22 +206,25 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 3);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
         int[] readyByY = new int[3];
 
+        // Entering the window queues every column, so all of them are tracked and pending
+        // before anything is probed. Ownership, not tracking, is what the counts are for.
         model.GetColumnReadiness(readyByY, out int tracked, out int full, out int partial, out int deepest);
-        c.Eq(0, tracked, "an unprobed window reports no tracked columns");
+        c.Eq(16, tracked, "the columns the window covers are tracked once it is set");
         c.Eq(0, full, "an unprobed window reports no complete columns");
+        c.Eq(0, partial, "an unprobed window reports no partially ready columns");
         c.Eq(0, deepest, "an unprobed window has no ready cell in any column");
 
-        model.EnqueueCandidate(new VanillaChunkCell(2, 0, 2));
-        model.GetColumnReadiness(readyByY, out tracked, out full, out partial, out deepest);
-        c.Eq(1, tracked, "a pending cell makes its column tracked");
-        c.Eq(0, partial, "a pending column is not partially ready");
+        var fresh = new VanillaRenderReadiness(4, 3);
+        fresh.GetColumnReadiness(new int[3], out int freshTracked, out _, out _, out _);
+        c.Eq(0, freshTracked, "a model with no window tracks nothing at all");
 
         CommitReady(model, new VanillaChunkCell(1, 0, 1), 1);
         CommitReady(model, new VanillaChunkCell(1, 1, 1), 3);
         model.GetColumnReadiness(readyByY, out tracked, out full, out partial, out deepest);
-        c.Eq(2, tracked, "each probed column is counted once regardless of its cell count");
+        c.Eq(16, tracked, "each column is counted once regardless of its cell count");
         c.Eq(1, partial, "a column missing one vertical chunk counts as partial, not complete");
         c.Eq(0, full, "a column missing its top chunk cannot report complete ownership");
         c.Eq(2, deepest, "the deepest column reports how many vertical chunks reached ready");
@@ -202,6 +252,7 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(8, 2);
         model.SetWindow(0, 0, 8, 8);
+        DrainQueue(model);
         double centreX = 4 * 32 + 16;
         double centreZ = 4 * 32 + 16;
 
@@ -291,6 +342,8 @@ public static class VanillaReadinessChecks
         // carrying another place's ownership into the texture.
         var model = new VanillaRenderReadiness(4, 2);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
+        DrainQueue(model);
         var owned = new VanillaChunkCell(1, 0, 1);
         CommitReady(model, owned, 1);
         var rebuilt = new VanillaReadinessMask(4, 2);
@@ -369,6 +422,7 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 1);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
         var cell = new VanillaChunkCell(1, 0, 1);
         model.EnqueueCandidate(cell, renderFrame: 19);
         c.Eq(19L, model.OldestCandidateFrame(), "candidate age telemetry retains the oldest queued frame");
@@ -392,6 +446,7 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(16, 1);
         model.SetWindow(0, 0, 9, 9);
+        DrainQueue(model);
         var interior = new VanillaChunkCell(4, 0, 4);
         var boundary = new VanillaChunkCell(6, 0, 4);
         CommitReady(model, interior, 1);
@@ -443,6 +498,7 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 1);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
         var cell = new VanillaChunkCell(0, 0, 0);
         CommitReady(model, cell, 1);
         long section = LodWorld.SectionKey(0, 0, 0);
@@ -481,6 +537,8 @@ public static class VanillaReadinessChecks
     {
         var model = new VanillaRenderReadiness(4, 2);
         model.SetWindow(0, 0, 4, 4);
+        DrainQueue(model);
+        DrainQueue(model);
         var cell = new VanillaChunkCell(0, 0, 0);
         CommitReady(model, cell, 1);
         long section = LodWorld.SectionKey(0, 0, 0);
@@ -508,6 +566,16 @@ public static class VanillaReadinessChecks
         long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         c.Eq(0L, allocated,
             "converged lookup, revalidation scheduling, probing, and classification allocate nothing");
+    }
+
+    /// <summary>
+    /// Empties the candidate queue. Moving the window queues the columns it gained, so a
+    /// test that only wants the window as setup drains that work before measuring its own.
+    /// </summary>
+    static void DrainQueue(VanillaRenderReadiness model)
+    {
+        while (model.TryDequeueCandidate(out _)) { }
+        model.ResetTelemetry();
     }
 
     static void CommitReady(VanillaRenderReadiness model, VanillaChunkCell cell, int frame)

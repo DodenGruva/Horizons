@@ -93,7 +93,8 @@ internal sealed class VanillaRenderReadiness
     /// invalidated so CPU whole-section counts cannot retain stale vanilla ownership.
     /// Cells entering it remain Unknown until events or incremental seeding enqueue them.
     /// </summary>
-    public bool SetWindow(int newMinChunkX, int newMinChunkZ, int newWidth, int newDepth)
+    public bool SetWindow(int newMinChunkX, int newMinChunkZ, int newWidth, int newDepth,
+        long renderFrame = 0)
     {
         if (newMinChunkX < 0 || newMinChunkZ < 0)
             throw new ArgumentOutOfRangeException(nameof(newMinChunkX));
@@ -118,10 +119,33 @@ internal sealed class VanillaRenderReadiness
             }
         }
 
+        int oldMinX = minChunkX;
+        int oldMinZ = minChunkZ;
+        int oldWidth = width;
+        int oldDepth = depth;
+
         minChunkX = newMinChunkX;
         minChunkZ = newMinChunkZ;
         width = newWidth;
         depth = newDepth;
+
+        // Columns the window just gained are the streaming frontier, and while moving they
+        // are exactly the ground the player is heading into. Queue them here rather than
+        // waiting for a discovery cursor to sweep the whole window and reach them: at
+        // flight speed the window moves again long before a sweep gets that far, so the
+        // ground ahead would be the last thing ever probed.
+        for (int z = newMinChunkZ; z < newMinChunkZ + newDepth; z++)
+        {
+            for (int x = newMinChunkX; x < newMinChunkX + newWidth; x++)
+            {
+                bool wasInside = x >= oldMinX && x < oldMinX + oldWidth
+                    && z >= oldMinZ && z < oldMinZ + oldDepth;
+                if (wasInside) continue;
+                for (int y = 0; y < verticalChunks; y++)
+                    EnqueueCandidate(new VanillaChunkCell(x, y, z), renderFrame);
+            }
+        }
+
         return true;
     }
 

@@ -34,6 +34,18 @@ public class LodTerrainRenderer : IRenderer
     internal const double MeshUploadMaxMillisecondsPerFrame = 2.0;
     internal const int ReadinessProbeMaxItemsPerFrame = 256;
     internal const double ReadinessProbeMaxMillisecondsPerFrame = 0.25;
+
+    /// <summary>
+    /// Backlog ceilings. A settled view empties its queue every frame and never reaches
+    /// the ordinary limits, so those limits only ever bind while the window is moving -
+    /// which is precisely when unowned ground shows cached terrain over real terrain. A
+    /// probe costs well under a microsecond, so the item cap, not the clock, was ending
+    /// ordinary frames early. When the queue is genuinely deep the budget opens up and the
+    /// elapsed-time ceiling becomes the real guard.
+    /// </summary>
+    internal const int ReadinessProbeCatchUpItemsPerFrame = 1024;
+    internal const double ReadinessProbeCatchUpMillisecondsPerFrame = 1.0;
+    internal const int ReadinessProbeCatchUpQueueDepth = 512;
     internal const int ReadinessSeedCellsPerFrame = 256;
     internal const int ReadinessBoundaryCellsPerFrame = 128;
     internal const int ReadinessInteriorCellsPerFrame = 32;
@@ -843,9 +855,15 @@ public class LodTerrainRenderer : IRenderer
                 readiness.WriteMask(readinessMask);
             }
 
-            if (readiness.SetWindow(window.MinX, window.MinZ, window.Width, window.Depth))
+            if (readiness.SetWindow(window.MinX, window.MinZ, window.Width, window.Depth,
+                frameCounter))
             {
-                readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+                // Deliberately not resetting the discovery cursor. Restarting it on every
+                // chunk crossing meant that during flight it swept the same near cells over
+                // and over and never reached the frontier, which SetWindow now queues
+                // directly. The boundary and interior cursors are cheap ring scans and
+                // may restart.
+                readinessBoundaryCursor = readinessInteriorCursor = 0;
                 readinessHandoffStale = true;
                 ReadinessWindowChanges++;
                 // Departing columns were cleared inside the tracker; rebuilding is what
@@ -860,13 +878,21 @@ public class LodTerrainRenderer : IRenderer
                 ref readinessBoundaryCursor, ReadinessBoundaryCellsPerFrame, frameCounter);
             readiness.QueueMaintenanceCells(
                 ref readinessInteriorCursor, ReadinessInteriorCellsPerFrame, frameCounter);
-            readiness.PromoteObserved(frameCounter, ReadinessProbeMaxItemsPerFrame);
+            readiness.PromoteObserved(frameCounter, ReadinessProbeCatchUpItemsPerFrame);
+
+            bool catchingUp = readiness.PendingCandidates >= ReadinessProbeCatchUpQueueDepth;
+            int maxProbes = catchingUp
+                ? ReadinessProbeCatchUpItemsPerFrame
+                : ReadinessProbeMaxItemsPerFrame;
+            double maxMilliseconds = catchingUp
+                ? ReadinessProbeCatchUpMillisecondsPerFrame
+                : ReadinessProbeMaxMillisecondsPerFrame;
 
             long started = Stopwatch.GetTimestamp();
             long maxTicks = Math.Max(1,
-                (long)Math.Ceiling(ReadinessProbeMaxMillisecondsPerFrame * Stopwatch.Frequency / 1000.0));
+                (long)Math.Ceiling(maxMilliseconds * Stopwatch.Frequency / 1000.0));
             int probed = 0;
-            while (probed < ReadinessProbeMaxItemsPerFrame)
+            while (probed < maxProbes)
             {
                 if (probed > 0 && Stopwatch.GetTimestamp() - started >= maxTicks) break;
                 if (!readiness.TryDequeueCandidate(out VanillaChunkCell cell)) break;
