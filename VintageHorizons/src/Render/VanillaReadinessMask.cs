@@ -20,6 +20,9 @@ internal sealed class VanillaReadinessMask
     /// <summary>Zero: cache owns this cell. Every failure path leaves texels at this value.</summary>
     public const int CacheTexel = 0;
 
+    /// <summary>Blocks per ownership cell on every axis.</summary>
+    public const int ChunkBlocks = 32;
+
     readonly int capacity;
     readonly int capacityMask;
     readonly int verticalChunks;

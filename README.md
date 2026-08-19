@@ -192,6 +192,7 @@ these scripts:
 scripts/test-server.sh                              # vanilla dedicated server, port 42425
 scripts/test-client.sh -c localhost:42425           # sandboxed client
 scripts/test-stop.sh [client|server|all]            # stop via pidfiles
+pwsh -File scripts/test-stop.ps1 all                 # the same, on Windows
 ```
 
 CAUTION: Start and stop test instances only with these scripts. The VS client allows one

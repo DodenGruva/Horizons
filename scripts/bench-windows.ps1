@@ -1042,7 +1042,7 @@ try {
                 throw "The chunk ownership mask was requested but never became active (ended '$($readinessRecord.maskState)'). See $scenario"
             }
         }
-        elseif ($readinessRecord.handoffSource -ne 'readiness') {
+        elseif ($readinessRecord.handoffSource -notin @('readiness', 'mask')) {
             throw "The near handoff ended the run on the radial fallback rather than measured readiness. See $scenario"
         }
         if (-not $ChunkMask -and $readinessRecord.handoffBlocks -gt $readinessRecord.nearestIncompleteBlocks) {

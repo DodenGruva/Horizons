@@ -632,13 +632,20 @@ pair and no human visual check exist yet.
 
 **As implemented.** One BGRA texel per 32x32x32 cell in a 2D atlas of Y slices stacked
 down the texture, 32 KiB for a 256-block window, addressed by the same wrapped ring the
-tracker uses. The decompiled client update path creates on a size mismatch and otherwise
+tracker uses. Section 5.1's warning about `floor()` at large world coordinates is not
+optional and was proven by a numeric check: the first implementation derived the cell from
+the summed world position, and at a 512,000-block coordinate a float32 rounds a fragment
+0.03 blocks below a chunk edge onto the next chunk, which then owns it. The shader now
+receives the section origin as an integer in chunks and adds the floor of the exact local
+offset. The decompiled client update path creates on a size mismatch and otherwise
 issues `TexSubImage2D` for the whole extent; mipmaps are built only on creation and
 `texelFetch` ignores filtering, so steady-state upload is one sub-image call. There is no
 public subregion update, which is why changes are coalesced to at most one upload per
 frame. Window movement rebuilds the mask from committed state rather than patching it,
 because a reused ring slot would otherwise carry another place's ownership. Any upload
-failure disables the mask and restores the measured radius. When the mask is healthy the
+failure disables the mask and restores the measured radius, and leaving the default
+dimension clears the texels and drops the active flag together, so ownership measured in
+one world can never suppress terrain in another. When the mask is healthy the
 radial handoff is driven to zero so it cannot also suppress cells the mask assigns to the
 cache. The fragment shader decides ownership before normals, tint, lighting, fog, sky and
 water work; an address outside the window, above or below the world, or reading a

@@ -442,6 +442,41 @@ violated rather than only fixing the code.
 
 **Found:** readiness convergence gate, Session 26.
 
+### G35 — A summed world coordinate is not exact enough to own a chunk
+
+**Trigger:** deciding which cell, chunk or region a fragment belongs to inside a shader,
+from a world position built by adding a section origin to a local offset.
+
+**Trap:** the sum is a float32. At a 512,000-block world coordinate its ulp is 0.0625, so a
+fragment 0.03 blocks below a chunk boundary rounds up onto the next chunk and reads that
+chunk's ownership. Nothing crashes and nothing looks obviously wrong; a sliver of ground at
+chunk edges simply obeys the wrong owner, and the error grows with world size. A substring
+check comparing the shader and the C# addressing passes happily, because both expressions
+are written the same way - only their arithmetic differs.
+
+**Do:** pass the section origin as an integer in cell units and add the floor of the small
+local offset, which is exact. Evaluate the shader's arithmetic in the check tier against
+the real addressing over a grid that includes large origins and boundary-adjacent offsets,
+rather than comparing the two expressions as text.
+
+**Found:** chunk ownership mask, Session 27.
+
+### G36 — Renderer state measured in one world must not survive into another
+
+**Trigger:** caching per-world render state - readiness, ownership, visibility - beside a
+resource the shader samples every frame.
+
+**Trap:** clearing the model on a world or dimension change is not enough if the GPU
+resource and its "active" flag are left alone. The shader keeps sampling the old world's
+data, so terrain stays suppressed using ownership measured somewhere else entirely. The
+model looks correct in every log line while the pixels are wrong.
+
+**Do:** treat the model, the GPU resource, and the flag that says the resource is
+authoritative as one unit. Clear all three on the same path, and default the cleared state
+to the safe direction - here, every cell returning to the cache.
+
+**Found:** chunk ownership mask, Session 27.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

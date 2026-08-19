@@ -208,6 +208,17 @@ public static class StaticAssetChecks
         c.True(fragment.Contains("int wrap = maskCapacity - 1;", StringComparison.Ordinal),
             "the shader wraps with the same power-of-two mask the ring uses");
 
+        // Ownership must come from an integer section origin plus a small local offset. A
+        // summed world coordinate is not exact in float32: at 512k blocks a fragment 0.03
+        // blocks below a chunk edge rounds onto the next chunk and takes its ownership.
+        c.True(fragment.Contains("maskSectionOrigin.x + int(floor(sectionLocal.x", StringComparison.Ordinal)
+            && fragment.Contains("maskSectionOrigin.y + int(floor(sectionLocal.z", StringComparison.Ordinal),
+            "ownership addressing uses an integer section origin plus the section-local offset");
+        c.False(fragment.Contains("floor(terrainPos.x / 32.0)", StringComparison.Ordinal),
+            "ownership is never derived from a summed world coordinate");
+        c.True(renderer.Contains("prog.Uniform(\"maskSectionOrigin\"", StringComparison.Ordinal),
+            "the renderer supplies that integer origin per draw");
+
         int maskCheck = fragment.IndexOf("maskEnabled == 1", StringComparison.Ordinal);
         int shading = fragment.IndexOf("normalize(cross(", StringComparison.Ordinal);
         c.True(maskCheck > 0 && shading > 0 && maskCheck < shading,

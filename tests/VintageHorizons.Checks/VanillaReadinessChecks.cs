@@ -13,6 +13,7 @@ public static class VanillaReadinessChecks
         VerticalColumnReadiness(c);
         NearestIncompleteColumn(c);
         OwnershipMask(c);
+        ShaderAddressAgreement(c);
         BoundaryRevalidation(c);
         WindowInvalidationAndTeardown(c);
         SteadyStateAllocation(c);
@@ -301,6 +302,67 @@ public static class VanillaReadinessChecks
         model.WriteMask(rebuilt);
         c.Eq(0L, rebuilt.ReadyTexels,
             "moving the window past the owned column leaves no ownership behind in the ring");
+    }
+
+    /// <summary>
+    /// The fragment shader recomputes the atlas address from world coordinates in GLSL. A
+    /// substring check proves the two expressions look alike; this evaluates the shader's
+    /// arithmetic against the real one over a grid that crosses chunk boundaries, ring
+    /// wraps and world extremes. A divergence here would not crash - it would silently
+    /// read another chunk's ownership and hide ground that vanilla is not drawing.
+    /// </summary>
+    static void ShaderAddressAgreement(Check c)
+    {
+        const int capacity = 32;
+        const int verticalChunks = 8;
+        int mismatches = 0;
+        int compared = 0;
+
+        // Exactly what lodterrain.fsh does: an integer section origin in chunks plus the
+        // floor of the section-local offset. The local offset is small and therefore exact
+        // in float32, which is the whole point - a summed world coordinate is not. Passing
+        // 512031.99 as one float rounds to 512032.0 and takes the next chunk's ownership.
+        static int ShaderIndex(int originChunkX, int originChunkZ, float localX, float localY, float localZ)
+        {
+            int cellX = originChunkX + (int)MathF.Floor(localX / 32.0f);
+            int cellY = (int)MathF.Floor(localY / 32.0f);
+            int cellZ = originChunkZ + (int)MathF.Floor(localZ / 32.0f);
+            int wrap = capacity - 1;
+            return ((cellZ & wrap) + cellY * capacity) * capacity + (cellX & wrap);
+        }
+
+        // Section origins are multiples of the section footprint, which is itself a
+        // multiple of the chunk size, so the origin in chunks is always exact.
+        foreach (double originX in new[] { 0d, 1024d, 512_000d, 1_024_000d })
+        foreach (double originZ in new[] { 0d, 64d, 512_064d })
+        foreach (float localX in new[] { 0f, 31.999f, 32f, 63.999f })
+        foreach (int y in new[] { 0, 1, 7 })
+        {
+            float localY = y * 32f + 1f;
+            const float localZ = 1f;
+            int originChunkX = (int)(originX / VanillaReadinessMask.ChunkBlocks);
+            int originChunkZ = (int)(originZ / VanillaReadinessMask.ChunkBlocks);
+
+            int expected = VanillaReadinessMask.TexelIndex(
+                VanillaRenderReadiness.ChunkCoordinate(originChunkX, localX),
+                y,
+                VanillaRenderReadiness.ChunkCoordinate(originChunkZ, localZ),
+                capacity, verticalChunks);
+            int actual = ShaderIndex(originChunkX, originChunkZ, localX, localY, localZ);
+            compared++;
+            if (expected != actual) mismatches++;
+        }
+
+        c.Eq(0, mismatches, $"the shader address matches the mask address at all {compared} sampled points");
+        c.True(compared >= 60, "the agreement sample crosses boundaries, wraps and large world coordinates");
+
+        // Half-open boundaries: the last block of a chunk and the first of the next must
+        // land in different cells, or a surface exactly on a boundary flips ownership.
+        const int farOrigin = 512_000 / 32;
+        c.True(ShaderIndex(farOrigin, 0, 31.999f, 1f, 1f) != ShaderIndex(farOrigin, 0, 32f, 1f, 1f),
+            "an exact 32-block boundary crosses into the next ownership cell");
+        c.Eq(ShaderIndex(farOrigin, 0, 0f, 1f, 1f), ShaderIndex(farOrigin, 0, 31.999f, 1f, 1f),
+            "a whole chunk of ground shares one ownership cell even at a large world origin");
     }
 
     static void DeferredObservationQueue(Check c)

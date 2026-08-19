@@ -15,6 +15,7 @@ in float fogAmount;
 in float edgeFade;
 in vec3 tint;
 in vec3 terrainPos;
+in vec3 sectionLocal;
 
 uniform float fogDensityIn;
 uniform float fogMinIn;
@@ -37,6 +38,10 @@ uniform int maskWidth;
 uniform int maskDepth;
 uniform int maskCapacity;
 uniform int maskVerticalChunks;
+
+// This section's origin in whole vanilla chunks. Section origins are multiples of the
+// chunk size, so this is exact, and adding a small local offset to it cannot round.
+uniform ivec2 maskSectionOrigin;
 
 // Live tint table. The alpha byte carries a tint SLOT plus a blend band:
 //   0..63    opaque,     slot = alpha
@@ -93,9 +98,9 @@ void main()
     // ground away from the cache where vanilla has proven it draws there.
     if (maskEnabled == 1)
     {
-        int cellX = int(floor(terrainPos.x / 32.0));
-        int cellY = int(floor(terrainPos.y / 32.0));
-        int cellZ = int(floor(terrainPos.z / 32.0));
+        int cellX = maskSectionOrigin.x + int(floor(sectionLocal.x / 32.0));
+        int cellY = int(floor(sectionLocal.y / 32.0));
+        int cellZ = maskSectionOrigin.y + int(floor(sectionLocal.z / 32.0));
         if (cellY >= 0 && cellY < maskVerticalChunks
             && cellX >= maskMinX && cellX < maskMinX + maskWidth
             && cellZ >= maskMinZ && cellZ < maskMinZ + maskDepth)

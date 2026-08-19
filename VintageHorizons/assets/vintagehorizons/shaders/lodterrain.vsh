@@ -50,6 +50,10 @@ out float radialDistance;
 out float fogAmount;
 out float edgeFade;
 out vec3 terrainPos;
+// Section-local block position. Ownership must not be derived from a summed world
+// coordinate: at 512k blocks a float32 rounds a fragment 0.03 blocks below a chunk edge
+// onto the next chunk and it would take that chunk's ownership.
+out vec3 sectionLocal;
 
 #include vertexflagbits.ash
 #include colorutil.ash
@@ -66,6 +70,8 @@ void main()
     int slot = clamp(slotRaw - (slotRaw / TINT_SLOTS) * TINT_SLOTS, 0, TINT_SLOTS - 1);
     float tintBlend = clamp((yLevel - tintYLow) / max(1.0, tintYHigh - tintYLow), 0.0, 1.0);
     tint = mix(tintsLow[slot].rgb, tintsHigh[slot].rgb, tintBlend);
+
+    sectionLocal = vertexPositionIn;
 
     worldPos = modelMatrix * vec4(vertexPositionIn, 1.0);
     worldPos = applyGlobalWarping(worldPos);

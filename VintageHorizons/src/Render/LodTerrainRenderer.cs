@@ -791,6 +791,11 @@ public class LodTerrainRenderer : IRenderer
             readiness?.Clear();
             readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
             readinessOwnsHandoff = false;
+            // Ownership belongs to the world it was measured in. Leaving the default
+            // dimension must return every cell to the cache rather than keep suppressing
+            // terrain with another world's readiness.
+            readinessMask?.Clear();
+            readinessMaskActive = false;
             return;
         }
 
@@ -1035,13 +1040,19 @@ public class LodTerrainRenderer : IRenderer
         // Kept out of the format literal: an interpolation hole containing a quoted string
         // is not machine-readable, and the benchmark gate parses this exact line.
         float radialHandoff = LodNearHandoff.InnerDiscardRadius(ApprovedViewDistance());
-        float appliedHandoff = readinessOwnsHandoff ? readinessHandoffDistance : radialHandoff;
-        string handoffSource = readinessOwnsHandoff ? "readiness" : "radial";
+        // Report what the shader actually receives. A live mask drives the radius to zero,
+        // and printing the radius it would otherwise have used reads as suppression that
+        // is not happening.
+        bool maskOwnsPixels = readinessMaskActive && readinessMask != null;
+        float appliedHandoff = maskOwnsPixels ? 0f
+            : readinessOwnsHandoff ? readinessHandoffDistance : radialHandoff;
+        string handoffSource = maskOwnsPixels ? "mask"
+            : readinessOwnsHandoff ? "readiness" : "radial";
         string maskState = readinessMaskFailed ? "failed"
             : readinessMask == null ? "off"
             : readinessMaskActive
                 ? $"{readinessMask.ReadyTexels} owned/{readinessMask.Bytes / 1024} KiB/"
-                  + $"{readinessMask.Uploads} uploads/{readinessMaskUploadUs}us"
+                  + $"{readinessMask.Uploads} uploads/last {readinessMaskUploadUs}us"
                 : "pending";
 
         return $"shadow {readiness.ActiveWidth}x{readiness.VerticalChunks}x{readiness.ActiveDepth}, "
@@ -1270,6 +1281,16 @@ public class LodTerrainRenderer : IRenderer
         // This uniform does not affect geometry, so float precision at extreme world
         // coordinates can only soften the cosmetic variation, never move terrain.
         prog.Uniform("noiseOrigin", (float)originX, (float)originZ, 0f, 0f);
+
+        // Ownership addressing uses this integer origin plus the section-local position,
+        // never a summed world coordinate, so a fragment at a chunk edge cannot round onto
+        // its neighbour's ownership at large world coordinates.
+        if (readinessMaskActive)
+        {
+            prog.Uniform("maskSectionOrigin", new Vec2i(
+                (int)(originX / VanillaReadinessMask.ChunkBlocks),
+                (int)(originZ / VanillaReadinessMask.ChunkBlocks)));
+        }
 
         // Sides that border on never-captured area, so the shader can dissolve them
         // into the horizon instead of leaving a cliff at the edge of what we've seen.
