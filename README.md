@@ -45,6 +45,7 @@ in advance.
 | `.vhdetail [blocks]` | Distance before detail starts to halve (default 512). A higher value gives sharper far terrain and costs more VRAM and CPU. Try 1024. Without an argument, the command reports the current value. |
 | `.vhfar <blocks>` | Cap the LOD render distance. `0` means unlimited, which is the default. |
 | `.vhmask [on\|off]` | Hand each loaded vanilla chunk its own ground instead of using one distance, and skip cached terrain that is entirely replaced. Off by default while it is being evaluated. |
+| `.vhwhy [blocks]` | Explain the ground you are looking at, some blocks ahead (32 by default): who owns it, what the game says about it, and whether cached terrain is there. For asking a hole why it exists. |
 | `.vhdefer [on\|off]` | Stay idle when another LOD mod draws (on by default). A change applies at the next start, not at once. |
 
 ### If your server runs Farseer, ChunkLOD or TopoHorizon

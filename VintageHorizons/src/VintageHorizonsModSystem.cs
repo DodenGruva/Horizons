@@ -1231,6 +1231,26 @@ public class VintageHorizonsModSystem : ModSystem
                     "The change applies on the next frame.");
             });
 
+        capi.ChatCommands.Create("vhwhy")
+            .WithDescription("Explain the ground you are looking at: who owns it, what the game says about it, and whether cached terrain is available there.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalInt("blocksAhead"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                // Sighting down the view vector is what makes this usable while staring at
+                // a hole: the interesting cell is rarely the one the player stands in.
+                int ahead = args.Parsers[0].IsMissing ? 32 : GameMath.Clamp((int)args[0], 0, 4096);
+                Vec3f look = capi.World.Player.Entity.Pos.GetViewVector();
+                double x = capi.World.Player.Entity.CameraPos.X + look.X * ahead;
+                double y = capi.World.Player.Entity.CameraPos.Y + look.Y * ahead;
+                double z = capi.World.Player.Entity.CameraPos.Z + look.Z * ahead;
+
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] {ahead} blocks ahead - {renderer.DescribeOwnershipAt(x, y, z)}");
+            });
+
         capi.ChatCommands.Create("vhdetail")
             .WithDescription("Distance in blocks before LOD detail starts to halve. Default 512. A higher value gives sharper far terrain and costs more VRAM and CPU.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalInt("blocks"))

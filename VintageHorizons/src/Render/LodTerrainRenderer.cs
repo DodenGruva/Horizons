@@ -906,7 +906,13 @@ public class LodTerrainRenderer : IRenderer
                 // and over and never reached the frontier, which SetWindow now queues
                 // directly. The boundary and interior cursors are cheap ring scans and
                 // may restart.
-                readinessBoundaryCursor = readinessInteriorCursor = 0;
+                // The boundary cursor may restart because the whole shell is swept below on
+                // this same frame. The interior cursor may not: it is the safety net that
+                // eventually revisits every cell, one slice per frame, and restarting it on
+                // every chunk crossing meant that while flying it never advanced past its
+                // first slice - so stale ownership behind the camera was never revisited by
+                // the one sweep guaranteed to reach it.
+                readinessBoundaryCursor = 0;
                 readinessHandoffStale = true;
                 readinessSweepShellNow = true;
                 ReadinessWindowChanges++;
@@ -1042,6 +1048,50 @@ public class LodTerrainRenderer : IRenderer
     }
 
     public bool ChunkMaskFailed => readinessMaskFailed;
+
+    /// <summary>
+    /// What the mod believes about the ground at a world position, against what the client
+    /// says right now. Written for standing in front of a hole and asking why it is there:
+    /// if ownership reads committed while the engine reports the chunk unrendered, the mask
+    /// is suppressing cached terrain nothing else draws, and that is ours. If ownership is
+    /// already cache-owned, the hole is missing cached data or mesh, and the mask is not
+    /// involved.
+    /// </summary>
+    public string DescribeOwnershipAt(double worldX, double worldY, double worldZ)
+    {
+        if (readiness == null) return "no readiness tracker";
+
+        var cell = new VanillaChunkCell(
+            VanillaRenderReadiness.ChunkCoordinate(worldX),
+            VanillaRenderReadiness.ChunkCoordinate(worldY),
+            VanillaRenderReadiness.ChunkCoordinate(worldZ));
+
+        bool renderedNow;
+        try
+        {
+            readinessProbePos.Dimension = 0;
+            readinessProbePos.SetPos((cell.X + 0.5) * 32.0, (cell.Y + 0.5) * 32.0, (cell.Z + 0.5) * 32.0);
+            renderedNow = capi.IsChunkRendered(readinessProbePos);
+        }
+        catch
+        {
+            renderedNow = false;
+        }
+
+        VanillaReadinessState state = readiness.State(cell);
+        bool suppressed = readinessMaskActive && readinessMask != null && readinessMask.IsReady(cell);
+        long sectionKey = LodWorld.SectionKey(0,
+            (int)Math.Floor(worldX / LodSection.SectionBlocks),
+            (int)Math.Floor(worldZ / LodSection.SectionBlocks));
+
+        return $"chunk {cell.X},{cell.Y},{cell.Z}: we say {state}, engine says "
+            + $"{(renderedNow ? "rendered" : "not rendered")}, mask {(suppressed ? "suppresses" : "allows")} "
+            + $"cached terrain here; L0 section {(world.Sections.ContainsKey(sectionKey) ? "resident" : "absent")}, "
+            + $"{(HasAnyMesh(sectionKey) ? "meshed" : "no mesh")}"
+            + (state == VanillaReadinessState.VanillaReady && !renderedNow
+                ? " -- STALE OWNERSHIP: the mask is hiding cached terrain the engine is not drawing"
+                : "");
+    }
 
     /// <summary>
     /// Uploads the whole mask when it differs from what the GPU holds. The public client
