@@ -43,7 +43,11 @@ The approved rendering design is
     three cursor sweeps that preceded it could not. A hole still persisted after that, which
     pointed at a different cause: an empty vanilla chunk reports as drawn, so cached terrain
     standing taller than the real world sits in cells the engine has "drawn" as air. Empty
-    chunks now own nothing (G40). Needs re-testing. If holes survive this too, read
+    chunks cannot be identified this way: `IWorldChunk.Empty` is a stale cached flag on the
+    client, and acting on it in 0.3.3 removed ownership everywhere and left every cached
+    section overlapping vanilla. Reverted in 0.3.4, which instead counts `drawn-but-empty
+    chunks` in the periodic log. A high count says the mechanism is real and needs a
+    reliable test for it; a zero count says look elsewhere. If holes survive this too, read
     `stale committed found` and `count repairs` from the periodic log: both should be zero,
     and a non-zero count repair is a bug in the ownership aggregate itself.
   - Historical, same symptom: flying backwards produced a clear band of missing terrain

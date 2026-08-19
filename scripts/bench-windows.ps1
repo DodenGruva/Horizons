@@ -380,6 +380,7 @@ function Get-ClientReadinessRecord {
         '(?<errors>\d+) errors, (?<windowChanges>\d+) window changes/(?<resizes>\d+) resizes, ' +
         '(?<fullRevalidations>\d+) full revalidations, ' +
         '(?<staleCommitted>\d+) stale committed found/(?<countRepairs>\d+) count repairs, ' +
+        '(?<emptyChunks>\d+) drawn-but-empty chunks, ' +
         'events (?<accepted>\d+) accepted/(?<coalesced>\d+) coalesced/(?<dropped>\d+) dropped, ' +
         'sweeps (?<sweepsAccepted>\d+) accepted/(?<sweepsCoalesced>\d+) coalesced, ' +
         'columns (?<columnsTracked>\d+) tracked/(?<columnsFull>\d+) full/(?<columnsPartial>\d+) partial, ' +

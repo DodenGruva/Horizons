@@ -527,7 +527,7 @@ Keep the cursors for discovery, where being late costs coverage rather than corr
 
 **Found:** chunk ownership mask, Session 27.
 
-### G40 — "The engine drew this chunk" does not mean the engine drew anything
+### G40 — "The engine drew this chunk" does not mean the engine drew anything, and the obvious way to check makes it worse
 
 **Trigger:** using `IsChunkRendered`, or any counter the tessellator advances, to decide
 that vanilla terrain now covers an area.
@@ -540,12 +540,20 @@ Suppressing cached terrain there leaves nothing at all - a hole that is stable, 
 standing still, and cannot be corrected by re-probing, because both sides are reporting
 their state correctly.
 
-**Do:** treat an empty chunk as owning nothing. `IBlockAccessor.GetChunk(cx, cy, cz)`
-returns the chunk and `IWorldChunk.Empty` distinguishes drew-terrain from drew-nothing.
-Keep the two questions separate: whether the engine holds the chunk, and whether there is
-anything in it.
+**Do not** reach for `IWorldChunk.Empty` to answer it. That flag is refreshed only by
+`UpdateEmptyFlag`, which runs when a chunk was modified, and the client frees block data
+for packed chunks, so on the client it does not mean "this chunk has no blocks". Acting on
+it removed ownership everywhere at once and left every cached section overlapping vanilla
+terrain, which is a far worse failure than the holes it was meant to fix.
 
-**Found:** chunk ownership mask, Session 27, from play reporting holes that would not close.
+**Do:** count the condition before depending on it, and keep any such query inside its own
+handler. The probe loop treats a thrown query as "vanilla is not drawing here", so a
+diagnostic that throws does not merely fail - it silently hands the whole world back to the
+cache. A measurement that cannot change ownership can be added safely; a rule that can must
+be established first.
+
+**Found:** chunk ownership mask, Session 27, from play reporting holes that would not close,
+and then from breaking ownership outright while trying to fix them.
 
 ## Reversals and disproved claims
 

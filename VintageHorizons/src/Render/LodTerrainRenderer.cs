@@ -142,6 +142,7 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessFullRevalidations { get; private set; }
     public long ReadinessAggregateRepairs { get; private set; }
     public long ReadinessStaleCommittedFound { get; private set; }
+    public long ReadinessEmptyChunksSeen { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
     public long CoarseWaitingLoad { get; private set; }
     public long CoarseWaitingMesh { get; private set; }
@@ -177,6 +178,7 @@ public class LodTerrainRenderer : IRenderer
         ReadinessFullRevalidations = 0;
         ReadinessAggregateRepairs = 0;
         ReadinessStaleCommittedFound = 0;
+        ReadinessEmptyChunksSeen = 0;
         VanillaOwnedDrawsSkipped = 0;
         CoarseWaitingLoad = 0;
         CoarseWaitingMesh = 0;
@@ -1004,16 +1006,6 @@ public class LodTerrainRenderer : IRenderer
                         (cell.Y + 0.5) * 32.0,
                         (cell.Z + 0.5) * 32.0);
                     rendered = capi.IsChunkRendered(readinessProbePos);
-
-                    // A chunk with no blocks draws nothing, yet the engine counts it as
-                    // drawn: the tessellator advances the same counter before returning
-                    // early on an empty chunk. Letting it own ground is how a permanent
-                    // hole appears. Cached terrain is an approximation, so wherever it
-                    // stands taller than the real world its geometry lives in cells the
-                    // engine has "drawn" as air - suppress those and nothing is left,
-                    // stably and forever, which is what play reported. An empty chunk
-                    // therefore owns nothing and cached terrain keeps covering it.
-                    if (rendered && IsVanillaChunkEmpty(cell)) rendered = false;
                 }
                 catch
                 {
@@ -1029,6 +1021,17 @@ public class LodTerrainRenderer : IRenderer
 
                 if (!rendered && readiness.State(cell) == VanillaReadinessState.VanillaReady)
                     ReadinessStaleCommittedFound++;
+
+                // Measured, not acted on. The engine counts an empty chunk as drawn, so
+                // cached terrain standing taller than the real world can sit in cells that
+                // report drawn while nothing is drawn there - a candidate explanation for
+                // holes that never close. Acting on IWorldChunk.Empty broke ownership
+                // outright in 0.3.3: it is a cached flag refreshed only when a chunk is
+                // modified, and the client frees block data for packed chunks, so on the
+                // client it does not mean what its name suggests. This counts how often a
+                // chunk we consider owned reports itself empty, which says whether the
+                // mechanism is real before anything depends on it again.
+                if (rendered && IsVanillaChunkEmptyForDiagnostics(cell)) ReadinessEmptyChunksSeen++;
 
                 if (!readiness.Observe(cell, rendered, frameCounter,
                     out VanillaReadinessPublication publication)) continue;
@@ -1337,10 +1340,19 @@ public class LodTerrainRenderer : IRenderer
     /// A chunk the engine does not hold at all is not empty, it is absent, and the rendered
     /// query has already answered for that case.
     /// </summary>
-    bool IsVanillaChunkEmpty(VanillaChunkCell cell)
+    bool IsVanillaChunkEmptyForDiagnostics(VanillaChunkCell cell)
     {
-        IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
-        return chunk != null && chunk.Empty;
+        try
+        {
+            IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
+            return chunk != null && chunk.Empty;
+        }
+        catch
+        {
+            // A diagnostic must never be able to change ownership, including by throwing
+            // into a handler that treats failure as "vanilla is not drawing here".
+            return false;
+        }
     }
 
     public string DescribeReadiness()
@@ -1393,6 +1405,7 @@ public class LodTerrainRenderer : IRenderer
             + $"{ReadinessProbeErrors} errors, {ReadinessWindowChanges} window changes/{ReadinessResizes} resizes, "
             + $"{ReadinessFullRevalidations} full revalidations, "
             + $"{ReadinessStaleCommittedFound} stale committed found/{ReadinessAggregateRepairs} count repairs, "
+            + $"{ReadinessEmptyChunksSeen} drawn-but-empty chunks, "
             + $"events {readiness.CandidateEventsAccepted} accepted/{readiness.CandidateEventsCoalesced} coalesced/"
             + $"{readiness.CandidateEventsDropped} dropped, "
             + $"sweeps {readiness.ScheduledCandidatesAccepted} accepted/"
