@@ -240,8 +240,20 @@ public static class StaticAssetChecks
             ? renderer.Substring(handoffUniform, Math.Min(260, renderer.Length - handoffUniform))
             : string.Empty;
         c.True(handoffAssignment.Contains("maskOwnsPixels", StringComparison.Ordinal)
-            && handoffAssignment.Contains("0f", StringComparison.Ordinal),
-            "a healthy mask drives the radial handoff to zero so it cannot also suppress cells");
+            && handoffAssignment.Contains("MaskNearFloor()", StringComparison.Ordinal),
+            "a healthy mask replaces the radial handoff with its own near-field floor");
+
+        // The floor exists to keep coarse cached geometry out of the player's face, but it
+        // must never suppress terrain where vanilla has not proven it draws.
+        int floorMethod = renderer.IndexOf("float MaskNearFloor()", StringComparison.Ordinal);
+        c.True(floorMethod > 0, "the near floor is computed in one place");
+        string floorBody = floorMethod > 0
+            ? renderer.Substring(floorMethod, Math.Min(520, renderer.Length - floorMethod))
+            : string.Empty;
+        c.True(floorBody.Contains("VanillaReadinessState.VanillaReady", StringComparison.Ordinal)
+            && floorBody.Contains("MaskNearFloorBlocks", StringComparison.Ordinal)
+            && floorBody.Contains("0f", StringComparison.Ordinal),
+            "the floor applies only while the camera's own cell is committed ready");
         c.True(renderer.Contains("VINTAGEHORIZONS_CHUNK_MASK", StringComparison.Ordinal),
             "the mask stays behind an explicit opt-in gate");
         c.True(renderer.Contains("DisposeReadinessMaskTexture();", StringComparison.Ordinal),

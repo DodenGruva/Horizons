@@ -52,6 +52,21 @@ public class LodTerrainRenderer : IRenderer
     /// the radius cannot lag the camera by a whole ownership cell.
     /// </summary>
     internal const float ReadinessHandoffRecheckBlocks = 4;
+
+    /// <summary>
+    /// Cached terrain stays suppressed this close to the camera even under the per-cell
+    /// mask, but only while the camera's own cell is committed vanilla ready.
+    ///
+    /// The mask decides ownership per cell, so a cell vanilla has not proven - usually an
+    /// underground one whose chunk never reports rendered - keeps drawing cached terrain.
+    /// That is correct at distance and wrong in the player's face: coarse cached geometry
+    /// at arm's length reads as a wall through the world. The old radius hid this by
+    /// suppressing everything near the camera unconditionally, which is also what made it
+    /// open holes. Requiring the camera's own cell to be owned keeps the near-field clean
+    /// without reintroducing that: if vanilla is not drawing where the player stands,
+    /// nothing is suppressed at all.
+    /// </summary>
+    internal const float MaskNearFloorBlocks = 48;
     /// <summary>
     /// Queue depth allowed at the mesh workers. Per thread, not absolute: a fixed 12 was
     /// sized for one builder and would leave a four-thread pool idling three quarters of
@@ -997,6 +1012,24 @@ public class LodTerrainRenderer : IRenderer
         }
     }
 
+    /// <summary>
+    /// The near-field floor described on <see cref="MaskNearFloorBlocks"/>. Zero unless the
+    /// camera's own ownership cell is committed ready, so uncertainty still fails toward
+    /// cached coverage.
+    /// </summary>
+    float MaskNearFloor()
+    {
+        if (readiness == null) return 0f;
+
+        var cell = new VanillaChunkCell(
+            VanillaRenderReadiness.ChunkCoordinate(camPos.X),
+            VanillaRenderReadiness.ChunkCoordinate(camPos.Y),
+            VanillaRenderReadiness.ChunkCoordinate(camPos.Z));
+        return readiness.State(cell) == VanillaReadinessState.VanillaReady
+            ? MaskNearFloorBlocks
+            : 0f;
+    }
+
     void DisableReadinessMask()
     {
         readinessMaskFailed = true;
@@ -1162,7 +1195,7 @@ public class LodTerrainRenderer : IRenderer
         // the established constant) remains the only ownership decision.
         bool maskOwnsPixels = readinessMaskActive && readinessMask != null;
         prog.Uniform("cacheHandoffDistance", maskOwnsPixels
-            ? 0f
+            ? MaskNearFloor()
             : readinessOwnsHandoff
                 ? readinessHandoffDistance
                 : LodNearHandoff.InnerDiscardRadius(viewDistance));

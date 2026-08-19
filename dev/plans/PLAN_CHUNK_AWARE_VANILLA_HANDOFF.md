@@ -693,6 +693,21 @@ the result, and moving, teleport, and view-distance scenarios remain unmeasured.
 **Exit:** chunk-aware ownership is the sole normal near handoff and the original three
 reported artifacts do not return.
 
+### Phase 4a - near-field floor under the mask
+
+Added 2026-08-19 from screenshot evidence. Driving the handoff radius to zero under the
+mask removed the unconditional near-field suppression, and a benchmark frame showed coarse
+cached geometry intruding at the bottom of the view where the baseline had none. Per-cell
+ownership is correct at distance and wrong at arm's length: a cell vanilla has not proven,
+typically an underground one whose chunk never reports rendered, keeps drawing cached
+terrain, and coarse cached geometry a few metres from the camera reads as a wall through
+the world.
+
+The mask now keeps a 48-block suppression floor, but only while the camera's own ownership
+cell is committed ready. That keeps the near field clean without reintroducing the hole the
+old unconditional radius could open: if vanilla is not drawing where the player stands,
+nothing is suppressed at all. Human evaluation of the near field is the acceptance test.
+
 ### Phase 5 - seam work only if evidence requires it
 
 1. Reproduce and classify any remaining seam as horizontal top, vertical boundary face,
