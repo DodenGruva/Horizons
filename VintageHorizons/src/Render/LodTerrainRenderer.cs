@@ -209,6 +209,7 @@ public class LodTerrainRenderer : IRenderer
     bool readinessFailureReported;
     int[] readinessColumnReady = Array.Empty<int>();
     readonly StringBuilder readinessColumnText = new();
+    readonly StringBuilder levelReport = new();
     readonly LodNearHandoffState nearHandoff = new();
     // Phase 2 per-cell ownership. Off unless VINTAGEHORIZONS_CHUNK_MASK=1, so the measured
     // radius stays the only pixel owner until the mask has its own runtime evidence.
@@ -1082,7 +1083,10 @@ public class LodTerrainRenderer : IRenderer
     public string ExplainViewRay(double startX, double startY, double startZ,
         float lookX, float lookY, float lookZ, int maxBlocks)
     {
-        if (readiness == null) return "no readiness tracker; the distance handoff is drawing";
+        // Captured once: the field is nullable and can be cleared by the failure path, and
+        // a diagnostic must not be the thing that throws while explaining a problem.
+        VanillaRenderReadiness? tracker = readiness;
+        if (tracker == null) return "no readiness tracker; the distance handoff is drawing";
 
         var previous = new VanillaChunkCell(int.MinValue, int.MinValue, int.MinValue);
         string? firstEmpty = null;
@@ -1119,40 +1123,47 @@ public class LodTerrainRenderer : IRenderer
 
             bool suppressed = readinessMaskActive && readinessMask != null && readinessMask.IsReady(cell);
 
-            // Ground can legitimately be drawn by a coarser ancestor, so asking only the
-            // finest level reports "no mesh" for terrain that is on screen. Walk up until
-            // something covers this spot, and report the level that actually would draw it.
+            // Ground can be drawn by any level, so report all of them. A single verdict has
+            // twice now been read as evidence when it was describing a different level than
+            // the one that would actually have drawn the ground in question.
             bool resident = false;
             bool meshed = false;
-            int drawnLevel = -1;
+            bool skipped = false;
+            levelReport.Clear();
             for (int level = 0; level <= LodWorld.MaxLevel; level++)
             {
                 int footprint = LodWorld.KeyFootprintBlocks(LodWorld.SectionKey(level, 0, 0));
                 long key = LodWorld.SectionKey(level,
                     (int)Math.Floor(x / footprint), (int)Math.Floor(z / footprint));
-                resident |= world.Sections.ContainsKey(key);
-                if (!HasAnyMesh(key)) continue;
-                meshed = true;
-                drawnLevel = level;
-                break;
+                bool hasSection = world.Sections.ContainsKey(key);
+                bool hasMesh = HasAnyMesh(key);
+                bool wasSkipped = skippedLastFrame.Contains(key);
+                resident |= hasSection;
+                meshed |= hasMesh;
+                skipped |= wasSkipped;
+
+                if (!hasSection && !hasMesh) continue;
+                if (levelReport.Length > 0) levelReport.Append(", ");
+                levelReport.Append('L').Append(level).Append(' ')
+                    .Append(hasSection ? "resident" : "absent")
+                    .Append(hasMesh ? " meshed" : " unmeshed");
+                levelReport.Append(' ').Append(tracker.Classify(key));
+                if (wasSkipped) levelReport.Append(" SKIPPED-AS-OWNED");
+            }
+            if (levelReport.Length == 0) levelReport.Append("no cached section at any level");
+
+            if (!rendered && (suppressed || skipped))
+            {
+                return $"OURS at {distance} blocks, chunk {cell.X},{cell.Y},{cell.Z}: engine not drawing, "
+                    + $"we say {tracker.State(cell)}, mask {(suppressed ? "suppresses" : "allows")}, "
+                    + $"draw {(skipped ? "skipped as owned" : "not skipped")} | {levelReport}";
             }
 
-            if (suppressed && !rendered)
+            if (firstEmpty == null && !rendered && !meshed)
             {
-                return $"STALE OWNERSHIP {distance} blocks out, chunk {cell.X},{cell.Y},{cell.Z}: "
-                    + $"the mask hides cached terrain here but the engine is not drawing this chunk. "
-                    + $"We say {readiness.State(cell)}. Cached terrain is "
-                    + $"{(resident ? "resident" : "absent")} and "
-                    + $"{(meshed ? $"meshed at level {drawnLevel}" : "unmeshed at every level")}. "
-                    + "This one is ours.";
-            }
-
-            if (firstEmpty == null && !rendered && !resident)
-            {
-                firstEmpty = $"no terrain of either kind {distance} blocks out, chunk "
-                    + $"{cell.X},{cell.Y},{cell.Z}: the engine is not drawing this chunk and no cached "
-                    + "section is held for it, so there is nothing to show. The mask is not involved; "
-                    + "this ground was never captured.";
+                firstEmpty = $"NO CACHED TERRAIN at {distance} blocks, chunk {cell.X},{cell.Y},{cell.Z}: "
+                    + $"engine not drawing, we say {tracker.State(cell)}, "
+                    + $"mask {(suppressed ? "suppresses" : "allows")} | {levelReport}";
             }
         }
 
@@ -1472,6 +1483,8 @@ public class LodTerrainRenderer : IRenderer
 
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
 
+        skippedLastFrame.Clear();
+
         // Pass 1: opaque terrain.
         foreach (long key in drawList)
         {
@@ -1519,8 +1532,11 @@ public class LodTerrainRenderer : IRenderer
         if (!readinessMaskActive || readiness == null) return false;
         if (readiness.Classify(key) != VanillaSectionOwnership.VanillaOnly) return false;
         VanillaOwnedDrawsSkipped++;
+        skippedLastFrame.Add(key);
         return true;
     }
+
+    readonly HashSet<long> skippedLastFrame = new();
 
     bool SetupSectionTransform(long key, float cullDistSq)
     {
