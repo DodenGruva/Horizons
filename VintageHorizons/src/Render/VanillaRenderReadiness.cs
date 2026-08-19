@@ -41,6 +41,8 @@ internal sealed class VanillaRenderReadiness
     public int PendingObservations => observationCount;
     public int HorizontalCapacity => capacity;
     public int VerticalChunks => verticalChunks;
+    public int ActiveMinChunkX => minChunkX;
+    public int ActiveMinChunkZ => minChunkZ;
     public int ActiveWidth => width;
     public int ActiveDepth => depth;
     public int ActiveCells => checked(width * depth * verticalChunks);
@@ -499,6 +501,36 @@ internal sealed class VanillaRenderReadiness
     /// depends on it. Columns outside the active window are unknown and bound the result,
     /// so an untracked frontier cannot be mistaken for owned ground.
     /// </summary>
+    /// <summary>
+    /// Rewrites a mask from committed state. Window movement clears departing columns
+    /// inside this class, and a ring slot reused by different world coordinates would
+    /// otherwise leave another place's ownership in the texture, so the mask is rebuilt
+    /// wholesale whenever the window moves rather than patched from outside.
+    /// </summary>
+    public void WriteMask(VanillaReadinessMask mask)
+    {
+        ArgumentNullException.ThrowIfNull(mask);
+        mask.Clear();
+        if (width == 0 || depth == 0) return;
+
+        for (int slot = 0; slot < columnTags.Length; slot++)
+        {
+            long tag = columnTags[slot];
+            if (tag == -1L || columnReady[slot] == 0) continue;
+            UnpackColumn(tag, out int chunkX, out int chunkZ);
+            if (chunkX < minChunkX || chunkX >= minChunkX + width
+                || chunkZ < minChunkZ || chunkZ >= minChunkZ + depth) continue;
+
+            int baseIndex = slot * verticalChunks;
+            for (int y = 0; y < verticalChunks; y++)
+            {
+                if ((VanillaReadinessState)states[baseIndex + y] != VanillaReadinessState.VanillaReady)
+                    continue;
+                mask.Set(new VanillaChunkCell(chunkX, y, chunkZ), ready: true);
+            }
+        }
+    }
+
     public double NearestIncompleteColumnBlocks(double cameraX, double cameraZ,
         out double nearestUnreadyBlocks)
     {

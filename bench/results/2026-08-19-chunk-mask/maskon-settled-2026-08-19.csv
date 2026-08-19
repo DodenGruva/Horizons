@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+maskon-settled-2026-08-19,spawn-horizon,512020,190,512010,1,25993,433.2,430.9,300.7,2.31,3.33,0.0,0.0,1892,3471,75.0,0

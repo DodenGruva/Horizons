@@ -625,6 +625,25 @@ being discarded. Both remain Phase 2 and Phase 3 work.
 
 ### Phase 2 - GPU mask behind a disabled feature gate
 
+**Implementation status:** Implemented 2026-08-19 behind `VINTAGEHORIZONS_CHUNK_MASK=1`,
+off by default. Runtime evidence is partial: the mask becomes active, owns exactly the
+tracker's committed cells, and uploads in 3 microseconds, but no controlled performance
+pair and no human visual check exist yet.
+
+**As implemented.** One BGRA texel per 32x32x32 cell in a 2D atlas of Y slices stacked
+down the texture, 32 KiB for a 256-block window, addressed by the same wrapped ring the
+tracker uses. The decompiled client update path creates on a size mismatch and otherwise
+issues `TexSubImage2D` for the whole extent; mipmaps are built only on creation and
+`texelFetch` ignores filtering, so steady-state upload is one sub-image call. There is no
+public subregion update, which is why changes are coalesced to at most one upload per
+frame. Window movement rebuilds the mask from committed state rather than patching it,
+because a reused ring slot would otherwise carry another place's ownership. Any upload
+failure disables the mask and restores the measured radius. When the mask is healthy the
+radial handoff is driven to zero so it cannot also suppress cells the mask assigns to the
+cache. The fragment shader decides ownership before normals, tint, lighting, fog, sky and
+water work; an address outside the window, above or below the world, or reading a
+cache-owned texel falls through to normal cached drawing.
+
 1. Add the bounded readiness texture/atlas and atomic publication protocol.
 2. Add world-to-mask shader addressing and mixed-mode early discard.
 3. Apply the same committed mask to opaque and water.
@@ -635,6 +654,18 @@ being discarded. Both remain Phase 2 and Phase 3 work.
 boundaries without changing mesh topology.
 
 ### Phase 3 - CPU whole-mesh fast paths
+
+**Implementation status:** Implemented 2026-08-19 behind the same gate. A section whose
+every ownership cell is committed vanilla ready is skipped in both the opaque and water
+submission loops, and only while the mask is live, so a skip can never run ahead of what
+the GPU would have drawn. Residency is untouched by design: the mesh stays resident and
+warm so vanilla unloading restores coverage without a reload or remesh.
+
+A controlled stationary pair in `bench/results/2026-08-19-chunk-mask/` measured 467.9 FPS
+against a 436.2 baseline (+7.3% average, +6.2% at the 1% low) while skipping about 42 of
+149 submissions per frame, with mesh residency and selected-node counts unchanged and zero
+evictions. The mask alone was neutral; the gain is entirely this phase. No person has seen
+the result, and moving, teleport, and view-distance scenarios remain unmeasured.
 
 1. Use aggregate count zero for the current unmasked path.
 2. Skip both opaque and water draw submission when the section is wholly vanilla-owned.

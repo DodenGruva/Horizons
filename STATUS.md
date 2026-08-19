@@ -5,7 +5,7 @@
 **Status date:** 2026-08-19
 **Mod version:** `0.2.1`
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `39` C# files under `VintageHorizons/src`
+**Source files:** `40` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`

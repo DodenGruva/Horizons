@@ -35,6 +35,7 @@ param(
     [string]$WorldName = 'vhbench-integrated',
     [switch]$RequireLocalOfferRetry,
     [switch]$RequireReadinessConvergence,
+    [switch]$ChunkMask,
     # 25 ms is the plan's own renderer-hitch rule. A tighter maximum fails on a single
     # blocking IsChunkRendered call, which the tracker cannot preempt, so the steady-state
     # gate is p99 instead: a 2026-08-18 route measured 20.5 us average and 75 us p99.
@@ -383,7 +384,8 @@ function Get-ClientReadinessRecord {
         'max (?<maxReadyPerColumn>\d+)/(?<verticalCells>\d+) ready per column, ' +
         'ready per Y (?<readyPerY>[\d/]+), ' +
         'nearest incomplete (?<nearestIncomplete>\d+) blocks/unready (?<nearestUnready>\d+) blocks, ' +
-        'handoff (?<handoff>\d+) blocks \((?<handoffSource>[^,]+), radial (?<radialHandoff>\d+)\)'
+        'handoff (?<handoff>\d+) blocks \((?<handoffSource>[^,]+), radial (?<radialHandoff>\d+)\), ' +
+        'mask (?<mask>[^,]+), (?<ownedSkipped>\d+) owned draws skipped'
     $found = [regex]::Matches($logText, $shadowPattern)
     if ($found.Count -eq 0) {
         if ($disabled.Count -eq 0) { return $null }
@@ -420,6 +422,10 @@ function Get-ClientReadinessRecord {
         radialHandoffBlocks = [int64]$last.Groups['radialHandoff'].Value
         handoffBlocks = [int64]$last.Groups['handoff'].Value
         handoffSource = $last.Groups['handoffSource'].Value
+        maskState = $last.Groups['mask'].Value
+        maxOwnedDrawsSkipped = 0L
+        maskFailedSamples = 0L
+        maskOffSamples = 0L
         radialFallbackSamples = 0L
         minHandoffBlocks = [int64]::MaxValue
         maxHandoffBlocks = 0L
@@ -463,6 +469,10 @@ function Get-ClientReadinessRecord {
         $record.maxOldestWorkFrames = [Math]::Max(
             $record.maxOldestWorkFrames, [int64]$match.Groups['age'].Value)
         if ($match.Groups['handoffSource'].Value -ne 'readiness') { $record.radialFallbackSamples++ }
+        if ($match.Groups['mask'].Value -eq 'failed') { $record.maskFailedSamples++ }
+        $record.maxOwnedDrawsSkipped = [Math]::Max(
+            $record.maxOwnedDrawsSkipped, [int64]$match.Groups['ownedSkipped'].Value)
+        if ($match.Groups['mask'].Value -eq 'off') { $record.maskOffSamples++ }
         $record.minHandoffBlocks = [Math]::Min(
             $record.minHandoffBlocks, [int64]$match.Groups['handoff'].Value)
         $record.maxHandoffBlocks = [Math]::Max(
@@ -746,6 +756,7 @@ $clientEnvironment = @{
     VINTAGEHORIZONS_STATS = $statsEnabled
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
 }
+if ($ChunkMask) { $clientEnvironment.VINTAGEHORIZONS_CHUNK_MASK = '1' }
 if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
@@ -872,6 +883,7 @@ try {
         requiredAssistPeakInFlight = $RequireAssistPeakInFlight
         assist = $assistRecord
         requireReadinessConvergence = [bool]$RequireReadinessConvergence
+        chunkMask = [bool]$ChunkMask
         readinessMaxPhaseMicroseconds = $ReadinessMaxPhaseMicroseconds
         readinessMaxP99Microseconds = $ReadinessMaxP99Microseconds
         readinessMaxWorkAgeFrames = $ReadinessMaxWorkAgeFrames
@@ -1022,10 +1034,18 @@ try {
         if ($readinessRecord.committedReadyCells -le 0) {
             throw "The readiness tracker holds no committed vanilla-ready cell, so the run proves nothing about convergence. See $scenario"
         }
-        if ($readinessRecord.handoffSource -ne 'readiness') {
+        if ($ChunkMask) {
+            if ($readinessRecord.maskFailedSamples -gt 0) {
+                throw "The chunk ownership mask reported failure and fell back to the handoff radius. See $scenario and $clientMainLog"
+            }
+            if ($readinessRecord.maskState -eq 'off' -or $readinessRecord.maskState -eq 'pending') {
+                throw "The chunk ownership mask was requested but never became active (ended '$($readinessRecord.maskState)'). See $scenario"
+            }
+        }
+        elseif ($readinessRecord.handoffSource -ne 'readiness') {
             throw "The near handoff ended the run on the radial fallback rather than measured readiness. See $scenario"
         }
-        if ($readinessRecord.handoffBlocks -gt $readinessRecord.nearestIncompleteBlocks) {
+        if (-not $ChunkMask -and $readinessRecord.handoffBlocks -gt $readinessRecord.nearestIncompleteBlocks) {
             throw "The applied handoff of $($readinessRecord.handoffBlocks) blocks reaches past the nearest column that is not wholly owned at $($readinessRecord.nearestIncompleteBlocks) blocks. See $scenario"
         }
         if ($readinessRecord.confirmationOnlyIntervals -gt 0) {

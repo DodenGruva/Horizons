@@ -90,6 +90,7 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessProbeErrors { get; private set; }
     public long ReadinessWindowChanges { get; private set; }
     public long ReadinessResizes { get; private set; }
+    public long VanillaOwnedDrawsSkipped { get; private set; }
 
     public void ResetPhaseCosts()
     {
@@ -117,7 +118,9 @@ public class LodTerrainRenderer : IRenderer
         ReadinessProbeErrors = 0;
         ReadinessWindowChanges = 0;
         ReadinessResizes = 0;
+        VanillaOwnedDrawsSkipped = 0;
         readiness?.ResetTelemetry();
+        readinessMask?.ResetTelemetry();
     }
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
@@ -148,6 +151,15 @@ public class LodTerrainRenderer : IRenderer
     int[] readinessColumnReady = Array.Empty<int>();
     readonly StringBuilder readinessColumnText = new();
     readonly LodNearHandoffState nearHandoff = new();
+    // Phase 2 per-cell ownership. Off unless VINTAGEHORIZONS_CHUNK_MASK=1, so the measured
+    // radius stays the only pixel owner until the mask has its own runtime evidence.
+    readonly bool chunkMaskRequested =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") == "1";
+    VanillaReadinessMask? readinessMask;
+    LoadedTexture? readinessMaskTexture;
+    bool readinessMaskFailed;
+    bool readinessMaskActive;
+    long readinessMaskUploadUs;
     float readinessHandoffDistance;
     bool readinessOwnsHandoff;
     float readinessOwnedRadius;
@@ -795,7 +807,13 @@ public class LodTerrainRenderer : IRenderer
             {
                 readiness = new VanillaRenderReadiness(window.RequiredCapacity, verticalChunks);
                 readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
+                readinessHandoffStale = true;
                 ReadinessResizes++;
+                if (chunkMaskRequested && !readinessMaskFailed)
+                {
+                    readinessMask = new VanillaReadinessMask(window.RequiredCapacity, verticalChunks);
+                    DisposeReadinessMaskTexture();
+                }
             }
 
             if (readiness.SetWindow(window.MinX, window.MinZ, window.Width, window.Depth))
@@ -803,6 +821,9 @@ public class LodTerrainRenderer : IRenderer
                 readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
                 readinessHandoffStale = true;
                 ReadinessWindowChanges++;
+                // Departing columns were cleared inside the tracker; rebuilding is what
+                // keeps a reused ring slot from carrying another place's ownership.
+                if (readinessMask != null) readiness.WriteMask(readinessMask);
             }
 
             readiness.SeedUnknownCells(
@@ -851,6 +872,7 @@ public class LodTerrainRenderer : IRenderer
                 // Phase 1 has no texture. Accepting into this shadow model lets diagnostics
                 // validate aggregate transitions without changing any pixel or draw call.
                 if (!readiness.ResolvePublication(publication, accepted: true)) continue;
+                readinessMask?.Set(publication.Cell, publication.Ready);
                 readinessHandoffStale = true;
                 if (publication.Ready) ReadinessReadyTransitions++;
                 else ReadinessLostTransitions++;
@@ -880,6 +902,7 @@ public class LodTerrainRenderer : IRenderer
             readinessHandoffDistance = nearHandoff.Update(
                 Math.Min(readinessOwnedRadius, viewDistance), capi.ElapsedMilliseconds);
             readinessOwnsHandoff = true;
+            PublishReadinessMask();
         }
         catch (Exception e)
         {
@@ -887,6 +910,7 @@ public class LodTerrainRenderer : IRenderer
             readiness = null;
             readinessDisabled = true;
             readinessOwnsHandoff = false;
+            DisableReadinessMask();
             if (!readinessFailureReported)
             {
                 readinessFailureReported = true;
@@ -895,6 +919,67 @@ public class LodTerrainRenderer : IRenderer
                     e.Message);
             }
         }
+    }
+
+    /// <summary>
+    /// Uploads the whole mask when it differs from what the GPU holds. The public client
+    /// API has no subregion update, so partial changes still cost a full upload; coalescing
+    /// to one upload per frame is what keeps that affordable. A failed upload disables the
+    /// mask outright and leaves the measured radius as the only ownership decision, because
+    /// a stale mask would suppress cached terrain vanilla has not replaced.
+    /// </summary>
+    void PublishReadinessMask()
+    {
+        if (readinessMask == null || readinessMaskFailed) return;
+        if (!readinessMask.Dirty && readinessMaskActive) return;
+
+        long started = Stopwatch.GetTimestamp();
+        try
+        {
+            // The client creates when TextureId is 0 or the pixel count disagrees with the
+            // stored size, and otherwise does a plain TexSubImage2D of the same extent, so
+            // a correctly sized LoadedTexture makes one call cover both. Mipmaps are built
+            // on the creation branch only, and texelFetch ignores filtering regardless.
+            LoadedTexture texture = readinessMaskTexture
+                ?? new LoadedTexture(capi, 0, readinessMask.Width, readinessMask.Height);
+            capi.Render.LoadOrUpdateTextureFromBgra(readinessMask.Texels,
+                linearMag: false, clampMode: 0, ref texture);
+            if (texture.TextureId <= 0)
+                throw new InvalidOperationException("Readiness mask texture was not created.");
+            readinessMaskTexture = texture;
+
+            readinessMask.MarkUploaded();
+            readinessMaskActive = true;
+        }
+        catch (Exception e)
+        {
+            DisableReadinessMask();
+            capi.Logger.Warning(
+                "[VintageHorizons] chunk readiness mask disabled; the measured handoff radius remains: {0}",
+                e.Message);
+        }
+        finally
+        {
+            readinessMaskUploadUs =
+                (Stopwatch.GetTimestamp() - started) * 1_000_000 / Stopwatch.Frequency;
+        }
+    }
+
+    void DisableReadinessMask()
+    {
+        readinessMaskFailed = true;
+        readinessMaskActive = false;
+        readinessMask = null;
+        DisposeReadinessMaskTexture();
+    }
+
+    void DisposeReadinessMaskTexture()
+    {
+        if (readinessMaskTexture == null) return;
+        try { capi.Render.GLDeleteTexture(readinessMaskTexture.TextureId); }
+        catch { /* teardown must not throw over a texture the driver already released */ }
+        readinessMaskTexture = null;
+        readinessMaskActive = false;
     }
 
     public string DescribeReadiness()
@@ -925,6 +1010,12 @@ public class LodTerrainRenderer : IRenderer
         float radialHandoff = LodNearHandoff.InnerDiscardRadius(ApprovedViewDistance());
         float appliedHandoff = readinessOwnsHandoff ? readinessHandoffDistance : radialHandoff;
         string handoffSource = readinessOwnsHandoff ? "readiness" : "radial";
+        string maskState = readinessMaskFailed ? "failed"
+            : readinessMask == null ? "off"
+            : readinessMaskActive
+                ? $"{readinessMask.ReadyTexels} owned/{readinessMask.Bytes / 1024} KiB/"
+                  + $"{readinessMask.Uploads} uploads/{readinessMaskUploadUs}us"
+                : "pending";
 
         return $"shadow {readiness.ActiveWidth}x{readiness.VerticalChunks}x{readiness.ActiveDepth}, "
             + $"{ready} ready/{observed} observed/{pending} pending/{unknown} unknown, "
@@ -941,7 +1032,8 @@ public class LodTerrainRenderer : IRenderer
             + $"max {maxReadyPerColumn}/{readiness.VerticalChunks} ready per column, "
             + $"ready per Y {readinessColumnText}, "
             + $"nearest incomplete {nearestIncomplete:0} blocks/unready {nearestUnready:0} blocks, "
-            + $"handoff {appliedHandoff:0} blocks ({handoffSource}, radial {radialHandoff:0})";
+            + $"handoff {appliedHandoff:0} blocks ({handoffSource}, radial {radialHandoff:0}), "
+            + $"mask {maskState}, {VanillaOwnedDrawsSkipped} owned draws skipped";
     }
 
     public void OnRenderFrame(float deltaTime, EnumRenderStage stage)
@@ -1026,9 +1118,29 @@ public class LodTerrainRenderer : IRenderer
 
         prog.Uniform("viewDistance", viewDistance);
         prog.Uniform("farViewDistance", EffectiveFarDistance);
-        prog.Uniform("cacheHandoffDistance", readinessOwnsHandoff
-            ? readinessHandoffDistance
-            : LodNearHandoff.InnerDiscardRadius(viewDistance));
+        // Per-cell ownership supersedes the radius entirely: the mask knows which
+        // individual cells vanilla owns, so leaving a radius active would suppress cached
+        // terrain the mask says is still ours. With the mask off, the measured radius (or
+        // the established constant) remains the only ownership decision.
+        bool maskOwnsPixels = readinessMaskActive && readinessMask != null;
+        prog.Uniform("cacheHandoffDistance", maskOwnsPixels
+            ? 0f
+            : readinessOwnsHandoff
+                ? readinessHandoffDistance
+                : LodNearHandoff.InnerDiscardRadius(viewDistance));
+        prog.Uniform("maskEnabled", maskOwnsPixels ? 1 : 0);
+        if (maskOwnsPixels && readiness != null && readinessMaskTexture != null)
+        {
+            prog.Uniform("maskMinX", readiness.ActiveMinChunkX);
+            prog.Uniform("maskMinZ", readiness.ActiveMinChunkZ);
+            prog.Uniform("maskWidth", readiness.ActiveWidth);
+            prog.Uniform("maskDepth", readiness.ActiveDepth);
+            prog.Uniform("maskCapacity", readinessMask!.Width);
+            prog.Uniform("maskVerticalChunks", readinessMask.VerticalChunks);
+            // Unit 6 keeps clear of the sampler slots the shared includes already use for
+            // glow, sky, liquid depth, and the two shadow maps.
+            prog.BindTexture2D("readinessMask", readinessMaskTexture.TextureId, 6);
+        }
 
         // Uniforms persist in the program between Use() calls, so re-upload only when
         // the table actually changed (every ~240 frames) rather than every frame.
@@ -1055,6 +1167,7 @@ public class LodTerrainRenderer : IRenderer
         foreach (long key in drawList)
         {
             if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+            if (SkipVanillaOwnedSection(key)) continue;
             if (!SetupSectionTransform(key, cullDistSq)) continue;
             capi.Render.RenderMesh(mesh);
         }
@@ -1066,6 +1179,7 @@ public class LodTerrainRenderer : IRenderer
         foreach (long key in drawList)
         {
             if (!waterMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+            if (SkipVanillaOwnedSection(key)) continue;
             if (!SetupSectionTransform(key, cullDistSq)) continue;
             capi.Render.RenderMesh(mesh);
         }
@@ -1078,6 +1192,25 @@ public class LodTerrainRenderer : IRenderer
 
         rapi.GlEnableCullFace();
         prog.Stop();
+    }
+
+    /// <summary>
+    /// True when every ownership cell this section covers is committed vanilla-ready, so
+    /// the mask would discard all of its fragments anyway. Skipping here removes the
+    /// uniform uploads, the transform and the draw call itself, which is the only part of
+    /// this design that saves CPU rather than shading.
+    ///
+    /// It requires the mask to be live: the aggregate and the texture are committed by the
+    /// same publication, so a skip can never run ahead of what the GPU would have drawn.
+    /// Residency is deliberately untouched - the mesh stays resident and warm so vanilla
+    /// unloading restores cached coverage without a reload or a remesh.
+    /// </summary>
+    bool SkipVanillaOwnedSection(long key)
+    {
+        if (!readinessMaskActive || readiness == null) return false;
+        if (readiness.Classify(key) != VanillaSectionOwnership.VanillaOnly) return false;
+        VanillaOwnedDrawsSkipped++;
+        return true;
     }
 
     bool SetupSectionTransform(long key, float cullDistSq)
@@ -1163,6 +1296,9 @@ public class LodTerrainRenderer : IRenderer
         // and the game's shutdown crash path disposes mods from another one, so putting
         // the engine call first meant a crashing client freed none of its GPU meshes.
         ClearMeshes();
+        // Same reason as the meshes: the mask texture is ours, and a shutdown that never
+        // reaches the engine call must still not leak it.
+        DisposeReadinessMaskTexture();
         capi.Event.ChunkDirty -= OnReadinessChunkDirty;
         capi.Event.ReloadShader -= LoadShader;
         capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);

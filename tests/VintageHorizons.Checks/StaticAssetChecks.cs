@@ -17,6 +17,7 @@ public static class StaticAssetChecks
         LodFallbackAndStableColour(c);
         ReadinessShadowWiring(c);
         ReadinessTelemetryContract(c);
+        OwnershipMaskWiring(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
     }
@@ -159,16 +160,90 @@ public static class StaticAssetChecks
             "readiness probing has both item and elapsed-time ceilings");
         c.True(model.Contains("PromoteObserved", StringComparison.Ordinal),
             "first true observations wait in a deferred render-frame queue");
-        // Phase 2a lets measured readiness drive the existing radial uniform. Per-cell
-        // ownership - classification, whole-mesh skipping, and the GPU mask - is still
-        // absent, so the handoff radius remains the single pixel path.
-        c.False(renderer.Contains("readiness.Classify(", StringComparison.Ordinal),
-            "per-section ownership classification still does not reach the draw path");
+        // Classification now reaches the draw path, but only to skip a section the mask
+        // would have discarded entirely, and only while the mask is live. A skip decided
+        // without the texture behind it would remove terrain the GPU still had to draw.
+        c.True(renderer.Contains("readiness.Classify(key) != VanillaSectionOwnership.VanillaOnly", StringComparison.Ordinal),
+            "only a wholly vanilla-owned section is skipped");
+        int skipMethod = renderer.IndexOf("bool SkipVanillaOwnedSection(long key)", StringComparison.Ordinal);
+        c.True(skipMethod > 0, "the whole-mesh skip has its own guard");
+        string skipBody = skipMethod > 0
+            ? renderer.Substring(skipMethod, Math.Min(420, renderer.Length - skipMethod))
+            : string.Empty;
+        c.True(skipBody.Contains("if (!readinessMaskActive", StringComparison.Ordinal),
+            "a section is never skipped unless the GPU mask is live");
+        c.Eq(2, CountOccurrences(renderer, "if (SkipVanillaOwnedSection(key)) continue;"),
+            "opaque and water submission share the same skip decision");
+        c.False(skipBody.Contains("Evict", StringComparison.Ordinal)
+            || skipBody.Contains("RenderDirty", StringComparison.Ordinal)
+            || skipBody.Contains("Remove", StringComparison.Ordinal),
+            "skipping a draw does not touch residency or dirty obligations");
         c.True(renderer.Contains("nearHandoff.Update(", StringComparison.Ordinal)
             && renderer.Contains("readinessOwnsHandoff", StringComparison.Ordinal),
             "the near handoff is driven by measured readiness with an explicit fallback flag");
         c.True(renderer.Contains("LodNearHandoff.InnerDiscardRadius(viewDistance)", StringComparison.Ordinal),
             "the established radial constant remains available when readiness is unavailable");
+    }
+
+    /// <summary>
+    /// The shader reconstructs the same wrapped atlas address that C# writes. Nothing at
+    /// runtime can catch a divergence - it would simply read another chunk's ownership and
+    /// hide the wrong ground - so the two addressings are held together here, along with
+    /// the ordering and fallback rules the mask depends on.
+    /// </summary>
+    static void OwnershipMaskWiring(Check c)
+    {
+        string renderDir = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src", "Render");
+        string renderer = File.ReadAllText(Path.Combine(renderDir, "LodTerrainRenderer.cs"));
+        string maskSource = File.ReadAllText(Path.Combine(renderDir, "VanillaReadinessMask.cs"));
+        string fragment = File.ReadAllText(Path.Combine(GameAssemblies.RepoRoot,
+            "VintageHorizons", "assets", "vintagehorizons", "shaders", "lodterrain.fsh"));
+
+        // Row = wrapped Z plus a whole capacity-sized block per Y level; column = wrapped X.
+        c.True(maskSource.Contains("int row = (chunkZ & mask) + chunkY * capacity;", StringComparison.Ordinal)
+            && maskSource.Contains("return row * capacity + (chunkX & mask);", StringComparison.Ordinal),
+            "the mask addresses a cell as wrapped X across a Y-stacked wrapped Z row");
+        c.True(fragment.Contains("ivec2(cellX & wrap, (cellZ & wrap) + cellY * maskCapacity)", StringComparison.Ordinal),
+            "the shader reconstructs that same wrapped address");
+        c.True(fragment.Contains("int wrap = maskCapacity - 1;", StringComparison.Ordinal),
+            "the shader wraps with the same power-of-two mask the ring uses");
+
+        int maskCheck = fragment.IndexOf("maskEnabled == 1", StringComparison.Ordinal);
+        int shading = fragment.IndexOf("normalize(cross(", StringComparison.Ordinal);
+        c.True(maskCheck > 0 && shading > 0 && maskCheck < shading,
+            "ownership is decided before normals, lighting, noise, fog and output work");
+        c.Eq(1, CountOccurrences(fragment, "texelFetch(readinessMask"),
+            "opaque and water pass through exactly one shared ownership lookup");
+        c.True(fragment.Contains("if (maskEnabled == 1)", StringComparison.Ordinal),
+            "a disabled mask executes no readiness sample at all");
+
+        c.True(renderer.Contains("prog.Uniform(\"maskEnabled\"", StringComparison.Ordinal)
+            && renderer.Contains("prog.Uniform(\"maskCapacity\"", StringComparison.Ordinal)
+            && renderer.Contains("prog.BindTexture2D(\"readinessMask\"", StringComparison.Ordinal),
+            "the renderer uploads the ring uniforms and binds the mask itself");
+        // A healthy mask must be the only suppressor. If the radius stayed live it would
+        // hide cached terrain in cells the mask still assigns to the cache.
+        int handoffUniform = renderer.IndexOf("prog.Uniform(\"cacheHandoffDistance\"", StringComparison.Ordinal);
+        c.True(handoffUniform > 0, "the renderer still sets the handoff distance uniform");
+        string handoffAssignment = handoffUniform > 0
+            ? renderer.Substring(handoffUniform, Math.Min(260, renderer.Length - handoffUniform))
+            : string.Empty;
+        c.True(handoffAssignment.Contains("maskOwnsPixels", StringComparison.Ordinal)
+            && handoffAssignment.Contains("0f", StringComparison.Ordinal),
+            "a healthy mask drives the radial handoff to zero so it cannot also suppress cells");
+        c.True(renderer.Contains("VINTAGEHORIZONS_CHUNK_MASK", StringComparison.Ordinal),
+            "the mask stays behind an explicit opt-in gate");
+        c.True(renderer.Contains("DisposeReadinessMaskTexture();", StringComparison.Ordinal),
+            "the mask texture is released on teardown");
+    }
+
+    static int CountOccurrences(string text, string needle)
+    {
+        int count = 0;
+        for (int i = text.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+             i = text.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
     }
 
     /// <summary>

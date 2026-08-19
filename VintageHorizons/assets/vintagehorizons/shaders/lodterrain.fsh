@@ -24,6 +24,20 @@ uniform vec3 sunColor;
 uniform float dayLight;
 uniform float cacheHandoffDistance;
 
+// Per-cell vanilla ownership. One texel per 32x32x32 vanilla render chunk, stored as Y
+// slices stacked down a single 2D texture because the public client API binds 2D textures
+// only. maskEnabled stays 0 until the chunk mask is both requested and uploaded, so the
+// default path is exactly the distance handoff above. Addressing must match
+// VanillaReadinessMask.TexelIndex; a static check holds the two together.
+uniform sampler2D readinessMask;
+uniform int maskEnabled;
+uniform int maskMinX;
+uniform int maskMinZ;
+uniform int maskWidth;
+uniform int maskDepth;
+uniform int maskCapacity;
+uniform int maskVerticalChunks;
+
 // Live tint table. The alpha byte carries a tint SLOT plus a blend band:
 //   0..63    opaque,     slot = alpha
 //   64..127  water,      slot = alpha - 64
@@ -71,6 +85,26 @@ void main()
     // the close field entirely to ready vanilla terrain so the approximate surfaces do
     // not mix. This boundary is deliberately much nearer than the old 78.5% cutoff.
     if (radialDistance < cacheHandoffDistance || dist > 1.0) discard;
+
+    // Ownership is decided before normals, noise, tint, lighting, fog, sky and water work,
+    // so an owned fragment costs one point fetch rather than a whole shaded pixel. Every
+    // address outside the tracked window, above or below the world, or reading a
+    // cache-owned texel falls through to normal cached drawing: the mask can only take
+    // ground away from the cache where vanilla has proven it draws there.
+    if (maskEnabled == 1)
+    {
+        int cellX = int(floor(terrainPos.x / 32.0));
+        int cellY = int(floor(terrainPos.y / 32.0));
+        int cellZ = int(floor(terrainPos.z / 32.0));
+        if (cellY >= 0 && cellY < maskVerticalChunks
+            && cellX >= maskMinX && cellX < maskMinX + maskWidth
+            && cellZ >= maskMinZ && cellZ < maskMinZ + maskDepth)
+        {
+            int wrap = maskCapacity - 1;
+            ivec2 maskTexel = ivec2(cellX & wrap, (cellZ & wrap) + cellY * maskCapacity);
+            if (texelFetch(readinessMask, maskTexel, 0).r > 0.5) discard;
+        }
+    }
 
     // Flat-shaded facet normal from position derivatives - no normals in the mesh.
     vec3 normal = normalize(cross(dFdx(worldPos.xyz), dFdy(worldPos.xyz)));

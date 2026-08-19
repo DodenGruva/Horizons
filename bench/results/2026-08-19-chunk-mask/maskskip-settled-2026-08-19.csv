@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+maskskip-settled-2026-08-19,spawn-horizon,512020,190,512010,1,28073,467.9,464.4,315.5,2.14,3.17,0.0,0.0,1527,3370,75.0,0

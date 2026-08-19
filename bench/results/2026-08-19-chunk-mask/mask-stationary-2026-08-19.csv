@@ -1,0 +1,2 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+mask-stationary-2026-08-19,spawn-horizon,512020,190,512010,1,32203,536.7,564.1,349.8,1.86,2.86,0.0,0.0,1863,3558,30.0,0

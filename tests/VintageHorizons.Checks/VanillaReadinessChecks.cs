@@ -12,6 +12,7 @@ public static class VanillaReadinessChecks
         AggregateClassification(c);
         VerticalColumnReadiness(c);
         NearestIncompleteColumn(c);
+        OwnershipMask(c);
         BoundaryRevalidation(c);
         WindowInvalidationAndTeardown(c);
         SteadyStateAllocation(c);
@@ -232,6 +233,74 @@ public static class VanillaReadinessChecks
         double partial = model.NearestIncompleteColumnBlocks(centreX, centreZ, out unready);
         c.Near(48d, partial, 0.001, "a column missing one vertical chunk bounds the radius at its own edge");
         c.True(unready > partial, "a partly ready column is not counted as wholly unready");
+    }
+
+    /// <summary>
+    /// The mask is the only thing the shader reads, so its addressing, its accounting, and
+    /// above all its failure direction matter more than its speed. Every uncertain path has
+    /// to leave a cache-owned texel: a stale owned texel hides terrain vanilla is not
+    /// drawing, which is the hole this whole design exists to prevent.
+    /// </summary>
+    static void OwnershipMask(Check c)
+    {
+        var mask = new VanillaReadinessMask(4, 2);
+        c.Eq(4, mask.Width, "the atlas is one texel per chunk across the ring");
+        c.Eq(8, mask.Height, "Y slices stack down a single 2D texture");
+        c.Eq(0L, mask.ReadyTexels, "a new mask owns nothing, so cached terrain covers everything");
+
+        var cell = new VanillaChunkCell(1, 1, 2);
+        c.True(mask.Set(cell, ready: true), "committing ownership changes the texel");
+        c.True(mask.IsReady(cell), "the committed cell reads back as vanilla-owned");
+        c.Eq(1L, mask.ReadyTexels, "owned texels are counted");
+        c.False(mask.Set(cell, ready: true), "an unchanged texel is not reported as a change");
+
+        c.Eq(VanillaReadinessMask.ReadyTexel, mask.Texels[
+            VanillaReadinessMask.TexelIndex(1, 1, 2, 4, 2)], "the texel lands at its computed address");
+        c.Eq(VanillaReadinessMask.TexelIndex(1, 1, 2, 4, 2),
+            VanillaReadinessMask.TexelIndex(1 + 4, 1, 2 + 4, 4, 2),
+            "ring wrapping maps a coordinate one full ring away onto the same texel");
+
+        c.False(mask.Set(new VanillaChunkCell(0, 2, 0), ready: true),
+            "a cell above the world cannot be marked owned");
+        c.False(mask.Set(new VanillaChunkCell(0, -1, 0), ready: true),
+            "a cell below the world cannot be marked owned");
+
+        mask.MarkUploaded();
+        c.False(mask.Dirty, "an accepted upload clears the dirty flag");
+        c.Eq(1L, mask.Uploads, "uploads are counted for telemetry");
+        mask.Set(cell, ready: false);
+        c.True(mask.Dirty, "losing ownership dirties the buffer again");
+        c.Eq(0L, mask.ReadyTexels, "the owned count follows the loss");
+
+        mask.Set(new VanillaChunkCell(3, 0, 3), ready: true);
+        mask.Set(new VanillaChunkCell(3, 1, 3), ready: true);
+        mask.ClearColumn(3, 3);
+        c.Eq(0L, mask.ReadyTexels,
+            "a column leaving the window releases every vertical cell before its slot is reused");
+
+        mask.Set(cell, ready: true);
+        mask.Clear();
+        c.Eq(0L, mask.ReadyTexels, "clearing returns every cell to the cache");
+        c.True(mask.Dirty, "a cleared mask must reach the GPU before it is trusted");
+
+        c.Throws<ArgumentOutOfRangeException>(() => new VanillaReadinessMask(3, 1),
+            "a non-power-of-two ring cannot be addressed by masking and is refused");
+
+        // The tracker owns the window, so a rebuild is what keeps a reused ring slot from
+        // carrying another place's ownership into the texture.
+        var model = new VanillaRenderReadiness(4, 2);
+        model.SetWindow(0, 0, 4, 4);
+        var owned = new VanillaChunkCell(1, 0, 1);
+        CommitReady(model, owned, 1);
+        var rebuilt = new VanillaReadinessMask(4, 2);
+        model.WriteMask(rebuilt);
+        c.True(rebuilt.IsReady(owned), "a rebuild reproduces committed ownership");
+        c.Eq(1L, rebuilt.ReadyTexels, "a rebuild reproduces exactly the committed cells");
+
+        model.SetWindow(8, 8, 4, 4);
+        model.WriteMask(rebuilt);
+        c.Eq(0L, rebuilt.ReadyTexels,
+            "moving the window past the owned column leaves no ownership behind in the ring");
     }
 
     static void DeferredObservationQueue(Check c)
