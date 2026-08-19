@@ -41,6 +41,18 @@ Mask ownership matched the tracker's committed cell count exactly (1,608) in eve
 uploads cost 3 µs, and a settled view uploads nothing at all because the buffer stops
 changing.
 
+## Turning it on in game
+
+`.vhmask [on|off]` toggles per-cell ownership at runtime, so the build can be evaluated
+without an environment variable or a rebuild. A run that launched with the mask off and
+issued `.vhmask on` mid-session reported "chunk mask on. The change applies on the next
+frame", then owned 1,608 cells and skipped about 297,500 draws per interval, confirming the
+mask is built from state the tracker already holds rather than waiting for reconvergence.
+
+That run also separated the two upload costs: creating the texture takes about 325
+microseconds once, because that branch calls glTexImage2D and builds mipmaps, while every
+later change is a 3-microsecond sub-image update. A settled view uploads nothing.
+
 ## What this does not establish
 
 - **No person has seen the mask.** An addressing error would hide the wrong ground and

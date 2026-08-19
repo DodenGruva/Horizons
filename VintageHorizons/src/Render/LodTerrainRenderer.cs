@@ -153,7 +153,7 @@ public class LodTerrainRenderer : IRenderer
     readonly LodNearHandoffState nearHandoff = new();
     // Phase 2 per-cell ownership. Off unless VINTAGEHORIZONS_CHUNK_MASK=1, so the measured
     // radius stays the only pixel owner until the mask has its own runtime evidence.
-    readonly bool chunkMaskRequested =
+    bool chunkMaskRequested =
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") == "1";
     VanillaReadinessMask? readinessMask;
     LoadedTexture? readinessMaskTexture;
@@ -816,6 +816,13 @@ public class LodTerrainRenderer : IRenderer
                 }
             }
 
+            if (chunkMaskRequested && !readinessMaskFailed && readinessMask == null)
+            {
+                readinessMask = new VanillaReadinessMask(
+                    readiness.HorizontalCapacity, readiness.VerticalChunks);
+                readiness.WriteMask(readinessMask);
+            }
+
             if (readiness.SetWindow(window.MinX, window.MinZ, window.Width, window.Depth))
             {
                 readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
@@ -920,6 +927,26 @@ public class LodTerrainRenderer : IRenderer
             }
         }
     }
+
+    /// <summary>
+    /// Per-cell ownership on or off. Turning it off restores the measured handoff radius
+    /// immediately and releases the texture; turning it on rebuilds the mask from state the
+    /// tracker already holds, so neither direction waits for readiness to reconverge.
+    /// A failed mask stays off: the failure disabled it for a reason.
+    /// </summary>
+    public bool ChunkMaskEnabled
+    {
+        get => chunkMaskRequested && !readinessMaskFailed;
+        set
+        {
+            chunkMaskRequested = value;
+            if (value) return;
+            readinessMask = null;
+            DisposeReadinessMaskTexture();
+        }
+    }
+
+    public bool ChunkMaskFailed => readinessMaskFailed;
 
     /// <summary>
     /// Uploads the whole mask when it differs from what the GPU holds. The public client

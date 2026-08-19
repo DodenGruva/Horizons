@@ -1194,6 +1194,29 @@ public class VintageHorizonsModSystem : ModSystem
                     : "[VintageHorizons] render distance unlimited (saved)");
             });
 
+        capi.ChatCommands.Create("vhmask")
+            .WithDescription("Hand each vanilla chunk its own ground instead of using one distance. Off by default while it is being evaluated.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (renderer.ChunkMaskFailed)
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] the chunk mask hit an error this session and stays off. " +
+                        "The distance handoff is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] chunk mask {(renderer.ChunkMaskEnabled ? "on" : "off")}. " +
+                        "On gives each loaded vanilla chunk its own ground and skips cached terrain " +
+                        "that is entirely replaced. Off uses a single measured distance.");
+
+                renderer.ChunkMaskEnabled = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] chunk mask {(renderer.ChunkMaskEnabled ? "on" : "off")}. " +
+                    "The change applies on the next frame.");
+            });
+
         capi.ChatCommands.Create("vhdetail")
             .WithDescription("Distance in blocks before LOD detail starts to halve. Default 512. A higher value gives sharper far terrain and costs more VRAM and CPU.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalInt("blocks"))
