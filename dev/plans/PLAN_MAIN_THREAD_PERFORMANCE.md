@@ -1,8 +1,8 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots/GPU uploads, and revision-acknowledged persistence are implemented and verified on `codex/main-thread-performance`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots/GPU uploads, revision-acknowledged persistence, opaque back-face culling, and front-to-back opaque submission are implemented and verified. Conservative cached-terrain occlusion is next on `codex/gpu-overdraw-culling`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
-**Working baseline:** Fork release 0.2.1, commit `f8d4b03`, branch `codex/main-thread-performance`.
+**Working baseline:** Fork master at commit `4496948`, branch `codex/gpu-overdraw-culling`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
 **Open work authority:** `dev/TODO.md`.
 
@@ -342,13 +342,19 @@ sections bounded sampled queues to 18 snapshots/four uploads, measured direct GL
 below 6.9 ms, recorded no 25 ms renderer phase, and converged. Human visual and
 cross-driver validation remain open.
 
-### Later draw-call work
+### GPU visibility and later draw-call work
 
-Only after measurement:
+Back-face rejection and front-to-back opaque submission are complete and human-tested.
+On one machine and fixed views they raised 218 to 260 FPS and 149 to 173 FPS respectively,
+with no visible change. The fallbacks remain `.vhbackface off` and `.vhfront off`.
+
+The next measured problem is hidden cached terrain behind mountainous foreground: the owner
+reported about 150 FPS while facing roughly 4,000 blocks of it and more than 300 FPS while
+facing away. Investigate conservative section-level occlusion without coupling visibility
+to residency. Only after that evidence:
 
 - Evaluate regional combined buffers.
 - Evaluate multi-draw or instancing with per-section metadata.
-- Evaluate shader cost and backface-culling changes with GPU evidence.
 
 ### Acceptance
 

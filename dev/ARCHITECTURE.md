@@ -153,12 +153,20 @@ The renderer uses a quadtree over section levels. Distance selects the desired d
 
 Opaque and translucent terrain use separate mesh buffers and passes. Seasonal/climate tint data is refreshed from live game color maps and applied in the shader. The camera uses relative section transforms so large world coordinates do not enter mesh vertex data. Cosmetic terrain noise combines section-local vertices with a stable section world origin; it must not sample camera-relative geometry coordinates.
 
-The settled near-handoff target is exclusive per-vanilla-render-chunk ownership. Cached
-terrain covers uncertain/unready cells, vanilla owns confirmed render-ready cells, fully
-replaced cached meshes are skipped before submission, and only mixed frontier meshes pay
-for a GPU readiness mask. Visibility/ownership remains separate from mesh residency and
-persistence. The current radial cutoff is a guarded stopgap until this design is
-implemented and measured; see `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+The settled near handoff is exclusive per-vanilla-render-chunk ownership. Cached terrain
+covers uncertain/unready cells, vanilla owns confirmed render-ready cells, fully replaced
+cached meshes are skipped before submission, and only mixed frontier meshes pay for a GPU
+readiness mask. Per-cell ownership is the default; the measured radial cutoff remains the
+explicit fallback. Visibility/ownership remains separate from mesh residency and
+persistence; see `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+
+Opaque terrain faces use outward counter-clockwise winding and render with GPU back-face
+culling enabled. Water and thin/cutout surfaces stay two-sided. Selected opaque sections are
+then submitted front-to-back from a reusable allocation-free ordering list so nearer depth
+can reject farther fragments; the translucent water pass retains traversal order. These are
+GPU overdraw reductions, not terrain occlusion. The renderer still has no section-level
+occlusion query, hierarchical depth test, or conservative horizon rejection, and any future
+visibility result must remain independent from residency and persistence.
 
 The renderer maintains a horizontal world-space rectangle over all opaque and water mesh
 keys. Additions expand it in constant time; removing an extreme marks it for one rebuild
@@ -249,6 +257,10 @@ The server must answer every accepted section request, including explicit refusa
     uncertain cells cache-owned, transfers confirmed cells exclusively to vanilla, skips
     wholly replaced cached meshes, and masks only mixed frontier meshes. Ownership does
     not itself evict resident cache resources.
+19. **Opaque cached terrain rejects back faces and submits nearest first.** Outward CCW
+    winding makes culling safe for all six solid face directions; water and thin surfaces
+    remain two-sided. Front-to-back ordering affects opaque submission only and reuses its
+    storage rather than allocating per frame.
 
 ## Concurrency invariants
 

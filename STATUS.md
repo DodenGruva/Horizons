@@ -3,16 +3,16 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-20
-**Mod version:** `0.3.23` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.27` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `41` C# files under `VintageHorizons/src`
+**Source files:** `42` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
 
 ## 1. Repository state
 
-`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/main-thread-performance`, descends from `origin/master` release 0.2.1 at `f8d4b03`, and tracks the same-named origin branch.
+`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/gpu-overdraw-culling`, branched from `origin/master` at `4496948`, and is intended to track the same-named origin branch.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -27,6 +27,16 @@ existing `cacheHandoffDistance` uniform. `VINTAGEHORIZONS_CHUNK_MASK` overrides 
 setting in either direction (`0` off, `1` on) so the benchmark harness can pin one path.
 Every phase of `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` is built and, since 0.3.6,
 actually running; since 0.3.16 without the band that had kept it opt-in.
+
+**Opaque cached terrain now rejects avoidable GPU work** (0.3.27). All six solid face
+directions have outward counter-clockwise winding, the opaque pass uses back-face culling,
+and selected opaque sections submit front-to-back from a reusable allocation-free order.
+Water and thin/cutout surfaces remain two-sided, and water keeps traversal order. The owner
+accepted both defaults after isolated in-game toggles: back-face culling raised 218 to 260
+FPS (about 0.74 ms per frame) and front-to-back raised 149 to 173 FPS (about 0.93 ms), with no
+visible difference. `.vhbackface off` and `.vhfront off` remain session-only fallbacks.
+These changes reduce overdraw but are not true occlusion: the renderer still has no section
+occlusion query, hierarchical depth test or conservative terrain horizon.
 
 **The band is closed** (0.3.16, confirmed in game by the owner on 2026-08-19). It was the
 engine's own per-frame range cull, and it is the reason six releases of ownership rules
@@ -343,6 +353,13 @@ confirmed the fix for a maintenance sweep that could lose ownership but never ga
 33. The near handoff radius is measured rather than assumed, and 232 of 441 tracked columns
 reach complete vertical ownership with a flat per-Y distribution, so the planned CPU
 whole-mesh skip is reachable without a geometry-derived aggregate.
+34. Opaque mesh winding is outward counter-clockwise in all six directions, enabling safe
+GPU back-face culling while water and thin/cutout geometry remain two-sided. Six-direction
+regression coverage pins the convention.
+35. Opaque selected sections submit nearest-first from reusable storage, letting nearer
+depth reject farther fragments without per-frame allocation. Water retains traversal order.
+The owner accepted both GPU changes after +19.3% and +16.1% same-view comparisons with no
+visual difference.
 
 ## 4. Measured diagnosis and result
 
@@ -500,6 +517,12 @@ with residency, selected nodes and evictions unchanged. The mask alone was neutr
 gain is the whole-mesh skip. The readiness tracker's integrated convergence and
 cost are now measured; GPU mask publication, mixed-mesh sampling, CPU skipping, and any
 resulting net frame-time effect remain open.
+6. View direction still exposes a large cached-terrain GPU remainder. The owner measured
+about 150 FPS while facing roughly 4,000 blocks of mountainous cached terrain and more than
+300 FPS while facing away, at least 3.33 ms of direction-dependent frame time. Back-face
+culling and front-to-back ordering recover about 0.74 and 0.93 ms in their sampled views,
+but no section-level occlusion exists. Conservative hidden-terrain rejection is now the
+renderer priority; GPU timer breakdown and controlled cross-driver evidence remain absent.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -524,25 +547,27 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Cached terrain becoming coarser than expected during fast flight, human-reported and
-still unexplained. `.vhcoarse` already reports whether the missing children were waiting on
-storage, a mesh worker, a scheduling slot, or nothing; read `coarse cover waits` from a
-fast-flight log before changing any budget. This is the only outstanding item a player can
-see.
+1. Investigate conservative section-level occlusion for cached mountainous terrain. The
+current renderer has frustum/distance/ownership rejection, back-face culling and nearest-first
+opaque submission, but it cannot reject a section hidden behind nearer cached terrain. Any
+prototype must preserve instant turn-around from resident meshes and fail toward drawing,
+never toward holes or stale camera-dependent disappearance.
 2. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
 What remains is coverage rather than the decision: no controlled benchmark since 0.3.9, and
 boundary flicker, approach popping, cave and structure have never been individually
 confirmed. `.vhmask off` restores the measured radial handoff, which has no holes.
-3. Diagnose cached terrain appearing slowly after joining: 100 fill-in meshes at 36.4 s on
-0.3.7 against 6.1 s on 0.3.4, same cache and manifest, with the mask off and the handoff at
-0 blocks. A diagnostic's per-probe chunk lock is the suspect and was narrowed in 0.3.8;
-unmeasured since.
-4. Complete human in-motion review of clipping, turn-around behavior, visual mesh
-replacement, and the current near-handoff playtest.
-5. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
-warranted only after human and cross-driver evidence.
+3. Complete ordinary coverage of clipping, turn-around behavior, visual mesh replacement,
+boundary flicker, cave/structure handoff, multiplayer, other drivers and long sessions.
+4. Keep extreme fast-flight coarseness and brief approach overlap recorded at low priority.
+The owner has played extensively without seeing either in normal gameplay, and those speeds
+are not normally achievable. `.vhcoarse` remains ready if the symptom becomes practical.
+5. Keep the recovered join fill-in regression under observation: one 0.3.23 join reached
+100 meshes in 6.6 s against the old 6.1 s baseline, reversing the 36.4 s regression, but it
+is still one sample.
+6. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+warranted after occlusion evidence and cross-driver testing.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -713,6 +738,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   per condition, no alternation, and an average that may include the mask texture rebuild -
   which penalises the "on" side, so the 1024 figure is if anything understated. See G52 for
   why the sign flips and why a single-distance test would have condemned the feature.
+- The owner toggled opaque back-face culling in the same view on 2026-08-20: 218 FPS off
+  against 260 on (+19.3%, about 0.74 ms saved), with no visual difference across cliffs,
+  caves, overhangs, high views or low views. They accepted it as the default.
+- The owner toggled front-to-back opaque submission in the same view on 2026-08-20: 149 FPS
+  off against 173 on (+16.1%, about 0.93 ms saved), again with no visual change. They
+  accepted it as the default.
+- The owner reported about 150 FPS while facing roughly 4,000 blocks of cached mountainous
+  terrain and more than 300 FPS when facing away. This establishes a large view-dependent
+  rendering opportunity on that machine, not its exact GPU phase or a portable result.
 
 ### Not yet established
 
@@ -751,24 +785,21 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   multiplayer, or long-soak comparison exists.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
-- GPU shader/fill cost remains unseparated from CPU submission cost.
+- The two isolated GL-state/order toggles strongly establish avoidable GPU overdraw on the
+  owner's machine, but shader, raster, bandwidth and driver costs remain unseparated. There
+  are no GPU timers, repeated alternating benchmarks, second driver or second machine.
 - The per-cell ownership band is **resolved** in 0.3.16 and confirmed in game; it moved to
   the human-tested section above. What remains unestablished about it is everything the fix
   did not measure: its frame-rate cost, whether the accepted seam overlap reads acceptably at
   the horizon, and whether the closure holds at other view distances, speeds, and worlds. One
   human report on one machine is the whole of the confirming evidence.
-- A person evaluated per-cell ownership in game on 2026-08-19 and reported it clearly
-  better than the measured radius, with three artifacts, all at far above normal flight
-  speed: brief cached and vanilla fighting on fast approach, a band of missing world when
-  flying backwards, and chunk-shaped seams with colour differences in cached water. The
-  backward-flight gap has a fix that no person has re-tested. The water seams and a report
-  of cached terrain coarsening under fast flight are undiagnosed, and `dev/TODO.md` carries
-  the experiment that separates a mask cause from a pre-existing one for each.
-- A person evaluated the readiness-driven handoff package in game on 2026-08-19 and
-  reported it acceptable. That is overall acceptance of one build on one machine, one world,
-  and one view distance; seams, boundary flicker, approach popping, and the individual
-  cliff, water, cave, and structure cases were not separately confirmed. GPU masking, CPU
-  skipping, exact per-cell ownership, and performance acceptance remain open.
+- Extreme fast-flight coarseness and brief cached/vanilla approach overlap remain
+  unexplained, but are demoted: the owner has played extensively without seeing them in
+  normal gameplay, and those speeds are not normally achievable. The backward-flight band
+  and water seams from the same report are resolved and human-confirmed.
+- The readiness-driven handoff is accepted overall on one machine, one world and one view
+  distance. Boundary flicker, approach popping, cave, structure, multiplayer, other drivers
+  and long sessions remain ordinary coverage rather than blockers.
 
 ## 9. Known uncertainty
 

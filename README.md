@@ -51,6 +51,8 @@ in advance.
 | `.vhgeom [on\|off]` | Only matters with `.vhmask on`. On (the default) means ground the game says it drew, but holds no terrain for, does not hide cached terrain. Turn it off to compare. |
 | `.vhwhy [blocks]` | Look at a hole and run this. It searches your line of sight (out to the mod's full draw distance by default) and reports the **first** patch of ground nothing is drawing, so whatever is visible behind the hole does not confuse the answer. It says whether the mod is hiding cached terrain it should not, whether the game claims that ground while holding none, or whether it was simply never captured. |
 | `.vhcoarse` | Standing where far terrain looks blockier than it should, run this. It reports which nearby detail is missing and what it is waiting for. |
+| `.vhbackface [on\|off]` | Reject back-facing cached solid terrain before shading it. On by default and not saved; water and thin surfaces remain two-sided. |
+| `.vhfront [on\|off]` | Submit cached solid terrain nearest first so nearer ground can hide farther ground sooner. On by default and not saved; water keeps its original order. |
 | `.vhdefer [on\|off]` | Stay idle when another LOD mod draws (on by default). A change applies at the next start, not at once. |
 
 ### If your server runs Farseer, ChunkLOD or TopoHorizon

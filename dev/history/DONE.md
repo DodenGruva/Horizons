@@ -462,3 +462,27 @@ by the owner.**
 - Added mesher regression coverage for all four wall states and pinned the opposite-side pairing the repair depends on; 1,441 assertions pass.
 - Added `seam repairs` telemetry, promoted G51, and shipped 0.3.23.
 - Human-confirmed in game: ocean seams gone, shores and cliffs clean.
+
+## 2026-08-20 — opaque GPU overdraw
+
+- Source-traced the renderer and installed game client: Vintage Horizons had frustum,
+  distance and vanilla-ownership rejection, but no own terrain occlusion. Opaque cached
+  meshes were deliberately rendered two-sided despite the game exposing the needed cull
+  state.
+- Corrected all six solid face directions to outward counter-clockwise winding and enabled
+  back-face culling for opaque cached terrain only. Water and thin/cutout geometry remain
+  two-sided. Added `.vhbackface` and `VINTAGEHORIZONS_BACKFACE_CULLING` fallbacks.
+- Human A/B: 218 FPS off against 260 on (+19.3%, about 0.74 ms saved), with no visible
+  difference across cliffs, caves, overhangs, high views or low views. Accepted on by
+  default.
+- Added reusable allocation-free front-to-back ordering for opaque selected sections while
+  preserving water traversal order. Added `.vhfront` and `VINTAGEHORIZONS_FRONT_TO_BACK`
+  fallbacks.
+- Human A/B: 149 FPS off against 173 on (+16.1%, about 0.93 ms saved), with no visual
+  difference. Accepted on by default.
+- Added six-direction winding and opaque-order regression coverage. Version 0.3.27 passes
+  1,464 assertions and a clean Release build.
+- Reprioritized the renderer backlog around conservative occlusion after the owner measured
+  about 150 FPS while facing roughly 4,000 blocks of cached mountainous terrain and more
+  than 300 FPS while facing away. Fast-flight coarseness remains recorded but is demoted
+  because those speeds are outside normal play and extensive ordinary play found no issue.

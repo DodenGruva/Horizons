@@ -8,6 +8,28 @@ first.
 
 ## [Unreleased]
 
+## [0.3.27]
+
+In development. Both rendering changes below were accepted in game on the owner's machine.
+
+**Cached solid terrain no longer draws the backs of faces that cannot be seen.** The terrain
+mesher now gives every solid face a consistent outward winding, so the GPU can reject the
+back-facing half before shading it. Water and thin/cutout surfaces remain two-sided. In the
+owner's same-view comparison, `.vhbackface on` raised 218 FPS to 260 FPS with no visible
+difference across cliffs, caves, overhangs, high views or low views. The feature is on by
+default; `.vhbackface off` is the immediate session-only fallback.
+
+**Cached solid terrain is now submitted nearest first.** Near opaque terrain can therefore
+populate the depth buffer before mountains and ground hidden behind it reach fragment
+shading. The order is allocation-free after its reusable list grows, applies only to the
+opaque pass, and leaves water in its original traversal order. In the owner's same-view
+comparison, `.vhfront on` raised 149 FPS to 173 FPS with no visual change. It is on by
+default; `.vhfront off` restores the old order for the current session.
+
+These are overdraw reductions, not true occlusion culling. Looking across roughly 4,000
+blocks of cached mountainous terrain still measured about 150 FPS against more than 300 FPS
+when facing away, so conservative hidden-terrain rejection is the next renderer priority.
+
 ## [0.3.23]
 
 In development. The water fix below is confirmed in game.

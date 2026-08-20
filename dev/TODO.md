@@ -90,17 +90,50 @@ longer a live reason to expect that to be needed.
   chunks with no exposed faces, which hold no mesh and are invisible. A blanket rule denying
   those cells ownership would strip it from everything underground and repeat 0.3.3.
 
-## Top priority — main-thread stutter and renderer scaling
+## Top priority — GPU visibility and mountainous-terrain occlusion
 
 The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
-### Chunk-aware cached-to-vanilla handoff
+The renderer currently rejects off-screen quadtree nodes, distance-capped sections,
+fully vanilla-owned sections and back-facing opaque triangles. It also submits opaque
+sections nearest-first so the ordinary depth buffer can reject more hidden fragments. It
+does **not** yet reject a cached section merely because nearer cached terrain hides it: no
+section occlusion queries, hierarchical depth test or conservative terrain horizon exists.
+
+The first two explicit GPU experiments are accepted and complete:
+
+| change | off | on | frame-time reduction | owner verdict |
+|---|---:|---:|---:|---|
+| opaque back-face culling | 218 FPS | 260 FPS | about 0.74 ms | no visual difference |
+| opaque front-to-back submission | 149 FPS | 173 FPS | about 0.93 ms | no visual difference |
+
+Both are on by default in 0.3.27, with `.vhbackface off` and `.vhfront off` as session-only
+fallbacks. These are one-machine, one-view comparisons rather than portable benchmarks, but
+the isolated toggles make the causal direction useful.
+
+The remaining opportunity is larger. Facing roughly 4,000 blocks of cached mountainous
+terrain measured about 150 FPS, while facing away measured more than 300 FPS. That is at
+least 3.33 ms of direction-dependent frame time after the earlier renderer work. Next:
+
+- Record conservative vertical bounds for candidate sections/nodes if the existing bounds
+  are insufficient for an occlusion test.
+- Prototype the least stateful conservative rejection that fits the engine — a terrain
+  horizon/software test or delayed GPU visibility result — and count tested/rejected
+  sections before treating frame rate as evidence.
+- Keep visibility independent from residency and persistence. Turning around must reveal
+  already-built terrain without load, upload or remesh storms.
+- Prefer false visibility to false occlusion. Any popping, holes, missing overhangs or stale
+  camera-dependent result rejects the prototype regardless of FPS.
+- Compare the mountainous view on/off repeatedly, and retain a runtime fallback until the
+  owner accepts cliffs, valleys, caves, high/low views and rapid turns.
+
+### Existing near-handoff coverage
 
 The approved rendering design is
 `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`. Its phases are now built: GPU mask
 publication, shader sampling and the CPU whole-mesh skip all exist and, since 0.3.6,
 actually run, and since 0.3.16 they do so without the band. What remains is evidence and the
-ship/shelve decision recorded at the top of this file.
+ordinary coverage recorded at the top of this file; the ship/shelve decision is closed.
 
 Measurement still owed:
 
@@ -185,13 +218,6 @@ Human-reported and still open:
   session produces. A second reading needs `VINTAGEHORIZONS_STATS=1`, which prints every 15
   seconds; a figure still climbing after terrain stops arriving would mean a repair is
   re-queueing itself.
-- Cached terrain becoming coarser than expected during fast flight. `.vhcoarse` reports why:
-  a parent keeps covering ground when a visible child with data has no mesh, and each
-  interval logs whether those children were waiting on storage, a mesh worker, a scheduling
-  slot, or nothing, beside the three backlog depths. Read `coarse cover waits` from a
-  fast-flight run before changing any budget; the per-frame schedule cap only binds below
-  roughly 60 FPS. Level selection happens in traversal, before any ownership decision, so
-  confirm whether it also happens with the mask off.
 - Re-run the visual matrix. The 2026-08-18 playtest was reported acceptable overall, but
   seams, boundary flicker and approach popping were not separately confirmed, and no cliff,
   water, cave or structure case was reported individually. Nothing in the matrix has been
@@ -208,16 +234,27 @@ Human-reported and still open:
 - Human-check clipping and turn-around behavior on the thousands-section build. Automated
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
-- Measure whether regional buffers or multi-draw are warranted after CPU fixes.
+- Measure whether regional buffers or multi-draw are warranted after the occlusion work.
 - Select a practical default far cap only from benchmark and playtest evidence. The mask's
   benefit scales with vanilla render distance (above), so the two interact: a larger cap
   makes the mask worth more, not less.
 
+### Low-priority coverage and verification debt
+
+- Keep the report of cached terrain becoming coarser during extreme fast flight. The owner
+  has played extensively since and does not see it in normal gameplay; those speeds are not
+  normally achievable, so this is deliberately demoted rather than removed. If it becomes
+  visible again, `.vhcoarse` already separates storage, mesh-worker, scheduling-slot and
+  unexplained waits. Read `coarse cover waits` before changing a budget.
+- The brief cached/vanilla fight on extremely fast approach remains recorded for the same
+  reason. It resolves toward safe overlap, not a hole, and is outside ordinary movement.
+
 ## Flagged decisions awaiting human evidence
 
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
-- Is temporary coarseness acceptable while time-budgeted installs catch up during fast travel?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
+- What conservative occlusion policy, if any, can survive cliffs, valleys, caves and rapid
+  turns without visible popping? Do not decide this before a prototype exists.
 - Is the hybrid's one-time chunk handoff pop preferable to any residual overlap? The
   "cliff/water seams" half of this question is closed: the seams were the mesher's frontier
   rule, not the handoff, and both cases were confirmed clean on 0.3.23.

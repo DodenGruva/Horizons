@@ -1059,6 +1059,37 @@ accumulating immediately after `.vhmask on` includes the rebuild and penalises t
 
 **Found:** 2026-08-20, from the owner measuring both render distances instead of one.
 
+### G53 — Two-sided or unordered opaque terrain silently spends GPU time
+
+**Trigger:** optimizing distant cached terrain after CPU traversal and draw preparation look
+healthy, especially when frame rate changes sharply with view direction.
+
+**Trap:** opaque faces were rendered two-sided, and the mesher's vertical face winding was
+not consistently outward. Simply enabling back-face culling would therefore have removed
+west/east/north/south faces. After submission, quadtree/hash traversal order also gave the
+depth buffer no useful near-first guarantee, so mountains and ground hidden by nearer
+terrain could shade before the nearer depth existed.
+
+**Do:** make all six solid face directions outward counter-clockwise before enabling the
+engine's opaque-stage back-face state. Keep water and thin/cutout surfaces two-sided. Order
+only selected opaque sections nearest-first using reusable storage and a distance computed
+once per section; keep translucent water in traversal order. Neither change is true
+occlusion, and neither may make visibility control residency.
+
+**Evidence:** on the owner's machine and a fixed view, back-face culling raised 218 FPS to
+260 FPS (+19.3%, about 4.59 to 3.85 ms per frame, a 0.74 ms reduction). Front-to-back opaque
+submission raised 149 FPS to 173 FPS (+16.1%, about 6.71 to 5.78 ms, a 0.93 ms reduction).
+The owner saw no visual difference in either comparison and specifically exercised cliffs,
+caves, overhangs, high views and low views for the winding-sensitive change.
+
+**Know:** this is strong causal evidence for wasted raster/fragment work on that machine,
+not a portable benchmark. Drivers, scenes and hardware remain uncontrolled. Looking across
+roughly 4,000 blocks of cached mountainous terrain still measured about 150 FPS against more
+than 300 FPS when facing away, at least a 3.33 ms direction-dependent remainder and the case
+future conservative occlusion must address.
+
+**Found:** 2026-08-20, from separate owner-run `.vhbackface` and `.vhfront` comparisons.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
