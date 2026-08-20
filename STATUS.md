@@ -2,7 +2,7 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-19
+**Status date:** 2026-08-20
 **Mod version:** `0.3.22` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
@@ -507,19 +507,21 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Decide whether the per-cell mask ships. The band that blocked it is fixed and
-human-confirmed, so the question is now evidence rather than correctness: no benchmark since
-0.3.9, no human verdict on the seam overlap the draw-range threshold deliberately accepts,
-and no re-run of the visual matrix since the mask started working. The radial handoff has no
-holes and remains the shipped path, so shelving is still a legitimate outcome. See the top of
-`dev/TODO.md`.
-2. Diagnose cached terrain appearing slowly after joining: 100 fill-in meshes at 36.4 s on
+1. **Cached water shows the boundary of every chunk, with colour differing across those
+boundaries.** The next piece of work, and untouched by the 0.3.18-0.3.22 land colour fixes -
+water's stored colour was already stable. Three candidates are ranked cheapest-first in
+`dev/TODO.md`, and `.vhmask off` separates two of them in a single look.
+2. The per-cell mask shipped as the default in 0.3.17, so what is open about it is evidence,
+not the decision: no benchmark since 0.3.9, the seam overlap was accepted by non-observation
+rather than inspection, and the visual matrix has not been re-run since the mask started
+working. `.vhmask off` restores the measured radial handoff, which has no holes.
+3. Diagnose cached terrain appearing slowly after joining: 100 fill-in meshes at 36.4 s on
 0.3.7 against 6.1 s on 0.3.4, same cache and manifest, with the mask off and the handoff at
 0 blocks. A diagnostic's per-probe chunk lock is the suspect and was narrowed in 0.3.8;
 unmeasured since.
-3. Complete human in-motion review of clipping, turn-around behavior, visual mesh
+4. Complete human in-motion review of clipping, turn-around behavior, visual mesh
 replacement, and the current near-handoff playtest.
-4. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+5. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
 warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
