@@ -625,10 +625,12 @@ being discarded. Both remain Phase 2 and Phase 3 work.
 
 ### Phase 2 - GPU mask behind a disabled feature gate
 
-**Implementation status:** Implemented 2026-08-19 behind `VINTAGEHORIZONS_CHUNK_MASK=1`,
-off by default. Runtime evidence is partial: the mask becomes active, owns exactly the
-tracker's committed cells, and uploads in 3 microseconds, but no controlled performance
-pair and no human visual check exist yet.
+**Implementation status:** Implemented 2026-08-19; **the default since 0.3.17**, after the
+draw-range fix in 0.3.16 closed the band and the owner accepted it in play. The gate is now a
+saved setting plus a `VINTAGEHORIZONS_CHUNK_MASK` override in both directions. Runtime
+evidence remains partial: the mask owns exactly the tracker's committed cells and uploads in
+3 microseconds, and one player confirmed the visual result, but the only controlled
+performance pair predates every ownership rule added since 0.3.9.
 
 **As implemented.** One BGRA texel per 32x32x32 cell in a 2D atlas of Y slices stacked
 down the texture, 32 KiB for a 256-block window, addressed by the same wrapped ring the

@@ -44,7 +44,7 @@ in advance.
 | `.vhinfo` | Status: cached/resident sections, meshes, current far edge, settings |
 | `.vhdetail [blocks]` | Distance before detail starts to halve (default 512). A higher value gives sharper far terrain and costs more VRAM and CPU. Try 1024. Without an argument, the command reports the current value. |
 | `.vhfar <blocks>` | Cap the LOD render distance. `0` means unlimited, which is the default. |
-| `.vhmask [on\|off]` | Hand each loaded vanilla chunk its own ground instead of using one distance, and skip cached terrain that is entirely replaced. Off by default while it is being evaluated. |
+| `.vhmask [on\|off]` | Hand each loaded vanilla chunk its own ground instead of using one distance, and skip cached terrain that is entirely replaced. On by default since 0.3.17; the setting is saved. Turn it off to fall back to a single measured distance. |
 | `.vhpaint [on\|off]` | Diagnostic. Paints the terrain the mask is hiding bright red instead of hiding it. A gap that turns red is the mask's doing; a gap that stays empty is not. |
 | `.vhskip [on\|off]` | Only matters with `.vhmask on`. On (the default) lets the mod drop a whole cached piece when the game covers all of it. Off keeps the per-pixel masking but never drops a whole piece. |
 | `.vhholes` | Finds ground the mod handed to the game that the game is not drawing, anywhere around you. No need to look at anything, so it works for a band behind you. |

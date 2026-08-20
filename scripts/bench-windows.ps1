@@ -770,7 +770,10 @@ $clientEnvironment = @{
     VINTAGEHORIZONS_STATS = $statsEnabled
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
 }
-if ($ChunkMask) { $clientEnvironment.VINTAGEHORIZONS_CHUNK_MASK = '1' }
+# Pinned in both directions since 0.3.17, when the mask became the default. Leaving the
+# variable unset would let the saved client setting decide, so a run without -ChunkMask
+# would measure whatever the sandbox happened to have saved rather than the radial path.
+$clientEnvironment.VINTAGEHORIZONS_CHUNK_MASK = if ($ChunkMask) { '1' } else { '0' }
 if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'

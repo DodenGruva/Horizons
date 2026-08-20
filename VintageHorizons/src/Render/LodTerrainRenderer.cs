@@ -269,10 +269,15 @@ public class LodTerrainRenderer : IRenderer
     readonly StringBuilder readinessNoGeometryText = new();
     readonly StringBuilder levelReport = new();
     readonly LodNearHandoffState nearHandoff = new();
-    // Phase 2 per-cell ownership. Off unless VINTAGEHORIZONS_CHUNK_MASK=1, so the measured
-    // radius stays the only pixel owner until the mask has its own runtime evidence.
+    // Per-cell ownership, on by default since 0.3.17: the draw-range clause closed the band
+    // that had kept it opt-in, and a player confirmed both the closure and the seam overlap
+    // it accepts. The saved setting is applied over this at startup.
+    //
+    // The environment variable is now an override in both directions, because the benchmark
+    // harness has to be able to measure the radial path after it stopped being the default:
+    // `0` forces the mask off, `1` forces it on, anything else leaves the setting alone.
     bool chunkMaskRequested =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") == "1";
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") != "0";
     VanillaReadinessMask? readinessMask;
     LoadedTexture? readinessMaskTexture;
     bool readinessMaskFailed;
@@ -1218,6 +1223,14 @@ public class LodTerrainRenderer : IRenderer
     }
 
     public bool ChunkMaskFailed => readinessMaskFailed;
+
+    /// <summary>
+    /// What the player asked for, regardless of whether this session's mask is working.
+    /// Persistence must read this and never <see cref="ChunkMaskEnabled"/>: that getter
+    /// reports the effective state, so saving it would write `false` after any transient
+    /// texture failure and turn the feature off for every future session.
+    /// </summary>
+    public bool ChunkMaskRequested => chunkMaskRequested;
 
     /// <summary>
     /// Walks the line of sight and reports the first cell whose ownership would produce a

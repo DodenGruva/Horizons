@@ -8,6 +8,25 @@ first.
 
 ## [Unreleased]
 
+## [0.3.17]
+
+In development.
+
+**Each vanilla chunk now gets its own ground by default.** Until now the mod handed terrain
+over to the game at a single measured distance, one radius for the whole world, because the
+per-chunk version had a band of missing terrain in it. That band was fixed in 0.3.16 and
+confirmed gone in play, and the overlap the fix accepts at the seam went unnoticed, so the
+per-chunk version is now what you get.
+
+In practice: cached terrain gives way to real terrain chunk by chunk instead of at one
+circle, and a cached piece the game has completely covered is not drawn at all, which is
+where the frame-rate gain comes from. `.vhmask off` goes back to the single distance, and
+the choice is saved between sessions now rather than lasting only until you quit.
+
+Worth saying plainly: this is a default change made on one player's verdict on one machine,
+one world and one view distance, and the mod has not been benchmarked since 0.3.9. If it
+looks or performs worse for you, `.vhmask off` is the whole fix.
+
 ## [0.3.16]
 
 In development. Both changes are live only with `.vhmask on`.

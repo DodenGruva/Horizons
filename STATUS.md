@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.3.16` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.17` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -18,15 +18,15 @@ The working branch contains the lifetime-tiered documentation workflow, portabil
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
 geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
-Two mechanisms exist. The default is a near handoff whose radius is measured rather than
-assumed: the distance to the nearest vanilla chunk column the client has not finished
-rendering, less one chunk, driving the existing `cacheHandoffDistance` uniform. Behind
-`.vhmask on` or `VINTAGEHORIZONS_CHUNK_MASK=1`, per-cell ownership replaces that radius
-entirely: one marker per 32x32x32 vanilla chunk decides each fragment, and a cached section
-whose every cell is owned is not submitted at all. Every phase of
-`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` is now built and, since 0.3.6, actually
-running. Since 0.3.16 they do so without the band that had made the mask unusable. It
-remains off by default pending performance and visual evidence rather than pending a fix.
+Two mechanisms exist. **Since 0.3.17 the default is per-cell ownership**: one marker per
+32x32x32 vanilla chunk decides each fragment, and a cached section whose every cell is owned
+is not submitted at all. The fallback, reachable with `.vhmask off` and now a saved setting,
+is a near handoff whose radius is measured rather than assumed: the distance to the nearest
+vanilla chunk column the client has not finished rendering, less one chunk, driving the
+existing `cacheHandoffDistance` uniform. `VINTAGEHORIZONS_CHUNK_MASK` overrides the saved
+setting in either direction (`0` off, `1` on) so the benchmark harness can pin one path.
+Every phase of `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` is built and, since 0.3.6,
+actually running; since 0.3.16 without the band that had kept it opt-in.
 
 **The band is closed** (0.3.16, confirmed in game by the owner on 2026-08-19). It was the
 engine's own per-frame range cull, and it is the reason six releases of ownership rules
@@ -44,10 +44,13 @@ because standing still is when nothing is re-evaluated. Every CPU diagnostic rep
 throughout because all of them consumed the same incomplete signal. The cube-granularity
 theory that session 28 left standing is retired.
 
-**The remaining question is no longer correctness but whether the mask should ship.** It
-stays off by default. Nothing has been benchmarked since 0.3.9, the accepted seam overlap has
-not been judged at the horizon, and the visual matrix has not been re-run since the mask
-began working. `dev/TODO.md` carries that decision and what it needs.
+**The mask became the default in 0.3.17**, on the owner's decision after playing 0.3.16: the
+band was gone and the seam overlap the draw-range threshold accepts went unnoticed. That is
+product acceptance, and it is what the remaining gate was waiting on. The evidence behind it
+is deliberately thin and should be read as such - one machine, one world, one view distance,
+no benchmark since 0.3.9, and a visual matrix that has not been re-run since the mask started
+working. `.vhmask off` restores the measured radius and persists, so a player who dislikes it
+is one command from the previous default.
 
 **Defects found and fixed in session 28**, all present in earlier builds:
 

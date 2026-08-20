@@ -22,28 +22,32 @@ Measure it from an ordinary join rather than a benchmark: `Fill-in: 100 meshes a
 in the client log is the number, and 0.3.4 is the baseline at 6.1 s. If 0.3.8 does not
 recover it, bisect residency against 0.3.4 rather than assuming the diagnostic.
 
-## Top priority - decide the future of the per-cell mask
+## Top priority - the mask is the default now, and its evidence has not caught up
 
 **The band is closed** (0.3.16, human-confirmed 2026-08-19). It was the engine's per-frame
-range cull, which no per-chunk signal reflects; see G43 and session 29. The mask now works
-as designed for the first time, which turns the open question from "why is it broken" into
-"should it ship".
+range cull, which no per-chunk signal reflects; see G43 and session 29. **The mask became the
+default in 0.3.17** on the owner's decision: the band was gone and the seam overlap went
+unnoticed in play.
 
-What the decision needs:
+That decision is made and is not reopened here. What it outran is the evidence, and the debt
+is now shipping to players rather than sitting behind an opt-in:
 
-- A benchmark. Nothing has been measured since 0.3.9, so the culler rule, the atlas resync,
-  the air exclusion, the draw-range clause and the stored exclusion bit are all unmeasured.
-  The only performance evidence for the mask remains one controlled stationary pair at
-  +7.3%, taken before most of those existed.
-- A human verdict on the accepted seam. Cached terrain may now draw over the outermost chunk
-  and a half of live vanilla terrain. The band's closure was confirmed; the seam's
-  appearance at the horizon was not separately judged.
-- The visual matrix re-run. Nothing in it has been exercised since the mask began working
-  correctly.
+- **A benchmark, and it is now the first priority rather than one input among three.**
+  Nothing has been measured since 0.3.9, so the culler rule, the atlas resync, the air
+  exclusion, the draw-range clause and the stored exclusion bit are all unmeasured. The only
+  performance evidence is one controlled stationary pair at +7.3%, taken before most of them
+  existed. Run it with `-ChunkMask` against a run without: the harness pins the variable in
+  both directions since 0.3.17, so an unflagged run measures the radial path rather than
+  whatever the sandbox had saved.
+- **The visual matrix, unexercised since the mask began working.** Seams, boundary flicker,
+  approach popping, cliff, water, cave and structure cases. One flight on one machine is the
+  whole of the current visual evidence.
+- **Anything that only appears away from this machine:** multiplayer, other view distances,
+  other drivers, long sessions. A default reaches all of them.
 
-Only then: whether `.vhmask` becomes the default, stays opt-in, or is shelved. The radial
-handoff has no holes and remains the shipped path, so shelving is still a legitimate
-outcome.
+If a benchmark shows the mask costs frame rate rather than gaining it, reverting the default
+is one line and the saved setting keeps working; do not treat the default as load-bearing
+before it is measured.
 
 ### Standing constraints
 

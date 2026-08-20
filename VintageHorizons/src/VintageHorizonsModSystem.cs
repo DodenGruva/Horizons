@@ -15,6 +15,13 @@ public class VintageHorizonsConfig
     public int DetailDistance = 512;
 
     /// <summary>
+    /// Give each vanilla chunk its own ground instead of using one measured distance.
+    /// On by default since 0.3.17. `VINTAGEHORIZONS_CHUNK_MASK` overrides this in either
+    /// direction for benchmarking; see <see cref="LodTerrainRenderer.ChunkMaskEnabled"/>.
+    /// </summary>
+    public bool ChunkMask = true;
+
+    /// <summary>
     /// Draw even when another LOD mod is installed and switched on. The escape hatch for
     /// the mods whose own switch we cannot read; see <see cref="OtherLodMods"/>. Read at
     /// startup only, because turning the mod on mid-session is not something the startup
@@ -130,6 +137,12 @@ public class VintageHorizonsModSystem : ModSystem
             TrackPhaseAllocations = allocationTelemetryEnabled,
             FarViewDistanceCap = config.FarViewDistanceCap,
         };
+
+        // The saved setting applies unless the environment variable has taken a side, which
+        // is how the benchmark harness pins one path for a controlled comparison. The
+        // renderer has already resolved the override, so only an absent variable defers here.
+        if (Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") == null)
+            renderer.ChunkMaskEnabled = config.ChunkMask;
 
         capi.Event.ChunkDirty += OnChunkDirty;
         capi.Event.LevelFinalize += OnLevelFinalize;
@@ -1212,7 +1225,7 @@ public class VintageHorizonsModSystem : ModSystem
             });
 
         capi.ChatCommands.Create("vhmask")
-            .WithDescription("Hand each vanilla chunk its own ground instead of using one distance. Off by default while it is being evaluated.")
+            .WithDescription("Hand each vanilla chunk its own ground instead of using one distance. On by default; turn it off to fall back to a single measured distance.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
             .HandleWith(args =>
             {
@@ -1229,8 +1242,9 @@ public class VintageHorizonsModSystem : ModSystem
                         "that is entirely replaced. Off uses a single measured distance.");
 
                 renderer.ChunkMaskEnabled = (bool)args[0];
+                SaveConfig();
                 return TextCommandResult.Success(
-                    $"[VintageHorizons] chunk mask {(renderer.ChunkMaskEnabled ? "on" : "off")}. " +
+                    $"[VintageHorizons] chunk mask {(renderer.ChunkMaskEnabled ? "on" : "off")} (saved). " +
                     "The change applies on the next frame.");
             });
 
@@ -1356,6 +1370,9 @@ public class VintageHorizonsModSystem : ModSystem
         {
             config.FarViewDistanceCap = renderer.FarViewDistanceCap;
             config.DetailDistance = (int)LodWorld.DetailDistance;
+            // The request, never the effective state: a mask that failed this session
+            // reports itself disabled, and writing that would turn it off permanently.
+            config.ChunkMask = renderer.ChunkMaskRequested;
         }
 
         capi.StoreModConfig(config, "vintagehorizons.json");

@@ -284,8 +284,13 @@ public static class StaticAssetChecks
             && floorBody.Contains("MaskNearFloorBlocks", StringComparison.Ordinal)
             && floorBody.Contains("0f", StringComparison.Ordinal),
             "the floor applies only while the camera's own cell is committed ready");
-        c.True(renderer.Contains("VINTAGEHORIZONS_CHUNK_MASK", StringComparison.Ordinal),
-            "the mask stays behind an explicit opt-in gate");
+        // The mask became the default in 0.3.17, so the old opt-in gate is gone. What has to
+        // survive is the override that lets the benchmark harness pin either path: without a
+        // way to force the mask off, the radial path it is measured against is unreachable
+        // and every "off" run would silently measure the mask instead.
+        c.True(renderer.Contains("VINTAGEHORIZONS_CHUNK_MASK", StringComparison.Ordinal)
+            && renderer.Contains("!= \"0\"", StringComparison.Ordinal),
+            "the mask can still be forced off for a controlled comparison");
         c.True(renderer.Contains("DisposeReadinessMaskTexture();", StringComparison.Ordinal),
             "the mask texture is released on teardown");
     }
