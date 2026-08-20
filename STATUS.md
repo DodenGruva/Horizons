@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.3.17` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.19` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -163,6 +163,22 @@ vertex/index data, or four results. One first item progresses even when oversize
 complete opaque/water replacement becomes live before the old pair is disposed; partial
 upload failure retains old terrain and restores dirty work. Telemetry reports throughput,
 pending bytes, oldest age, direct GL upload time, and disposal time.
+
+A block's cached colour is now one value per block id, averaged over many draws and cached,
+because `Block.GetColorWithoutTint` is not a function of the block: grass-covered ground
+answers it with a random pixel of the grass texture, and a palette entry is registered once
+per section. The 2026-08-19 cache holds 38 different colours for `soil-low-normal` across
+1,041 sections against sd 0 for deterministic blocks, which is the reported green/brown tile
+patchwork. Sections already on disk are corrected as they load. Blocks carrying an entity
+keep the per-position answer, which is what chiselled blocks need. See G46. Source and
+check evidence only; no person has seen it yet.
+
+The live tint is now averaged over 64 positions rather than sampled at one. A seasonal
+colour map is a strip of sixteen shades per point in the year and the engine picks the row
+from a hash of each block's own position, so a field is all sixteen mixed; one sample took
+one row and painted every distant field with it, up to a quarter off in red at midsummer
+and re-rolling as the player moved. Human-confirmed as "slightly off" on 0.3.18 and
+corrected in 0.3.19; the correction itself has not been seen yet.
 
 Cached-terrain color variation now combines section-local geometry with a stable section
 world origin instead of camera-relative render coordinates. The vertex shader no longer

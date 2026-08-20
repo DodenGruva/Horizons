@@ -780,6 +780,86 @@ known-good join, before bisecting residency.
 0.3.16 after the same shape recurred in the atlas rebuild and was designed out rather than
 measured again.
 
+### G46 — `Block.GetColorWithoutTint` is not a function of the block
+
+**Trigger:** asking the engine for a block's colour once and storing the answer as if it
+described the block, rather than that call.
+
+**Trap:** two things vary underneath it. `BlockWithGrassOverlay` — which is every
+grass-covered soil, peat and clay, so most ground a player ever sees — answers with
+`BlockTextureAtlas.GetRandomColor`, one of thirty pixels drawn out of the grass texture at
+random per call. And the base implementation hands the question to whatever DECOR sits on
+the up face, so the answer also depends on what is standing on that particular block.
+
+A palette entry is registered once per section, so one draw decided the colour of every
+instance of that block across a whole 64-block section, and the section beside it drew
+again. Measured on a real 1,041-section cache: **38 different stored colours for
+`soil-low-normal` alone**, scattered with no relation to terrain, climate or height, with
+a per-section standard deviation of 30-39 per channel. On the ground that is flat green
+and flat brown tiles meeting at a hard edge, and no amount of blending at section borders
+would have fixed it, because the step was in the data.
+
+Blocks that answer deterministically — gravel, rock, forest floor — showed a standard
+deviation of exactly zero, which is what made the randomized ones stand out in the cache.
+
+**Do:** compute one colour per block id and cache it, by averaging many draws so a
+randomized answer collapses to the texture's own mean. A deterministic block averages to
+what it already returned, so nothing else moves.
+
+**Do:** probe at a position nothing can stand on — the sky above the world origin — so the
+decor branch cannot make one snowy sample decide a block's colour everywhere.
+
+**Do:** keep the real block position for blocks that carry an entity: a chiselled block
+averages the materials in its own entity there and genuinely differs per position. That is
+the case the position argument exists for, and it is why the rule is `EntityClass != null`
+rather than a list of block codes.
+
+**Do:** correct stored colours on load rather than bumping the schema. Colours are already
+re-derived for flags and tint slots on the way in; a cache is worth weeks of exploration.
+
+**Found:** 0.3.18, from a player report of neighbouring cached tiles rendering as
+dramatically different flat colours. Diagnosed entirely offline, from the stored cache and
+the decompiled engine, with no game run.
+
+### G47 — A colour map is sampled per block, so one sample is a draw and not the colour
+
+**Trigger:** calling `ApplyColorMapOnRgba` once and treating the result as "the tint" for a
+whole landscape.
+
+**Trap:** a seasonal map is two-dimensional. `seasonalGrass` is 128x16: X is the point in the
+year, and **Y is chosen from a hash of the individual block's position**
+(`seasonYPixelRel = MurmurHash3Mod(posX, posY, posZ, 100) / 100f`). That is what makes a real
+meadow subtly mottled instead of a flat sheet. One sample returns one of the sixteen rows,
+and at LOD distance that row was painted across every field in view.
+
+Measured on the shipped map: at midsummer the rows run `#628100` to `#97B825` about a mean of
+`#7B9C0D` - up to a quarter off in red, an eighth in green - and the mod re-rolled to a
+different row whenever the player moved far enough to change the hash. The owner reported it
+as "the green is slightly off" and named the season as the suspect before the map was opened.
+
+This is G46 in a second guise: two different engine calls that look like properties of a
+thing are actually draws from a distribution, and the LOD renderer wants the distribution's
+mean because one distant pixel covers many blocks.
+
+**Do:** average the tint over many world positions, not one. 0.3.19 uses 64 positions on an
+8-block lattice: far enough apart that the hashes decorrelate, close enough that the climate
+under them is still the viewer's own.
+
+**Do not** reach for the `(rain, temp)` overload to sample rows directly. It is public, but
+its `seasonYPixelRel` parameter is not exposed through `IClientWorldAccessor`, so it silently
+pins every sample to row 0 - and it drops the height-above-sealevel term the two-altitude
+tint depends on.
+
+**Do:** clamp sample positions into the map. `GetClimate` answers 0 - freezing and bone dry -
+for anything off the world edge, and one such sample drags the whole average.
+
+**Do:** unpack the returned int by hand in a loop like this. `ColorUtil.ToRGBAFloats`
+allocates a `float[4]` per call, and red is at bits 16-23, not the low byte, because
+`ApplyColorMapOnRgba` flips red and blue by default. Reading red from the low byte turned
+every grass tint teal once already.
+
+**Found:** 0.3.19, from a player report on the 0.3.18 build that fixed G46.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

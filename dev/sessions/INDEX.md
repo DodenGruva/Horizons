@@ -4,6 +4,7 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 30 | 2026-08-19 | 0.3.19 | - | Diagnosed the jarring green/brown tile patchwork offline from the owner's cache: a block's colour was a random pixel drawn once per section. Fixed to one averaged colour per block with existing caches repaired on load, then corrected the seasonal tint, which had the same shape. |
 | 29 | 2026-08-19 | 0.3.17 | - | Closed the band: the engine range-culls every terrain mesh per frame against the view distance, which no per-chunk signal reflects, so ownership held the trailing annulus forever. Human-confirmed fixed, and the per-cell mask became the default. |
 | 28 | 2026-08-19 | 0.3.15 | - | Fixed a silent startup fault, made the per-cell mask actually work after an integer uniform the driver had rejected since 0.3.0, corrected G40 from the game IL, and disproved five explanations of the missing band, which remains open. |
 | 27 | 2026-08-19 | 0.3.0-dev | — | Gave each vanilla chunk its own ground behind an opt-in gate, skipped fully replaced cached meshes for +7.3% frame rate, and fixed ownership latency found by playtesting at flight speed. |

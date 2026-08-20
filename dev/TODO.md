@@ -116,11 +116,32 @@ Human-reported and still open:
   This is ownership gain latency, resolves within a moment, and fails in the safe direction,
   so it is accepted. If it becomes objectionable, confirm cells near the camera on a shorter
   path rather than widening the budget again.
+- **Land colour: two causes found and fixed, 0.3.18 and 0.3.19.** The tile-to-tile step is
+  human-confirmed fixed ("it looks so much better"); the follow-up green correction in
+  0.3.19 has not been seen yet. Original diagnosis follows. Neighbouring cached
+  sections rendered as dramatically different flat colours - one green, the one beside it
+  brown. `Block.GetColorWithoutTint` answers grass-covered ground with a RANDOM pixel of the
+  grass texture, and a palette entry is registered once per section, so each section painted
+  its whole surface with its own draw. Measured in the 2026-08-19 cache: 38 stored colours
+  for `soil-low-normal` across 1,041 sections, per-channel sd 30-39, while deterministic
+  blocks had sd 0. One colour per block id now, averaged and cached, with existing caches
+  corrected on load. See G46.
+
+  The same person then reported the agreed-on green itself slightly off, and named the season
+  as a suspect, correctly. A seasonal colour map is sixteen shades per point in the year with
+  the row picked per block from a position hash, so a field is all sixteen mixed and one
+  sample was up to a quarter off in red. 0.3.19 averages the tint over 64 positions. See G47.
+  **What the playtest has to say:** whether distant grass now matches the meadow underfoot,
+  and whether it stays put while travelling instead of shifting shade.
 - Cached water shows the boundary of every chunk, with colour differing across those
-  boundaries. One cheap experiment separates the two candidates: if the seams disappear with
-  `.vhmask off`, the mask is drawing cached water only in unowned cells and the 32-block
-  ownership edges are visible on a flat surface that hides nothing; if they persist, it is
-  the existing per-section water tint and predates this work.
+  boundaries. This is a SEPARATE report from the land colour above and is untouched by the
+  0.3.18 fix - water's palette colour was already stable (`water-still-7`, sd 4). One cheap
+  experiment separates the two candidates: if the seams disappear with `.vhmask off`, the
+  mask is drawing cached water only in unowned cells and the 32-block ownership edges are
+  visible on a flat surface that hides nothing; if they persist, it is the existing
+  per-section water tint and predates this work. A third candidate worth eliminating first:
+  cached water is drawn at 66% alpha, so anywhere cached and vanilla water overlap it blends
+  twice and reads as a different colour from where only one of them draws.
 - Cached terrain becoming coarser than expected during fast flight. `.vhcoarse` reports why:
   a parent keeps covering ground when a visible child with data has no mesh, and each
   interval logs whether those children were waiting on storage, a mesh worker, a scheduling

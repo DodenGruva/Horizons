@@ -8,6 +8,47 @@ first.
 
 ## [Unreleased]
 
+## [0.3.19]
+
+In development.
+
+**Distant grass is the right green for the season now.** 0.3.18 fixed neighbouring tiles
+being different colours; this fixes the colour they all agreed on being slightly wrong.
+
+The game does not have one grass colour per season. It has a strip of sixteen slightly
+different shades for each point in the year, and every individual block picks one of the
+sixteen based on where it stands - which is why a real meadow up close is subtly mottled
+rather than a flat sheet of green. The mod was taking a single one of those sixteen and
+using it for every field in view. In midsummer they range from a dark olive to a bright
+yellow-green, so the mod's distant green could be off by about a quarter, in either
+direction, and it silently changed to a different one of the sixteen as you travelled.
+
+The mod now mixes all sixteen the way a real field does, sampled across the ground around
+you, so distant grass matches the meadow at your feet and stays put as you move. The same
+correction applies to every seasonal tint, so autumn leaves benefit too.
+
+
+## [0.3.18]
+
+In development.
+
+**Neighbouring patches of distant ground no longer come out as completely different
+colours.** One tile of cached terrain would be green and the tile beside it brown, with a
+hard edge between them, on ground that is the same grass in the real world.
+
+The cause: when the mod files away the colour of a block, it asks the game "what colour is
+this block". For grass-covered ground the game answers with **a randomly chosen pixel out of
+the grass texture** - a different one every time it is asked. The mod asks once per cached
+tile, so each tile picked its own random pixel and painted its entire surface with it. In
+the cache from the last playtest, one single block type - ordinary grassy soil - was stored
+under 38 different colours across 1,041 tiles.
+
+The mod now works out one colour per block type, once, by averaging many of those draws, and
+every tile uses it. Blocks that gave a straight answer before are unaffected, and chiselled
+blocks still take their colour from the materials actually in them. Existing caches repair
+themselves as they load, so nothing needs re-exploring and no cached terrain is thrown away.
+
+
 ## [0.3.17]
 
 In development.
