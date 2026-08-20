@@ -22,6 +22,62 @@ namespace VintageHorizons;
 /// correct per-species tints with no re-exploration, and the mapping stays right if a
 /// game or mod update changes which map a block uses.
 /// </summary>
+/// <summary>
+/// The share of a block's stored colour that the live tint must NOT touch, per channel.
+///
+/// Grass-covered ground is not one surface. Vanilla's own top-soil shader draws it as
+/// <c>brownSoil * (1 - grass.a) + grass * grass.a</c>: the grass overlay is colour-mapped,
+/// and the bare dirt showing through it is left exactly as it is. The overlay is only about
+/// 69% opaque for full coverage and less for the sparse variants, so roughly a third of
+/// every grassy block is untinted brown - which is what makes vanilla ground read olive
+/// rather than green, and where nearly all of its blue comes from.
+///
+/// A LOD vertex carries one colour, so the split has to live here instead: the stored
+/// colour is the composite, and the slot's tint is diluted to
+/// <c>share + (1 - share) * tint</c>, which reproduces the shader exactly for the block the
+/// slot was registered from.
+/// </summary>
+public readonly struct LodUntintedShare
+{
+    public readonly float R, G, B;
+
+    public LodUntintedShare(float r, float g, float b) { R = r; G = g; B = b; }
+
+    /// <summary>Everything is tinted: the ordinary case, and what a plain block gets.</summary>
+    public static LodUntintedShare None => default;
+
+    /// <summary>Coarse key so blocks of the same coverage share one slot, at 1/8 steps.</summary>
+    public int Bucket => (int)((R + G + B) / 3f * 8f + 0.5f);
+}
+
+/// <summary>
+/// Vanilla's top-soil compositing, as arithmetic: `chunktopsoil.fsh` draws grass-covered
+/// ground as <c>brownSoil * (1 - grass.a) + grass * grass.a</c>, colour-mapping only the
+/// grass. A LOD vertex carries one colour, so the composite is stored and the tint is
+/// diluted by the share that came from untinted dirt.
+///
+/// The identity that makes that exact:
+///   composite * (share + (1 - share) * tint) == soil * (1 - a) + grass * a * tint
+/// where composite = soil * (1 - a) + grass * a and share = soil * (1 - a) / composite.
+/// A check holds it, because everything the renderer does with these two values assumes it.
+/// </summary>
+public static class LodTopSoil
+{
+    /// <summary>One channel of the composite: what the face averages to, untinted.</summary>
+    public static float Composite(float soil, float grass, float coverage) =>
+        soil * (1f - coverage) + grass * coverage;
+
+    /// <summary>The share of that channel the live tint must leave alone.</summary>
+    public static float UntintedShare(float soil, float grass, float coverage)
+    {
+        float composite = Composite(soil, grass, coverage);
+        return composite <= 0f ? 0f : Math.Clamp(soil * (1f - coverage) / composite, 0f, 1f);
+    }
+
+    /// <summary>The diluted tint a slot holds, from the sampled tint and the share.</summary>
+    public static float Dilute(float share, float tint) => share + (1f - share) * tint;
+}
+
 public class LodTintRegistry
 {
     /// <summary>Slot 0 is the identity tint, used by everything with no colour map.</summary>
@@ -40,8 +96,11 @@ public class LodTintRegistry
     // and the compiler said so, flagging the branch as unreachable. The real check reads
     // the shader files: see StaticAssetChecks in the fast tier of scripts/check.sh.
 
-    readonly Dictionary<(string?, string?), int> slotByMaps = new();
+    readonly Dictionary<(string?, string?, int), int> slotByMaps = new();
     readonly List<Block?> representative = new();
+
+    /// <summary>Per slot, the share of the colour the tint must leave alone. See LodUntintedShare.</summary>
+    readonly List<LodUntintedShare> untintedShare = new();
 
     // vec4 per slot: the uniform upload path takes 4 components per element.
     // Two altitude samples per slot, because the climate maps are indexed by
@@ -64,7 +123,8 @@ public class LodTintRegistry
     public LodTintRegistry()
     {
         representative.Add(null);              // slot 0: no tint
-        slotByMaps[(null, null)] = SlotNone;
+        untintedShare.Add(LodUntintedShare.None);
+        slotByMaps[(null, null, 0)] = SlotNone;
         for (int i = 0; i < tintsLow.Length; i++) tintsLow[i] = tintsHigh[i] = 1f;
     }
 
@@ -76,8 +136,14 @@ public class LodTintRegistry
     /// </summary>
     public Block? PlantTintFallback;
 
-    /// <summary>Slot for this block, registering a new one if this map pair is unseen.</summary>
-    public int SlotFor(Block? block)
+    /// <summary>
+    /// Slot for this block, registering a new one if this (map pair, untinted share) is
+    /// unseen. The share is part of the key because two blocks on the same colour maps can
+    /// still need different amounts of it - full, sparse and very sparse grass coverage
+    /// share `climatePlantTint`/`seasonalGrass` and show quite different amounts of bare
+    /// dirt through it.
+    /// </summary>
+    public int SlotFor(Block? block, LodUntintedShare share)
     {
         if (block == null) return SlotNone;
 
@@ -87,16 +153,17 @@ public class LodTintRegistry
         if (climate == null && season == null)
         {
             return block.BlockMaterial == EnumBlockMaterial.Plant && PlantTintFallback != null
-                ? SlotFor(PlantTintFallback)
+                ? SlotFor(PlantTintFallback, LodUntintedShare.None)
                 : SlotNone;
         }
 
-        var key = (climate, season);
+        var key = (climate, season, share.Bucket);
         if (slotByMaps.TryGetValue(key, out int slot)) return slot;
 
         if (representative.Count >= MaxSlots) return SlotNone; // out of slots: untinted beats wrong
         slot = representative.Count;
         representative.Add(block);
+        untintedShare.Add(share);
         slotByMaps[key] = slot;
         return slot;
     }
@@ -118,8 +185,8 @@ public class LodTintRegistry
             Block? block = representative[slot];
             if (block == null) continue;
 
-            Sample(world, block, x, (int)SampleYLow, z, tintsLow, slot);
-            Sample(world, block, x, (int)SampleYHigh, z, tintsHigh, slot);
+            Sample(world, block, x, (int)SampleYLow, z, tintsLow, slot, untintedShare[slot]);
+            Sample(world, block, x, (int)SampleYHigh, z, tintsHigh, slot, untintedShare[slot]);
         }
     }
 
@@ -139,7 +206,8 @@ public class LodTintRegistry
     const int SampleGridSide = 8;
     const int SampleGridStride = 8;
 
-    static void Sample(IClientWorldAccessor world, Block block, int x, int y, int z, float[] into, int slot)
+    static void Sample(IClientWorldAccessor world, Block block, int x, int y, int z, float[] into,
+        int slot, LodUntintedShare share)
     {
         // Clamped to the map: GetClimate answers 0 - freezing and bone dry - for a position
         // off the edge of the world, and one such sample drags the whole average with it.
@@ -171,9 +239,13 @@ public class LodTintRegistry
         }
 
         const float scale = SampleGridSide * SampleGridSide * 255f;
-        into[slot * 4 + 0] = r / scale;
-        into[slot * 4 + 1] = g / scale;
-        into[slot * 4 + 2] = b / scale;
+
+        // Dilute by the share the tint must not touch, so a slot registered from
+        // grass-covered soil reproduces vanilla's top-soil shader: the bare dirt that
+        // shows through the overlay stays the colour it already is.
+        into[slot * 4 + 0] = LodTopSoil.Dilute(share.R, r / scale);
+        into[slot * 4 + 1] = LodTopSoil.Dilute(share.G, g / scale);
+        into[slot * 4 + 2] = LodTopSoil.Dilute(share.B, b / scale);
         into[slot * 4 + 3] = 1f;
     }
 }

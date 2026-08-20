@@ -124,7 +124,7 @@ public class VintageHorizonsModSystem : ModSystem
             (int)LodWorld.MinDetailDistance, (int)LodWorld.MaxDetailDistance);
 
         pipeline = new LodPipeline(capi, Mod.Logger, DescribePalette,
-            block => (byte)tints.SlotFor(block),
+            block => (byte)TintSlotOf(block),
             block => block.EntityClass != null ? 0 : StableColorOf(block));
         pipeline.TrackPhaseAllocations = allocationTelemetryEnabled;
 
@@ -570,7 +570,7 @@ public class VintageHorizonsModSystem : ModSystem
             color = StableColorOf(block);
         }
 
-        return (color, (byte)tints.SlotFor(block));
+        return (color, (byte)TintSlotOf(block));
     }
 
     /// <summary>
@@ -602,6 +602,14 @@ public class VintageHorizonsModSystem : ModSystem
     int StableColorOf(Block block)
     {
         if (stableColorByBlockId.TryGetValue(block.BlockId, out int cached)) return cached;
+
+        // Grass-covered ground is composited, not painted, and the engine's own answer for
+        // it is both incomplete and byte-swapped. Build it from the atlas instead.
+        if (TryTopSoilColor(block, out int composite, out _))
+        {
+            stableColorByBlockId[block.BlockId] = composite;
+            return composite;
+        }
 
         colorProbePos.Set(0, capi.World.BlockAccessor.MapSizeY - 1, 0);
         int color = block.GetColorWithoutTint(capi, colorProbePos);
@@ -639,6 +647,68 @@ public class VintageHorizonsModSystem : ModSystem
 
     /// <summary>Sky above the world origin: guaranteed to carry no decor. See StableColorOf.</summary>
     readonly BlockPos colorProbePos = new(0, 0, 0);
+
+    /// <summary>Tint slot for a block, with the untinted share its colour carries.</summary>
+    int TintSlotOf(Block block) =>
+        tints.SlotFor(block, TryTopSoilColor(block, out _, out LodUntintedShare share)
+            ? share
+            : LodUntintedShare.None);
+
+    /// <summary>
+    /// Reproduce vanilla's top-soil compositing for a block that has one, from the atlas.
+    ///
+    /// `chunktopsoil.fsh` draws these as
+    /// <c>brownSoil * (1 - grass.a) + grass * grass.a</c>, where the grass overlay is the
+    /// block's `specialSecondTexture` and only the overlay is colour-mapped. Two things
+    /// follow, and the mod had both of them wrong.
+    ///
+    /// The bare dirt showing through is a THIRD of the face at full coverage and more at
+    /// the sparse ones, and it is never tinted. Dropping it is what made distant ground
+    /// read as flat green where vanilla reads olive, and it removed essentially all of the
+    /// blue: the seasonal tint's blue channel is near zero, so anything multiplied by it
+    /// loses its blue entirely, and in vanilla the dirt is not multiplied by it.
+    ///
+    /// And the engine's own `GetColorWithoutTint` cannot be used for these blocks at all -
+    /// see G48. `BlockWithGrassOverlay` answers with `GetRandomColor`, whose values are raw
+    /// `ToArgb` with red at bits 16-23, while `GetAverageColor` is byte-reversed with red
+    /// in the low byte. The mod reads one convention, so every grass-covered block came out
+    /// with red and blue exchanged. Both texture reads here go through `GetAverageColor`,
+    /// so both are in the same order as everything else the mod stores.
+    /// </summary>
+    bool TryTopSoilColor(Block block, out int composite, out LodUntintedShare share)
+    {
+        composite = 0;
+        share = LodUntintedShare.None;
+
+        if (block.RenderPass != EnumChunkRenderPass.TopSoil) return false;
+        if (block.Textures == null
+            || !block.Textures.TryGetValue("specialSecondTexture", out CompositeTexture? overlay)) return false;
+
+        int overlayId = overlay?.Baked?.TextureSubId ?? -1;
+        if (!IsUsableAtlasTexture(overlayId) || !IsUsableAtlasTexture(block.TextureSubIdForBlockColor)) return false;
+
+        int soil = capi.BlockTextureAtlas.GetAverageColor(block.TextureSubIdForBlockColor);
+        int grass = capi.BlockTextureAtlas.GetAverageColor(overlayId);
+
+        // GetAverageColor averages four pixels of the texture INCLUDING their alpha, so the
+        // overlay's coverage arrives in the high byte. It is a four-pixel estimate, not a
+        // true mean - measured at 146 against a real 175 for full grass coverage - which
+        // errs towards showing slightly more dirt than vanilla does.
+        float a = ((grass >> 24) & 0xFF) / 255f;
+        if (a <= 0f) return false;
+
+        int r = Channel(soil, grass, a, 0), g = Channel(soil, grass, a, 8), b = Channel(soil, grass, a, 16);
+        composite = unchecked((int)0xFF000000) | b << 16 | g << 8 | r;
+        share = new LodUntintedShare(
+            Share(soil, grass, a, 0), Share(soil, grass, a, 8), Share(soil, grass, a, 16));
+        return true;
+    }
+
+    static int Channel(int soil, int grass, float a, int shift) => Math.Clamp(
+        (int)(LodTopSoil.Composite((soil >> shift) & 0xFF, (grass >> shift) & 0xFF, a) + 0.5f), 0, 255);
+
+    static float Share(int soil, int grass, float a, int shift) =>
+        LodTopSoil.UntintedShare((soil >> shift) & 0xFF, (grass >> shift) & 0xFF, a);
 
     /// <summary>
     /// A colour texture that resolved to the unknown.png placeholder is not a colour, it
