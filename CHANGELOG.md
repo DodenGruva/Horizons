@@ -8,6 +8,36 @@ first.
 
 ## [Unreleased]
 
+## [0.3.20]
+
+In development.
+
+**Distant grass now has the brown in it that real grass has.** After 0.3.18 and 0.3.19 the
+colour was consistent and followed the season, but it was still visibly too green next to
+the ground under your feet. Two separate faults were behind it, both found from a screenshot.
+
+The first: the game stores the average colour of a texture and a random pixel of a texture
+in **opposite channel orders** - red and blue the other way round. Grass-covered ground is
+one of the few things the game answers with a random pixel, and the mod read it as though it
+were an average, so grass, and only grass, came through with red and blue exchanged. That is
+why it looked as though the grass and the tree colours had been swapped: everything else in
+the world was reading correctly.
+
+The second, and the bigger one: grass-covered ground is not one colour in vanilla either. The
+game draws bare dirt and then paints a grass layer over it that is only about two-thirds
+opaque, and it colours the grass for the season while leaving the dirt exactly as it is. That
+untinted brown third is what makes real ground look olive rather than green, and it carries
+almost all of the blue - the seasonal grass colour has hardly any blue in it, so anything
+tinted by it comes out with none.
+
+The mod now builds the same mixture the game does, and tints only the part the game tints.
+Measured against the game's own shader for ordinary grassy soil at midsummer, the green-to-red
+balance goes from 28% too green to within 6%, and the blue from nearly absent to slightly
+generous. Sparse and very sparse grass get their own correct amount of dirt as well.
+
+Existing caches repair themselves as they load, as before.
+
+
 ## [0.3.19]
 
 In development.

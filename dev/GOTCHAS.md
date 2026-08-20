@@ -860,6 +860,83 @@ every grass tint teal once already.
 
 **Found:** 0.3.19, from a player report on the 0.3.18 build that fixed G46.
 
+### G48 — `GetRandomColor` and `GetAverageColor` return opposite channel orders
+
+**Trigger:** reading a colour out of the block texture atlas and assuming one byte order.
+
+**Trap:** they disagree, in the engine, by construction:
+
+```csharp
+texPos.AvgColor = ColorUtil.ReverseColorBytes(ColorUtil.ColorAverage(pixelsTmp, equalWeight));
+...
+array[num] = num2;              // raw bmp.GetPixel(..).ToArgb()
+texPos.RndColors = array;
+```
+
+`ReverseColorBytes(0xAARRGGBB)` is `0xAABBGGRR`, so **`GetAverageColor` puts red in the low
+byte and `GetRandomColor` puts it at bits 16-23**. The mod stores one convention, so every
+colour that reached it through `GetRandomColor` had red and blue exchanged.
+
+That is not a rare path. `BlockWithGrassOverlay.GetColorWithoutTint` — all grass-covered
+soil, peat and clay — answers with `GetRandomColor`, and so does `BlockGroundStorage`. Blocks
+that fall through to the base implementation get `GetAverageColor` and are correct. So the
+mod's grass was swapped while its leaves and rock were not, which is exactly how the owner
+described it: as if the grass and the tree colours had been exchanged.
+
+Proof is in any cache. Group the stored colours for `soil-low-normal`: one population sits at
+rgb(105,83,60), which is `fertlow.png`'s four-pixel average arriving correctly through the
+repair path, and the other at rgb(128,141,140), which is the grass overlay's mean rgb(148,
+149,129) with red and blue exchanged. A cyan-grey where an olive-grey belongs.
+
+**Do:** read colours through `GetAverageColor` and treat `GetColorWithoutTint` as untrusted
+for byte order. There is no way to ask a block which of the two paths it took.
+
+**Do:** check any new atlas colour source against a texture whose channels differ visibly.
+A greyscale or near-neutral texture hides this completely - the averaged grass base was
+rgb(128,141,140), whose red and blue differ by 12, so the swap survived the 0.3.18 averaging
+and the 0.3.19 tint work without ever looking obviously wrong.
+
+**Found:** 0.3.20, from a player screenshot after two earlier colour fixes had landed.
+
+### G49 — Grass-covered ground is composited by vanilla, and a third of it is never tinted
+
+**Trigger:** taking one colour for a block that vanilla draws in the `TopSoil` render pass.
+
+**Trap:** `chunktopsoil.fsh` is explicit:
+
+```glsl
+vec4 brownSoilColor = texture(terrainTex, uv) * rgba;
+vec4 grassColor = getColorMapped(terrainTexLinear, texture(terrainTex, uv2 + ...)) * rgba;
+outColor = brownSoilColor * (1 - grassColor.a) + grassColor * grassColor.a;
+```
+
+Only the grass overlay is colour-mapped. The dirt showing through it is drawn exactly as it
+is, and the overlay is roughly 69% opaque at full coverage, 54% at sparse, 40% at very
+sparse. So about a third of every grassy block is untinted brown — which is what makes
+vanilla ground read olive rather than green, and where nearly all of its blue comes from,
+because the seasonal tint's blue channel is near zero and anything multiplied by it loses
+its blue outright.
+
+Measured for `soil-low-normal` at midsummer: vanilla G/R 1.09 and B/G 0.26, against the
+mod's 1.40 and 0.08 before this was handled.
+
+**Do:** store the composite and dilute the SLOT's tint by the share that came from dirt.
+`composite * (share + (1 - share) * tint)` equals `soil*(1-a) + grass*a*tint` exactly, which
+is why the untinted share is part of the tint-slot key: two blocks on the same colour maps
+with different grass coverage need different dilution. `TopSoilColorChecks` holds the
+identity over 1,440 combinations.
+
+**Do:** key the case on `block.RenderPass == EnumChunkRenderPass.TopSoil`, not on the
+presence of `specialSecondTexture`. The liquids use that texture key for flow animation and
+would be composited into mud.
+
+**Know:** `GetAverageColor` averages four pixels, alpha included, so the overlay's coverage
+arrives in the high byte — but as a four-pixel estimate, measured at 146 against a true 175.
+The LOD therefore shows slightly more dirt than vanilla. That is the conservative direction
+and it is not worth fudging with a correction factor that is texture-specific.
+
+**Found:** 0.3.20, alongside G48; they were two independent faults in the same surface.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

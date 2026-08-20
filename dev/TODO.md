@@ -116,7 +116,7 @@ Human-reported and still open:
   This is ownership gain latency, resolves within a moment, and fails in the safe direction,
   so it is accepted. If it becomes objectionable, confirm cells near the camera on a shorter
   path rather than widening the budget again.
-- **Land colour: two causes found and fixed, 0.3.18 and 0.3.19.** The tile-to-tile step is
+- **Land colour: four causes found and fixed, 0.3.18 to 0.3.20.** The tile-to-tile step is
   human-confirmed fixed ("it looks so much better"); the follow-up green correction in
   0.3.19 has not been seen yet. Original diagnosis follows. Neighbouring cached
   sections rendered as dramatically different flat colours - one green, the one beside it
@@ -131,8 +131,16 @@ Human-reported and still open:
   as a suspect, correctly. A seasonal colour map is sixteen shades per point in the year with
   the row picked per block from a position hash, so a field is all sixteen mixed and one
   sample was up to a quarter off in red. 0.3.19 averages the tint over 64 positions. See G47.
-  **What the playtest has to say:** whether distant grass now matches the meadow underfoot,
-  and whether it stays put while travelling instead of shifting shade.
+  A screenshot on 0.3.19 showed distant grass still substantially greener than vanilla's,
+  and the owner guessed the grass and tree colours looked swapped - which was literally true.
+  `GetRandomColor` and `GetAverageColor` return opposite channel orders (G48), and grass-
+  covered ground is the main thing the engine answers with the former, so grass alone had red
+  and blue exchanged. Under that sat a larger fault: vanilla composites untinted dirt with a
+  two-thirds-opaque grass overlay and tints only the grass (G49), and the mod tinted
+  everything, which removed the olive and nearly all the blue. 0.3.20 fixes both.
+  **What the playtest has to say:** whether distant grass now reads the same as the meadow
+  underfoot, and whether sparse/very sparse ground and the non-grass surfaces still look
+  right - the change touches every block vanilla draws in the TopSoil pass.
 - Cached water shows the boundary of every chunk, with colour differing across those
   boundaries. This is a SEPARATE report from the land colour above and is untouched by the
   0.3.18 fix - water's palette colour was already stable (`water-still-7`, sd 4). One cheap

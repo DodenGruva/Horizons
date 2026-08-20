@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.3.19` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.20` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -172,6 +172,15 @@ per section. The 2026-08-19 cache holds 38 different colours for `soil-low-norma
 patchwork. Sections already on disk are corrected as they load. Blocks carrying an entity
 keep the per-position answer, which is what chiselled blocks need. See G46. Source and
 check evidence only; no person has seen it yet.
+
+Grass-covered ground is now built the way `chunktopsoil.fsh` builds it - composite the
+untinted dirt with the partly transparent grass overlay, and dilute the tint slot by the
+untinted share - and read through `GetAverageColor` rather than the engine's
+`GetColorWithoutTint`, which for these blocks returns `GetRandomColor` values in the opposite
+channel order and so had red and blue exchanged. See G48 and G49. Predicted against vanilla's
+own shader for `soil-low-normal` at midsummer: G/R 1.03 against vanilla 1.09, where 0.3.19
+was 1.40; B/G 0.33 against 0.26, where 0.3.19 was 0.08. Source and check evidence; the owner
+has seen 0.3.19, not this.
 
 The live tint is now averaged over 64 positions rather than sampled at one. A seasonal
 colour map is a strip of sixteen shades per point in the year and the engine picks the row
