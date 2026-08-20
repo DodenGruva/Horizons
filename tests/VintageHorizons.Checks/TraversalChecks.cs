@@ -12,6 +12,31 @@ public static class TraversalChecks
         VisibilityRejectsWholeNodesConservatively(c);
         ResidencyIgnoresCameraDirection(c);
         ResidencyUsesTheColdSectionGraceBand(c);
+        OpaqueSubmissionOrdersNearestFirst(c);
+    }
+
+    static void OpaqueSubmissionOrdersNearestFirst(Check c)
+    {
+        const double cameraX = 100;
+        const double cameraZ = 100;
+        long containing = LodWorld.SectionKey(0, 1, 1); // 64..128 in both axes
+        long adjacent = LodWorld.SectionKey(0, 2, 1);   // starts 28 blocks away
+        long farther = LodWorld.SectionKey(0, 4, 1);    // starts 156 blocks away
+        var source = new List<long> { farther, adjacent, containing };
+        var ordered = new List<LodOpaqueDrawEntry> { new(-1, -1) };
+
+        LodOpaqueDrawOrder.FillFrontToBack(ordered, source, cameraX, cameraZ);
+
+        c.SeqEq(new[] { containing, adjacent, farther }, ordered.Select(entry => entry.Key).ToArray(),
+            "opaque submission is nearest-first rather than traversal/hash order");
+        c.Eq(3, ordered.Count, "rebuilding the order clears stale entries from the reusable list");
+        c.True(ordered[0].DistanceSq <= ordered[1].DistanceSq
+            && ordered[1].DistanceSq <= ordered[2].DistanceSq,
+            "front-to-back distances are monotonic");
+
+        LodOpaqueDrawOrder.FillFrontToBack(ordered, new[] { adjacent, farther, containing }, cameraX, cameraZ);
+        c.SeqEq(new[] { containing, adjacent, farther }, ordered.Select(entry => entry.Key).ToArray(),
+            "front-to-back order is independent of input order");
     }
 
     static void VisibilityRejectsWholeNodesConservatively(Check c)

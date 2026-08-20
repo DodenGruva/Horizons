@@ -14,6 +14,7 @@ public static class MesherChecks
     {
         Empty(c);
         GreedyMerge(c);
+        FaceWinding(c);
         UnevenBase(c);
         LevelScaling(c);
         AlphaBands(c);
@@ -22,6 +23,26 @@ public static class MesherChecks
         CoverageRules(c);
         Frontier(c);
         UnloadedNeighbourIsNotTheFrontier(c);
+    }
+
+    /// <summary>
+    /// Hardware back-face rejection is safe only when every opaque face is wound from
+    /// outside the represented run. OpenGL treats counter-clockwise triangles as front
+    /// faces by default. The original two-sided mesh opposed top and bottom, but emitted
+    /// west/east with the same winding and north/south with the same winding; enabling
+    /// culling would therefore remove two visible wall directions.
+    /// </summary>
+    static void FaceWinding(Check c)
+    {
+        MeshResult mesh = LodMesher.BuildMesh(Fixtures.Job(Column(yTop: 10, yBottom: 4)));
+        c.Eq(6, Quads(mesh.VertexCount), "one isolated solid run exposes all six faces");
+
+        AssertNormalOnPlane(c, mesh, axis: 0, value: 5f, -1, 0, 0, "west face winds outward");
+        AssertNormalOnPlane(c, mesh, axis: 0, value: 6f, 1, 0, 0, "east face winds outward");
+        AssertNormalOnPlane(c, mesh, axis: 1, value: 4f, 0, -1, 0, "bottom face winds outward");
+        AssertNormalOnPlane(c, mesh, axis: 1, value: 10f, 0, 1, 0, "top face winds outward");
+        AssertNormalOnPlane(c, mesh, axis: 2, value: 5f, 0, 0, -1, "north face winds outward");
+        AssertNormalOnPlane(c, mesh, axis: 2, value: 6f, 0, 0, 1, "south face winds outward");
     }
 
     static void Empty(Check c)
@@ -386,6 +407,49 @@ public static class MesherChecks
             if (onPlane) count++;
         }
         return count;
+    }
+
+    static void AssertNormalOnPlane(Check c, MeshResult mesh, int axis, float value,
+        double expectedX, double expectedY, double expectedZ, string what)
+    {
+        for (int quad = 0; quad < mesh.VertexCount / 4; quad++)
+        {
+            int vertexBase = quad * 12;
+            bool onPlane = true;
+            for (int k = 0; k < 4; k++)
+            {
+                if (Math.Abs(mesh.Xyz[vertexBase + k * 3 + axis] - value) > 0.0001f)
+                {
+                    onPlane = false;
+                    break;
+                }
+            }
+            if (!onPlane) continue;
+
+            int indexBase = quad * 6;
+            int i0 = mesh.Indices[indexBase] * 3;
+            int i1 = mesh.Indices[indexBase + 1] * 3;
+            int i2 = mesh.Indices[indexBase + 2] * 3;
+
+            double ax = mesh.Xyz[i1] - mesh.Xyz[i0];
+            double ay = mesh.Xyz[i1 + 1] - mesh.Xyz[i0 + 1];
+            double az = mesh.Xyz[i1 + 2] - mesh.Xyz[i0 + 2];
+            double bx = mesh.Xyz[i2] - mesh.Xyz[i0];
+            double by = mesh.Xyz[i2 + 1] - mesh.Xyz[i0 + 1];
+            double bz = mesh.Xyz[i2 + 2] - mesh.Xyz[i0 + 2];
+
+            double nx = ay * bz - az * by;
+            double ny = az * bx - ax * bz;
+            double nz = ax * by - ay * bx;
+            double length = Math.Sqrt(nx * nx + ny * ny + nz * nz);
+
+            c.Near(expectedX, nx / length, 0.0001, what + " X");
+            c.Near(expectedY, ny / length, 0.0001, what + " Y");
+            c.Near(expectedZ, nz / length, 0.0001, what + " Z");
+            return;
+        }
+
+        c.True(false, what + " has a quad on the expected plane");
     }
 
     static byte AlphaOf(LodSection section)

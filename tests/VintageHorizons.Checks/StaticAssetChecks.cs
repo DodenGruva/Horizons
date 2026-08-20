@@ -197,8 +197,8 @@ public static class StaticAssetChecks
             : string.Empty;
         c.True(skipBody.Contains("if (!readinessMaskActive", StringComparison.Ordinal),
             "a section is never skipped unless the GPU mask is live");
-        c.Eq(2, CountOccurrences(renderer, "if (SkipVanillaOwnedSection(key)) continue;"),
-            "opaque and water submission share the same skip decision");
+        c.Eq(3, CountOccurrences(renderer, "if (SkipVanillaOwnedSection(key)) continue;"),
+            "both opaque comparison paths and water submission share the same skip decision");
         c.False(skipBody.Contains("Evict", StringComparison.Ordinal)
             || skipBody.Contains("RenderDirty", StringComparison.Ordinal)
             || skipBody.Contains("Remove", StringComparison.Ordinal),

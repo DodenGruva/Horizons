@@ -138,6 +138,10 @@ public class VintageHorizonsModSystem : ModSystem
             AutoUnpause = Environment.GetEnvironmentVariable("VINTAGEHORIZONS_AUTOUNPAUSE") == "1",
             TrackPhaseAllocations = allocationTelemetryEnabled,
             FarViewDistanceCap = config.FarViewDistanceCap,
+            OpaqueBackfaceCulling =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_BACKFACE_CULLING") != "0",
+            OpaqueFrontToBack =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_FRONT_TO_BACK") != "0",
         };
 
         // The saved setting applies unless the environment variable has taken a side, which
@@ -1558,6 +1562,40 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success(
                     $"[VintageHorizons] whole-piece skipping {(renderer.WholeMeshSkip ? "on" : "off")}. " +
                     "Applies on the next frame.");
+            });
+
+        capi.ChatCommands.Create("vhbackface")
+            .WithDescription("Reject back-facing cached opaque terrain. On by default and not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] opaque back-face culling {(renderer.OpaqueBackfaceCulling ? "on" : "off")} (on by default, not saved).");
+
+                renderer.OpaqueBackfaceCulling = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] opaque back-face culling {(renderer.OpaqueBackfaceCulling ? "on" : "off")} (on by default, not saved). " +
+                    "Applies on the next frame; water and thin cover remain two-sided.");
+            });
+
+        capi.ChatCommands.Create("vhfront")
+            .WithDescription("Submit cached opaque terrain front-to-back. On by default and not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] opaque front-to-back submission {(renderer.OpaqueFrontToBack ? "on" : "off")} (on by default, not saved).");
+
+                renderer.OpaqueFrontToBack = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] opaque front-to-back submission {(renderer.OpaqueFrontToBack ? "on" : "off")} (on by default, not saved). " +
+                    "Applies on the next frame; water keeps its existing order.");
             });
 
         capi.ChatCommands.Create("vhholes")

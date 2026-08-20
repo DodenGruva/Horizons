@@ -194,6 +194,23 @@ public class LodTerrainRenderer : IRenderer
     /// off` restores the old shading for comparison.
     /// </summary>
     public bool FlatTopLight { get; set; } = true;
+
+    /// <summary>
+    /// Opaque terrain has outward counter-clockwise winding and uses hardware back-face
+    /// rejection; blended water and thin cover stay two-sided. Human testing across cliffs,
+    /// caves, overhangs, and high/low views found no visual difference, while a same-view
+    /// A/B improved 218 to 260 FPS. `.vhbackface off` remains the immediate comparison and
+    /// compatibility fallback.
+    /// </summary>
+    public bool OpaqueBackfaceCulling { get; set; } = true;
+
+    /// <summary>
+    /// Submit opaque cached sections nearest-first so mountain depth can reject farther
+    /// hidden fragments before their shader runs. Water keeps the traversal order because
+    /// alpha blending has different ordering rules. A same-view human A/B improved 149 to
+    /// 173 FPS with no visible change; `.vhfront off` remains the immediate fallback.
+    /// </summary>
+    public bool OpaqueFrontToBack { get; set; } = true;
     public double ReadinessOwnedWithoutGeometryNearest { get; private set; }
     public double ReadinessOwnedWithoutGeometryFarthest { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
@@ -324,6 +341,7 @@ public class LodTerrainRenderer : IRenderer
     public int EvictedTotal { get; private set; }
     readonly Matrixf modelMat = new();
     readonly List<long> drawList = new();
+    readonly List<LodOpaqueDrawEntry> opaqueFrontToBack = new();
     IShaderProgram? prog;
     bool shaderOk;
     float appliedZFar;
@@ -1970,7 +1988,17 @@ public class LodTerrainRenderer : IRenderer
         }
 
         prog.Use();
-        rapi.GlDisableCullFace();
+        if (OpaqueBackfaceCulling)
+        {
+            // The public API exposes the enable switch but not the concrete client's
+            // GlCullFaceBack helper. The opaque stage owns the ordinary back-face mode;
+            // use that state rather than binding to an internal render implementation.
+            rapi.GlEnableCullFace();
+        }
+        else
+        {
+            rapi.GlDisableCullFace();
+        }
 
         prog.UniformMatrix("viewMatrix", rapi.CameraMatrixOriginf);
         prog.UniformMatrix("projectionMatrix", rapi.CurrentProjectionMatrix);
@@ -2035,18 +2063,37 @@ public class LodTerrainRenderer : IRenderer
 
         skippedLastFrame.Clear();
 
-        // Pass 1: opaque terrain.
-        foreach (long key in drawList)
+        // Pass 1: opaque terrain. The experimental order computes distance once per
+        // selected section and reuses list capacity; sorting is included in DrawCost so
+        // its CPU price stays visible beside any GPU-side gain.
+        if (OpaqueFrontToBack)
         {
-            if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
-            if (SkipVanillaOwnedSection(key)) continue;
-            if (!SetupSectionTransform(key, cullDistSq)) continue;
-            capi.Render.RenderMesh(mesh);
+            LodOpaqueDrawOrder.FillFrontToBack(opaqueFrontToBack, drawList, camPos.X, camPos.Z);
+            foreach (LodOpaqueDrawEntry entry in opaqueFrontToBack)
+            {
+                long key = entry.Key;
+                if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+                if (SkipVanillaOwnedSection(key)) continue;
+                if (!SetupSectionTransform(key, cullDistSq)) continue;
+                capi.Render.RenderMesh(mesh);
+            }
+        }
+        else
+        {
+            foreach (long key in drawList)
+            {
+                if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+                if (SkipVanillaOwnedSection(key)) continue;
+                if (!SetupSectionTransform(key, cullDistSq)) continue;
+                capi.Render.RenderMesh(mesh);
+            }
         }
 
         LastCulledCount = culledThisFrame; // opaque pass only: water covers a subset
 
-        // Pass 2: water, alpha-blended over the terrain.
+        // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
+        // and a plant mat has no opposite face to take over when the camera is underneath.
+        rapi.GlDisableCullFace();
         rapi.GlToggleBlend(true);
         foreach (long key in drawList)
         {

@@ -278,13 +278,18 @@ public static class LodMesher
                 // Y is absolute blocks and is NOT scaled by step, so neither is the offset.
                 float y = first.Thin ? Math.Min(first.YBottom + 0.25f, first.Y) : first.Y;
 
+                // Counter-clockwise from outside the run, matching OpenGL's front-face
+                // default. The renderer may then reject opaque back faces without losing
+                // a surface. This was not true for the old two-sided meshes: top/bottom
+                // happened to oppose one another, but both X walls and both Z walls used
+                // the same winding.
                 if (first.Bottom)
                 {
-                    AddQuad(buf, color, alpha, x0, y, z0, x0, y, z1, x1, y, z1, x1, y, z0);
+                    AddQuad(buf, color, alpha, x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
                 }
                 else
                 {
-                    AddQuad(buf, color, alpha, x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
+                    AddQuad(buf, color, alpha, x0, y, z0, x0, y, z1, x1, y, z1, x1, y, z0);
                 }
             }
 
@@ -346,11 +351,23 @@ public static class LodMesher
             float a0 = seg.Along * step;
             float a1 = alongEnd * step;
 
-            if (xWall)
+            if (seg.Dir == W)
             {
                 AddQuad(buf, color, alpha,
                     fixedCoord, seg.YBottom, a0, fixedCoord, seg.YBottom, a1,
                     fixedCoord, seg.YTop, a1, fixedCoord, seg.YTop, a0);
+            }
+            else if (seg.Dir == E)
+            {
+                AddQuad(buf, color, alpha,
+                    fixedCoord, seg.YBottom, a0, fixedCoord, seg.YTop, a0,
+                    fixedCoord, seg.YTop, a1, fixedCoord, seg.YBottom, a1);
+            }
+            else if (seg.Dir == N)
+            {
+                AddQuad(buf, color, alpha,
+                    a0, seg.YBottom, fixedCoord, a0, seg.YTop, fixedCoord,
+                    a1, seg.YTop, fixedCoord, a1, seg.YBottom, fixedCoord);
             }
             else
             {
