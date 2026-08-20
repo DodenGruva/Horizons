@@ -193,10 +193,11 @@ public class LodStore : SQLiteDBConnection
     /// block ids. MUST run on the main thread - it reads the block registry.
     /// </summary>
     /// <summary>
-    /// Recompute a palette entry's flags and tint slot from the live block. Set by the
-    /// coordinator; runs on the main thread only.
+    /// Recompute a palette entry's flags, tint slot and colour from the live block. Set
+    /// by the coordinator; runs on the main thread only. A zero colour means "keep what
+    /// is stored" - see LodStableColorResolver.
     /// </summary>
-    public System.Func<int, (byte Flags, byte TintSlot)>? ClassifyBlock;
+    public System.Func<int, (byte Flags, byte TintSlot, int Color)>? ClassifyBlock;
 
     /// <summary>
     /// A block code to a live block id, or 0 when the registry does not know it.
@@ -241,10 +242,17 @@ public class LodStore : SQLiteDBConnection
     {
         if (ClassifyBlock == null || blockId <= 0) return;
 
-        (byte flags, byte slot) = ClassifyBlock(blockId);
+        (byte flags, byte slot, int color) = ClassifyBlock(blockId);
         LodPaletteEntry e = section.Palette[index];
         e.Flags = flags;
         e.TintSlot = slot;
+
+        // Colours captured before they were section-independent were a random pixel of
+        // the block's texture, redrawn for every section, which put a hard green/brown
+        // step on every section edge (G46). The live block is the authority here for the
+        // same reason it already is for flags, and correcting on load repairs a cache
+        // that already exists instead of discarding it.
+        if (color != 0) e.Color = color;
         section.Palette[index] = e;
     }
 

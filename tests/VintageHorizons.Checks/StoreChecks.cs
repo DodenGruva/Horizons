@@ -18,6 +18,7 @@ public static class StoreChecks
         DeferredPalette(c);
         AFailedLookupIsNotRemembered(c);
         AColourlessCacheIsRepaired(c);
+        AStoredColourIsRefreshedFromTheLiveBlock(c);
         DisposingTheOfferReaderReleasesItsFileHandle(c);
         LocalOfferMissHookRetriesTheSameBlob(c);
         AssistBlobReaderIsBoundedOrderedAndReadOnly(c);
@@ -197,6 +198,48 @@ public static class StoreChecks
         store.ResolvePendingPalette(section, _ => { calls++; return 99; });
         c.Eq(2, calls, "a code that resolved is answered from cache and not looked up again");
         c.Eq(42, section.Palette[0].BlockId, "keeping the id it first resolved to");
+    }
+
+    /// <summary>
+    /// A colour captured before it was section-independent must be corrected on load.
+    ///
+    /// Block.GetColorWithoutTint is not a function of the block: grass-covered ground
+    /// answers it with a RANDOM pixel of the grass texture, and a palette entry is
+    /// registered once per section. Every 64-block section therefore drew its whole
+    /// surface with a different random pixel - measured at 38 stored colours for
+    /// soil-low-normal alone across 1,041 cached sections - which reads in game as flat
+    /// green and flat brown tiles meeting at a hard edge. Fixing capture reaches no cache
+    /// that already exists, and those caches are worth weeks of exploration, so the live
+    /// block is the authority on load for colour exactly as it already is for flags.
+    ///
+    /// Zero means "keep what is stored", and that is not a spare value: it is how a block
+    /// whose colour genuinely depends on where it stands - a chiselled block averaging the
+    /// materials in its block entity - keeps the colour capture worked out for it, which
+    /// nothing on the load path has the position to recompute.
+    /// </summary>
+    static void AStoredColourIsRefreshedFromTheLiveBlock(Check c)
+    {
+        var section = new LodSection();
+        section.FindOrAddPaletteEntry(blockId: 7, color: 0x00112233, flags: 0, tintSlot: 0);
+        section.FindOrAddPaletteEntry(blockId: 8, color: 0x00445566, flags: 0, tintSlot: 0);
+        section.PendingPaletteCodes = new[] { "game:soil-low-normal", "game:microblock" };
+
+        var store = new LodStore(null!);
+        store.ClassifyBlock = blockId => blockId == 7
+            ? ((byte)LodPaletteEntry.FlagWater, (byte)3, 0x00AABBCC)   // ordinary block
+            : ((byte)0, (byte)5, 0);                                   // colour is positional
+
+        store.ResolvePendingPalette(section, code => code.EndsWith("soil-low-normal") ? 7 : 8);
+
+        c.Eq(0x00AABBCC, section.Palette[0].Color,
+            "an ordinary block takes the live colour, so every section agrees on it");
+        c.Eq((byte)LodPaletteEntry.FlagWater, section.Palette[0].Flags, "flags still refresh");
+        c.Eq((byte)3, section.Palette[0].TintSlot, "and so does the tint slot");
+
+        c.Eq(0x00445566, section.Palette[1].Color,
+            "a block whose colour is positional keeps what capture stored for it");
+        c.Eq((byte)5, section.Palette[1].TintSlot,
+            "while still re-deriving everything that is not the colour");
     }
 
     /// <summary>

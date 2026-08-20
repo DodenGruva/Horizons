@@ -123,7 +123,9 @@ public class VintageHorizonsModSystem : ModSystem
         LodWorld.DetailDistance = GameMath.Clamp(config.DetailDistance,
             (int)LodWorld.MinDetailDistance, (int)LodWorld.MaxDetailDistance);
 
-        pipeline = new LodPipeline(capi, Mod.Logger, DescribePalette, block => (byte)tints.SlotFor(block));
+        pipeline = new LodPipeline(capi, Mod.Logger, DescribePalette,
+            block => (byte)tints.SlotFor(block),
+            block => block.EntityClass != null ? 0 : StableColorOf(block));
         pipeline.TrackPhaseAllocations = allocationTelemetryEnabled;
 
         // Repairs a cache written while a block lookup was poisoned, which saved sections
@@ -526,52 +528,134 @@ public class VintageHorizonsModSystem : ModSystem
                 continue;
             }
 
-            Block block = capi.World.Blocks[entry.BlockId];
-            int subId = block.TextureSubIdForBlockColor;
-            int color = IsUsableAtlasTexture(subId)
-                ? capi.BlockTextureAtlas.GetAverageColor(subId)
-                : ColorFromAnyTexture(block, ColorUtil.WhiteArgb);
-
-            // A colour texture that resolved to the unknown.png placeholder is not a
-            // colour, it is the absence of one. Chiselled blocks land here: their colour
-            // lives in a block entity this path has no position to read (the section came
-            // from a server or a peek), so the honest answer is the same neutral grey an
-            // unknown block gets - not the placeholder's near-white.
-            if (unknownTextureColor != 0 && color == unknownTextureColor)
-            {
-                color = ColorFromAnyTexture(block, LodPaletteRepair.UnknownBlockColor);
-            }
-            entry.Color = color;
+            // The same colour a locally captured section would have stored, so foreign
+            // and local ground meet without a seam. A chiselled block has no colour here
+            // at all - its materials live in a block entity this path has no position to
+            // read, the section having come from a server or a peek - so it takes the
+            // same neutral grey an unidentifiable block gets.
+            entry.Color = StableColorOf(capi.World.Blocks[entry.BlockId]);
             section.Palette[i] = entry;
         }
     }
 
     /// <summary>
-    /// The client half of palette registration: the untinted average colour from the
-    /// texture atlas, plus which live tint applies. Stored untinted on purpose, so the
+    /// The client half of palette registration: the untinted colour a block is drawn as
+    /// at distance, plus which live tint applies. Stored untinted on purpose, so the
     /// shader can follow the calendar instead of freezing the season it was captured in.
     /// A server has no atlas and cannot answer this at all (DESIGN.md §10.4).
     ///
-    /// The position is the exact block being described, and that is load-bearing:
-    /// GetColorWithoutTint reads the world at pos - chiselled blocks average the
-    /// materials in their block entity there, the same way the world map colours them.
-    /// A synthetic chunk-centre position made that lookup miss, so every chisel took
-    /// the placeholder texture's near-white instead of its own materials.
+    /// The exact block position is used ONLY for blocks whose colour genuinely depends on
+    /// it, which are the ones carrying a block entity: a chiselled block averages the
+    /// materials in its entity there, the same way the world map colours it, and a
+    /// synthetic chunk-centre position made that lookup miss. Every other block takes the
+    /// section-independent colour instead - see StableColorOf for why that matters.
     /// </summary>
     (int Color, byte TintSlot) DescribePalette(int blockId, int blockX, int blockY, int blockZ)
     {
         Block block = capi.World.Blocks[blockId];
-        paletteSamplePos.Set(blockX, blockY, blockZ);
-        int color = block.GetColorWithoutTint(capi, paletteSamplePos);
 
+        int color;
+        if (block.EntityClass != null)
+        {
+            paletteSamplePos.Set(blockX, blockY, blockZ);
+            int sampled = block.GetColorWithoutTint(capi, paletteSamplePos);
+
+            // Keeping the sampled colour as the last resort, not grey: a chiselled block
+            // is exactly the case where the block's own texture is the placeholder and
+            // the entity already answered with the materials in it.
+            color = RepairPlaceholder(block, sampled, fallback: sampled);
+        }
+        else
+        {
+            color = StableColorOf(block);
+        }
+
+        return (color, (byte)tints.SlotFor(block));
+    }
+
+    /// <summary>
+    /// One colour per block, identical in every section that ever contains that block.
+    ///
+    /// This has to be computed rather than simply asked for, because
+    /// <c>Block.GetColorWithoutTint</c> is not a function of the block. Grass-covered
+    /// ground answers it with `BlockTextureAtlas.GetRandomColor`, which returns one of
+    /// thirty pixels sampled out of the grass texture at random, and a palette entry is
+    /// registered once per section. So one 64-block section drew its whole surface with
+    /// one random pixel and the section beside it drew its whole surface with another:
+    /// measured at 38 different stored colours for `soil-low-normal` alone across 1,041
+    /// cached sections, scattered with no relation to terrain, climate or height. On the
+    /// ground that reads as flat green and flat brown tiles meeting at a hard edge, which
+    /// is what it looked like.
+    ///
+    /// Averaging many draws collapses that to the texture's own mean, which is the colour
+    /// the block should read as from far away, and caching it by block id makes every
+    /// section agree by construction - no blending across section edges required, because
+    /// there is no longer a step to blend. A block that answers deterministically averages
+    /// to exactly what it already returned, so nothing else changes.
+    ///
+    /// The probe position is the sky above the world origin, never the block's own
+    /// position, for the same reason: the base implementation hands the question to
+    /// whatever DECOR sits on the up face, so sampling real ground would let one snowy or
+    /// mossy sample decide the colour of that block everywhere. Nothing sits in the sky,
+    /// and blocks that need their real position never reach this path.
+    /// </summary>
+    int StableColorOf(Block block)
+    {
+        if (stableColorByBlockId.TryGetValue(block.BlockId, out int cached)) return cached;
+
+        colorProbePos.Set(0, capi.World.BlockAccessor.MapSizeY - 1, 0);
+        int color = block.GetColorWithoutTint(capi, colorProbePos);
+
+        // A block with no colour texture answers -1 (white) every time; averaging that
+        // is meaningless and the placeholder repair below is the real answer for it.
+        if (color >= 0)
+        {
+            long r = 0, g = 0, b = 0;
+            for (int i = 0; i < StableColorSamples; i++)
+            {
+                int sample = block.GetColorWithoutTint(capi, colorProbePos);
+                r += sample & 0xFF;
+                g += (sample >> 8) & 0xFF;
+                b += (sample >> 16) & 0xFF;
+            }
+            color = unchecked((int)0xFF000000)
+                | (int)(b / StableColorSamples) << 16
+                | (int)(g / StableColorSamples) << 8
+                | (int)(r / StableColorSamples);
+        }
+
+        color = RepairPlaceholder(block, color, fallback: LodPaletteRepair.UnknownBlockColor);
+        stableColorByBlockId[block.BlockId] = color;
+        return color;
+    }
+
+    /// <summary>
+    /// Thirty is how many random pixels the atlas actually holds per texture, so this
+    /// samples each of them about twice. Paid once per block id per session.
+    /// </summary>
+    const int StableColorSamples = 64;
+
+    readonly Dictionary<int, int> stableColorByBlockId = new();
+
+    /// <summary>Sky above the world origin: guaranteed to carry no decor. See StableColorOf.</summary>
+    readonly BlockPos colorProbePos = new(0, 0, 0);
+
+    /// <summary>
+    /// A colour texture that resolved to the unknown.png placeholder is not a colour, it
+    /// is the absence of one; so is a block-colour texture the atlas never assigned. Both
+    /// fall back to another of the block's own textures, and to the caller's stand-in if
+    /// the block has none - wrong-but-plausible beats a placeholder or a hole in the world.
+    /// </summary>
+    int RepairPlaceholder(Block block, int color, int fallback)
+    {
         if (!IsUsableAtlasTexture(block.TextureSubIdForBlockColor)
             // Guarded on non-zero: if the atlas never populated AvgColor we would be
             // comparing against 0 and "fixing" every legitimately black block.
             || (unknownTextureColor != 0 && color == unknownTextureColor))
         {
-            color = ColorFromAnyTexture(block, color);
+            color = ColorFromAnyTexture(block, fallback);
         }
-        return (color, (byte)tints.SlotFor(block));
+        return color;
     }
 
     /// <summary>Average colour of unknown.png (near-white, not magenta - measured).</summary>
@@ -585,24 +669,15 @@ public class VintageHorizonsModSystem : ModSystem
     /// DescribePalette because that one also answers the tint slot and needs a world
     /// position; here the block is all there is to go on.
     /// </summary>
-    int AtlasColorOf(int blockId)
+    public int AtlasColorOf(int blockId)
     {
         if (blockId <= 0) return LodPaletteRepair.UnknownBlockColor;
 
-        Block block = capi.World.Blocks[blockId];
-        int subId = block.TextureSubIdForBlockColor;
-        int color = IsUsableAtlasTexture(subId)
-            ? capi.BlockTextureAtlas.GetAverageColor(subId)
-            : ColorFromAnyTexture(block, ColorUtil.WhiteArgb);
-
-        // Same rule as the foreign path: the placeholder's average is not a colour.
-        // The repair has only a block id to go on, so a chiselled block repairs to
-        // neutral grey here and gets its real materials on the next capture.
-        if (unknownTextureColor != 0 && color == unknownTextureColor)
-        {
-            color = ColorFromAnyTexture(block, LodPaletteRepair.UnknownBlockColor);
-        }
-        return color;
+        // Deliberately the same answer capture gives, so a repaired entry cannot become
+        // a colour step against the section next to it. The repair has only a block id
+        // to go on, so a chiselled block repairs to neutral grey here and gets its real
+        // materials on the next capture.
+        return StableColorOf(capi.World.Blocks[blockId]);
     }
 
     /// <summary>

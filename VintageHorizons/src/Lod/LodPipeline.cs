@@ -20,6 +20,14 @@ public delegate (int Color, byte TintSlot) LodPaletteDescriber(int blockId, int 
 /// <summary>Which live tint applies to a block. The server has none and answers 0.</summary>
 public delegate byte LodTintSlotResolver(Block block);
 
+/// <summary>
+/// The colour a stored palette entry should hold now, or 0 for a block whose colour
+/// genuinely depends on where it stands and must keep whatever was captured. Sections
+/// already on disk were written before the colour became section-independent, so they
+/// are corrected as they load rather than discarded - see G46.
+/// </summary>
+public delegate int LodStableColorResolver(Block block);
+
 public enum LodForeignQueueOutcome
 {
     Queued,
@@ -67,6 +75,9 @@ public class LodPipeline
 
     /// <summary>Tint slot for a block; the server has no tints and leaves it 0.</summary>
     readonly LodTintSlotResolver tintSlotFor;
+
+    /// <summary>Section-independent colour for a block; the server has no atlas and leaves it 0.</summary>
+    readonly LodStableColorResolver stableColorFor;
 
     public LodWorld World { get; }
     public LodWorker Worker { get; }
@@ -156,12 +167,13 @@ public class LodPipeline
     long worldEpoch;
 
     public LodPipeline(ICoreAPI api, ILogger logger, LodPaletteDescriber describePalette,
-        LodTintSlotResolver? tintSlotFor = null)
+        LodTintSlotResolver? tintSlotFor = null, LodStableColorResolver? stableColorFor = null)
     {
         this.api = api;
         this.logger = logger;
         this.describePalette = describePalette;
         this.tintSlotFor = tintSlotFor ?? (_ => 0);
+        this.stableColorFor = stableColorFor ?? (_ => 0);
         World = new LodWorld();
         Worker = new LodWorker();
         Remote = new LodRemoteKeySet(World);
@@ -271,7 +283,9 @@ public class LodPipeline
         newStore.ClassifyBlock = blockId =>
         {
             Block? block = blockId > 0 ? api.World.GetBlock(blockId) : null;
-            return block == null ? ((byte)0, (byte)0) : (LodBlockPolicy.FlagsFor(block), tintSlotFor(block));
+            return block == null
+                ? ((byte)0, (byte)0, 0)
+                : (LodBlockPolicy.FlagsFor(block), tintSlotFor(block), stableColorFor(block));
         };
         // In integrated singleplayer both pipelines share one process and therefore one
         // environment. The guarded crash hook belongs to the client cache only; a server
