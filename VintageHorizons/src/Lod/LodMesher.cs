@@ -14,7 +14,9 @@ namespace VintageHorizons;
 /// Coverage rules (unchanged from the non-greedy mesher): solid faces are only
 /// culled by solid neighbors so terrain shows through translucent water; water
 /// faces are culled by any coverage. A missing neighbor section is the frontier
-/// of explored space and renders as a wall.
+/// of explored space and renders as a wall - unless the job says that side only
+/// LOOKS missing because the section has not been loaded yet, in which case water
+/// leaves the edge open; see CollectSide.
 /// </summary>
 public static class LodMesher
 {
@@ -164,6 +166,7 @@ public static class LodMesher
             WaterVertexCount = water.Xyz.Count / 3,
             WaterIndexCount = water.Indices.Count,
             ReadyAtMilliseconds = Environment.TickCount64,
+            AssumedCoveredSides = job.AssumedCoveredSides,
         };
     }
 
@@ -401,6 +404,19 @@ public static class LodMesher
         int yTop, int yBottom, int pid, bool isTranslucent, bool solidCoverOnly)
     {
         var (nb, ncol) = NeighborColumn(job, ncx, ncz);
+
+        // The neighbour section is absent from RAM but the cache holds data for it, so
+        // this is not the edge of explored space and there is nothing here to wall off.
+        //
+        // Water only. A spurious water wall is the worst artefact this mesher can
+        // produce: an ocean edge is a 64-column, seabed-deep sheet at 66% opacity that
+        // shows straight through the flat surface as a dark line down every section
+        // boundary, and sections are meshed nearest-first so the outward side of nearly
+        // every one of them was built before its neighbour had loaded. The same wall on
+        // solid ground is hidden by the neighbouring terrain and is left alone: dropping
+        // it would open a see-through gap at a cliff for as long as the repair takes.
+        if (isTranslucent && nb == null && (job.AssumedCoveredSides & (1 << dir)) != 0) return;
+
         Span<ulong> neighborRuns = nb != null && nb.Captured[ncol] ? nb.ColumnRuns(ncol) : Span<ulong>.Empty;
 
         // For W/E walls the strip axis is Z (fixed = cx); for N/S it's X (fixed = cz).

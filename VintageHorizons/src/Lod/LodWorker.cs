@@ -96,6 +96,14 @@ public class MeshJob
     public required SectionSnapshot?[] Neighbors; // W, E, N, S
     public long EstimatedRetainedBytes;
     public long ReadyAtMilliseconds;
+
+    /// <summary>
+    /// Bit per side (W, E, N, S) whose neighbour section holds captured data we have
+    /// simply not loaded into RAM yet. Those sides are NOT the frontier and must not be
+    /// walled off; see LodMesher.CollectSide. The renderer re-meshes the section when
+    /// the missing neighbour lands, which is what restores the real wall.
+    /// </summary>
+    public byte AssumedCoveredSides;
 }
 
 public class MeshResult
@@ -114,6 +122,12 @@ public class MeshResult
     public int WaterVertexCount;
     public int WaterIndexCount;
     public long ReadyAtMilliseconds;
+
+    /// <summary>
+    /// The job's <see cref="MeshJob.AssumedCoveredSides"/>, carried back so the renderer
+    /// records what this mesh guessed at against the mesh it actually installs.
+    /// </summary>
+    public byte AssumedCoveredSides;
 
     /// <summary>Bytes passed to the GPU, excluding unused pooled-array capacity.</summary>
     public long EstimatedUploadBytes => SectionSnapshot.SaturatingAdd(

@@ -21,6 +21,7 @@ public static class MesherChecks
         ThinMats(c);
         CoverageRules(c);
         Frontier(c);
+        UnloadedNeighbourIsNotTheFrontier(c);
     }
 
     static void Empty(Check c)
@@ -257,6 +258,86 @@ public static class MesherChecks
         for (int i = 0; i < 4; i++) withShort[i] = Fixtures.Snap(shorter);
         MeshResult stepped = LodMesher.BuildMesh(Fixtures.Job(flat, 0, withShort));
         c.Eq(5, Quads(stepped.VertexCount), "a shorter neighbour leaves the exposed wall above it");
+    }
+
+    /// <summary>
+    /// The ocean seam. A section whose neighbour is merely not in RAM is not at the edge
+    /// of explored space, and walling that edge off puts a seabed-deep sheet of 66%-opaque
+    /// water down the boundary - which shows straight through the flat surface as a dark
+    /// line, because water does not hide what is behind it the way ground does.
+    ///
+    /// Measured before the fix on the section built below: 1 water quad with the
+    /// neighbour present, 65 with it absent, 64 of them a 3,200 block^2 wall on the shared
+    /// plane. Sections mesh nearest-first, so the outward side of nearly every one of them
+    /// was built that way and nothing ever re-meshed it.
+    ///
+    /// Solid ground keeps the wall either way. It is hidden by the neighbouring terrain,
+    /// and dropping it would open a see-through gap at a cliff until the repair lands.
+    /// </summary>
+    static void UnloadedNeighbourIsNotTheFrontier(Check c)
+    {
+        LodSection sea = Ocean();
+        const int West = 0;
+
+        MeshResult joined = LodMesher.BuildMesh(Fixtures.Job(sea, 0, AllNeighbours(sea)));
+        c.Eq(0, QuadsOnPlane(joined.WaterXyz, axis: 0, value: 0f),
+            "water between two loaded sections has no wall at all");
+
+        var missingWest = AllNeighbours(sea);
+        missingWest[West] = null;
+
+        MeshResult guessed = LodMesher.BuildMesh(Fixtures.Job(sea, 0, missingWest));
+        c.True(QuadsOnPlane(guessed.WaterXyz, axis: 0, value: 0f) > 0,
+            "an unloaded neighbour still walls the edge when the job does not say otherwise");
+
+        MeshResult repaired = LodMesher.BuildMesh(
+            Fixtures.Job(sea, 0, missingWest, assumedCoveredSides: 1 << West));
+        c.Eq(0, QuadsOnPlane(repaired.WaterXyz, axis: 0, value: 0f),
+            "a side the job marks as merely unloaded grows no water wall");
+        c.Eq(Quads(joined.WaterVertexCount), Quads(repaired.WaterVertexCount),
+            "and the result matches the mesh the loaded neighbour would have produced");
+
+        // The flag is per side: the other three edges are still the frontier.
+        c.True(QuadsOnPlane(repaired.WaterXyz, axis: 0, value: (float)Gs) == 0,
+            "the east edge had its neighbour, so it has no wall either");
+
+        LodSection land = Solid(yTop: 10, yBottom: 0);
+        var landMissingWest = new SectionSnapshot?[4];
+        for (int i = 1; i < 4; i++) landMissingWest[i] = Fixtures.Snap(land);
+        MeshResult solid = LodMesher.BuildMesh(
+            Fixtures.Job(land, 0, landMissingWest, assumedCoveredSides: 1 << West));
+        c.True(QuadsOnPlane(solid.Xyz, axis: 0, value: 0f) > 0,
+            "solid ground keeps its wall on an assumed-covered side");
+    }
+
+    /// <summary>A full section of water over a bumpy seabed - the shape that produced the seam.</summary>
+    static LodSection Ocean()
+    {
+        var s = new LodSection();
+        int water = s.FindOrAddPaletteEntry(blockId: 1, color: 0x00806040, flags: LodPaletteEntry.FlagWater);
+        int rock = s.FindOrAddPaletteEntry(blockId: 2, color: 0x00707070, flags: 0);
+        for (int cz = 0; cz < Gs; cz++)
+        {
+            for (int cx = 0; cx < Gs; cx++)
+            {
+                // An uneven floor on purpose: it is what stops the wall merging into one
+                // ribbon, so the seam is 64 quads per edge rather than one.
+                int floor = 58 + ((cx * 7 + cz * 3) % 5);
+                s.SetColumn(LodSection.ColumnIndex(cx, cz), new[]
+                {
+                    LodSection.PackRun(water, 110, floor),
+                    LodSection.PackRun(rock, floor, 0),
+                });
+            }
+        }
+        return s;
+    }
+
+    static SectionSnapshot?[] AllNeighbours(LodSection s)
+    {
+        var n = new SectionSnapshot?[4];
+        for (int i = 0; i < 4; i++) n[i] = Fixtures.Snap(s);
+        return n;
     }
 
     // ---- helpers ----

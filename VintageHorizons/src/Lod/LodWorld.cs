@@ -110,6 +110,7 @@ public class LodWorld
             if (section != null)
             {
                 Sections[key] = section;
+                SectionBecameResident?.Invoke(key);
                 return section;
             }
         }
@@ -130,11 +131,21 @@ public class LodWorld
         if (loaded == null) return false;
 
         Sections[key] = section = loaded;
+        SectionBecameResident?.Invoke(key);
         return true;
     }
 
     /// <summary>Ask the storage thread to reload an evicted section; null when unavailable.</summary>
     public Action<long>? RequestAsyncLoad;
+
+    /// <summary>
+    /// A section arrived in RAM carrying stored data. Neighbouring meshes may have been
+    /// built while it was absent, and a mesher cannot tell "no data here" from "not
+    /// loaded yet" - the renderer subscribes to repair the sides that guessed. Not the
+    /// same as MarkChanged: nothing about the world changed, only what is in memory, so
+    /// this must not dirty saves, mips, or the arriving section itself.
+    /// </summary>
+    public Action<long>? SectionBecameResident;
 
     /// <summary>Keys with a reload in flight, so the render path stops re-requesting them.</summary>
     public readonly HashSet<long> LoadsInFlight = new();
@@ -187,6 +198,11 @@ public class LodWorld
         // path AND by mip propagation, and the selection walk re-requests a mesh by
         // itself on the next frame if it still wants one here. Marking every arrival
         // would mesh sections that only propagation asked for.
+        //
+        // Neighbours are a different question, and the answer is not "all four" for the
+        // same reason. Only a neighbour that actually built a mesh against our absence
+        // needs one, which is a question about meshes and so belongs to the renderer.
+        SectionBecameResident?.Invoke(key);
     }
 
     /// <summary>

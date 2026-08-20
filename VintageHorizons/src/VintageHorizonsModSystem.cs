@@ -1072,7 +1072,7 @@ public class VintageHorizonsModSystem : ModSystem
         }
 
         Mod.Logger.Notification(
-            "{0}: {1} sections resident [{2}] ({3} RAM-evicted, {4} from cache), {5} meshes ({6} evicted), " +
+            "{0}: {1} sections resident [{2}] ({3} RAM-evicted, {4} from cache), {5} meshes ({6} evicted, {23} seam repairs), " +
             "{7} selected [{8}] minus {9} draw-culled ({22} subtrees traversal-culled), {10} columns captured, {11} pending, " +
             "worker: {12} captures / {13} meshes / {14} mips queued / {15}+{16}+{17} errors, " +
             "{18} awaiting mip ({19} in flight), {20} render-dirty, {21} unsaved",
@@ -1082,7 +1082,7 @@ public class VintageHorizonsModSystem : ModSystem
             worker.PendingCaptures, worker.PendingMeshes, worker.PendingMips,
             worker.CaptureErrors, worker.MeshErrors, worker.MipErrors,
             world.MipDirty.Count, world.MipInFlightCount, world.RenderDirty.Count, world.SaveDirty.Count,
-            renderer.LastTraversalCulledCount);
+            renderer.LastTraversalCulledCount, renderer.SeamRepairsQueued);
 
         Mod.Logger.Notification(
             "  storage on main thread since last report: snapshot {0} calls, {1:0.00}ms avg, {2:0.00}ms max | " +

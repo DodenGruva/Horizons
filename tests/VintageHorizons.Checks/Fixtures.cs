@@ -85,11 +85,13 @@ public static class Fixtures
         };
     }
 
-    public static MeshJob Job(LodSection self, long key = 0, SectionSnapshot?[]? neighbors = null) =>
+    public static MeshJob Job(LodSection self, long key = 0, SectionSnapshot?[]? neighbors = null,
+        byte assumedCoveredSides = 0) =>
         new()
         {
             Key = key,
             Self = Snap(self),
             Neighbors = neighbors ?? new SectionSnapshot?[4],
+            AssumedCoveredSides = assumedCoveredSides,
         };
 }

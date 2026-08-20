@@ -245,6 +245,7 @@ public class LodTerrainRenderer : IRenderer
         CoarseWaitingMesh = 0;
         CoarseWaitingSchedule = 0;
         CoarseWaitingOther = 0;
+        SeamRepairsQueued = 0;
         readiness?.ResetTelemetry();
         readinessMask?.ResetTelemetry();
     }
@@ -263,6 +264,18 @@ public class LodTerrainRenderer : IRenderer
     readonly Dictionary<long, long> lastResidencyFrame = new();
     readonly List<long> evictBatch = new();
     long frameCounter;
+
+    /// <summary>
+    /// Sides (W, E, N, S as bits 0-3) whose live mesh was built against a neighbour that
+    /// held stored data but was not in RAM. Only these owe a repair mesh when the
+    /// neighbour lands - which is the whole point of recording them, because re-meshing
+    /// all four neighbours of every arriving section would roughly double the mesh work
+    /// of a warm join. Keys with nothing assumed are not stored.
+    /// </summary>
+    readonly Dictionary<long, byte> meshedWithoutNeighbor = new();
+
+    /// <summary>Repair meshes queued because a guessed-at neighbour finally arrived.</summary>
+    public int SeamRepairsQueued { get; private set; }
 
     // Phase 1 shadow tracker. It follows vanilla readiness and maintains aggregate
     // classifications, but no draw path reads those classifications yet. Pixel ownership
@@ -408,6 +421,7 @@ public class LodTerrainRenderer : IRenderer
         keepRenderDirty = KeepRenderDirty;
         renderDirtyBlocked = RenderDirtyBlocked;
         maxWorkerMeshBacklog = worker.MeshThreads * MeshBacklogPerThread;
+        world.SectionBecameResident += OnSectionBecameResident;
 
         capi.Event.ReloadShader += LoadShader;
         capi.Event.ChunkDirty += OnReadinessChunkDirty;
@@ -766,6 +780,19 @@ public class LodTerrainRenderer : IRenderer
 
             var neighborSections = new LodSection?[4];
             long estimatedBytes = SectionSnapshot.EstimateRetainedBytes(section);
+
+            // A neighbour that is absent from RAM is NOT automatically the edge of
+            // explored space. HasDataSet is the question the mesher actually wants
+            // answered - the shader's openEdges has always asked it - and residency was
+            // standing in for it. Sections are meshed nearest-first, so the outward side
+            // of nearly every one of them is scheduled before its neighbour has finished
+            // loading, and an ocean answered that with a seabed-deep sheet of translucent
+            // water down every section boundary that never healed.
+            //
+            // Deliberately no load request here: a neighbour outside the draw set is
+            // meant to end in nothing, and forcing it resident to prove that would pull
+            // the whole cache into memory one ring at a time.
+            byte assumedCovered = 0;
             for (int d = 0; d < 4; d++)
             {
                 long nk = LodWorld.NeighborKey(best, d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
@@ -774,6 +801,10 @@ public class LodTerrainRenderer : IRenderer
                     neighborSections[d] = nb;
                     estimatedBytes = SectionSnapshot.SaturatingAdd(
                         estimatedBytes, SectionSnapshot.EstimateRetainedBytes(nb));
+                }
+                else if (world.HasDataSet.Contains(nk) && !world.LoadFailed.Contains(nk))
+                {
+                    assumedCovered |= (byte)(1 << d);
                 }
             }
 
@@ -801,6 +832,7 @@ public class LodTerrainRenderer : IRenderer
                 Neighbors = neighbors,
                 EstimatedRetainedBytes = estimatedBytes,
                 ReadyAtMilliseconds = Environment.TickCount64,
+                AssumedCoveredSides = assumedCovered,
             });
         }
 
@@ -808,6 +840,36 @@ public class LodTerrainRenderer : IRenderer
         MeshSnapshotItems += snapshotBudget.Items;
         MeshSnapshotBytes = SectionSnapshot.SaturatingAdd(
             MeshSnapshotBytes, snapshotBudget.Bytes);
+    }
+
+    /// <summary>
+    /// A section arrived in RAM. Any neighbour whose live mesh left the side facing it
+    /// open - because this section's data was on disk rather than in memory when that
+    /// mesh was built - now owes one re-mesh, and only that neighbour: the bit is cleared
+    /// as the obligation is handed over so an arrival can never queue the same repair
+    /// twice, and a section that guessed at nothing costs a dictionary miss.
+    /// </summary>
+    void OnSectionBecameResident(long key)
+    {
+        if (meshedWithoutNeighbor.Count == 0) return;
+
+        for (int d = 0; d < 4; d++)
+        {
+            long nk = LodWorld.NeighborKey(key, d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
+            if (!meshedWithoutNeighbor.TryGetValue(nk, out byte sides)) continue;
+
+            // Our neighbour to the west has us to ITS east: W/E and N/S are the low bit
+            // of the direction, so the facing side is d ^ 1.
+            int facing = d ^ 1;
+            if ((sides & (1 << facing)) == 0) continue;
+
+            sides &= (byte)~(1 << facing);
+            if (sides == 0) meshedWithoutNeighbor.Remove(nk);
+            else meshedWithoutNeighbor[nk] = sides;
+
+            world.RenderDirty.Add(nk);
+            SeamRepairsQueued++;
+        }
     }
 
     void UploadFinishedMeshes()
@@ -851,6 +913,11 @@ public class LodTerrainRenderer : IRenderer
 
             ReplaceMeshRefs(result.Key, newOpaque, newWater);
 
+            // Tracks the mesh that is actually live, so a repair can only ever be owed by
+            // geometry that is on screen.
+            if (result.AssumedCoveredSides != 0) meshedWithoutNeighbor[result.Key] = result.AssumedCoveredSides;
+            else meshedWithoutNeighbor.Remove(result.Key);
+
             bool hasMesh = HasAnyMesh(result.Key);
             if (!hadMesh && hasMesh) meshBounds.Include(result.Key);
             else if (hadMesh && !hasMesh) meshBounds.Remove(result.Key);
@@ -865,6 +932,7 @@ public class LodTerrainRenderer : IRenderer
 
     void RemoveMeshes(long key)
     {
+        meshedWithoutNeighbor.Remove(key);
         if (!HasAnyMesh(key)) return;
         DisposeMeshRefs(key);
         meshBounds.Remove(key);
@@ -2096,6 +2164,7 @@ public class LodTerrainRenderer : IRenderer
         foreach (MeshRef meshRef in waterMeshes.Values) meshRef.Dispose();
         sectionMeshes.Clear();
         waterMeshes.Clear();
+        meshedWithoutNeighbor.Clear();
         meshBounds.Clear();
         farPlaneState.Reset();
         appliedZFar = 0;
@@ -2123,6 +2192,7 @@ public class LodTerrainRenderer : IRenderer
         // Same reason as the meshes: the mask texture is ours, and a shutdown that never
         // reaches the engine call must still not leak it.
         DisposeReadinessMaskTexture();
+        world.SectionBecameResident -= OnSectionBecameResident;
         capi.Event.ChunkDirty -= OnReadinessChunkDirty;
         capi.Event.ReloadShader -= LoadShader;
         capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);

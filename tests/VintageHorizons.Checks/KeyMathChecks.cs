@@ -184,6 +184,20 @@ public static class KeyMathChecks
         c.Eq(LodWorld.SectionKey(0, 4, 3), LodWorld.NeighborKey(origin, 0, -1), "north neighbour");
         c.Eq(LodWorld.SectionKey(0, 4, 5), LodWorld.NeighborKey(origin, 0, 1), "south neighbour");
 
+        // The direction encoding shared by the mesher (W=0, E=1, N=2, S=3), the mesh
+        // scheduler's neighbour scan and the seam repair, which turns "our neighbour to
+        // the west has us to its east" into d ^ 1. If that pairing is ever wrong the
+        // repair silently re-meshes the wrong section and the seam simply stays.
+        for (int d = 0; d < 4; d++)
+        {
+            long neighbour = LodWorld.NeighborKey(origin,
+                d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
+            int facing = d ^ 1;
+            long back = LodWorld.NeighborKey(neighbour,
+                facing == 0 ? -1 : facing == 1 ? 1 : 0, facing == 2 ? -1 : facing == 3 ? 1 : 0);
+            c.Eq(origin, back, $"side {d} and side {facing} are opposite faces of the same boundary");
+        }
+
         // Stepping west from sx=0 wraps to the top of the 30-bit field rather than going
         // negative. That is only safe because Vintage Story world coordinates are
         // non-negative, so the wrapped key names a section that cannot exist and simply
