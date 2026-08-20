@@ -687,28 +687,117 @@ public class VintageHorizonsModSystem : ModSystem
         int overlayId = overlay?.Baked?.TextureSubId ?? -1;
         if (!IsUsableAtlasTexture(overlayId) || !IsUsableAtlasTexture(block.TextureSubIdForBlockColor)) return false;
 
-        int soil = capi.BlockTextureAtlas.GetAverageColor(block.TextureSubIdForBlockColor);
-        int grass = capi.BlockTextureAtlas.GetAverageColor(overlayId);
+        TextureMean soil = MeanOf(TextureFor(block, block.TextureSubIdForBlockColor),
+            block.TextureSubIdForBlockColor);
+        TextureMean grass = MeanOf(overlay, overlayId);
+        if (grass.Coverage <= 0f) return false;
 
-        // GetAverageColor averages four pixels of the texture INCLUDING their alpha, so the
-        // overlay's coverage arrives in the high byte. It is a four-pixel estimate, not a
-        // true mean - measured at 146 against a real 175 for full grass coverage - which
-        // errs towards showing slightly more dirt than vanilla does.
-        float a = ((grass >> 24) & 0xFF) / 255f;
-        if (a <= 0f) return false;
-
-        int r = Channel(soil, grass, a, 0), g = Channel(soil, grass, a, 8), b = Channel(soil, grass, a, 16);
-        composite = unchecked((int)0xFF000000) | b << 16 | g << 8 | r;
+        float a = grass.Coverage;
+        composite = unchecked((int)0xFF000000)
+            | Channel(soil.B, grass.B, a) << 16 | Channel(soil.G, grass.G, a) << 8 | Channel(soil.R, grass.R, a);
         share = new LodUntintedShare(
-            Share(soil, grass, a, 0), Share(soil, grass, a, 8), Share(soil, grass, a, 16));
+            LodTopSoil.UntintedShare(soil.R, grass.R, a),
+            LodTopSoil.UntintedShare(soil.G, grass.G, a),
+            LodTopSoil.UntintedShare(soil.B, grass.B, a));
         return true;
     }
 
-    static int Channel(int soil, int grass, float a, int shift) => Math.Clamp(
-        (int)(LodTopSoil.Composite((soil >> shift) & 0xFF, (grass >> shift) & 0xFF, a) + 0.5f), 0, 255);
+    static int Channel(float soil, float grass, float a) =>
+        Math.Clamp((int)(LodTopSoil.Composite(soil, grass, a) + 0.5f), 0, 255);
 
-    static float Share(int soil, int grass, float a, int shift) =>
-        LodTopSoil.UntintedShare((soil >> shift) & 0xFF, (grass >> shift) & 0xFF, a);
+    /// <summary>The block's own texture behind a given atlas sub-id, if it has one.</summary>
+    static CompositeTexture? TextureFor(Block block, int subId)
+    {
+        if (block.Textures == null) return null;
+        foreach (CompositeTexture tex in block.Textures.Values)
+        {
+            if ((tex?.Baked?.TextureSubId ?? -1) == subId) return tex;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A texture's colour and coverage, over every pixel of it.
+    ///
+    /// <c>GetAverageColor</c> is not an average: the engine samples exactly four pixels, at
+    /// 35% and 65% of each axis, and calls that the texture's colour. For an opaque texture
+    /// that is close enough. For a partly transparent OVERLAY it is not, because those same
+    /// four pixels also decide how much of the block below shows through - measured at 146
+    /// against a true 175 for full grass coverage, a fifth too much bare dirt, which was the
+    /// whole of the residual error left after 0.3.20 composited the two layers at all.
+    ///
+    /// So read the texture. The colour is alpha-weighted, because a pixel that is barely
+    /// there should barely count, and the pair (alpha-weighted colour, mean alpha) is exactly
+    /// what averaging vanilla's per-pixel blend over the whole face reduces to.
+    /// </summary>
+    readonly record struct TextureMean(float R, float G, float B, float Coverage);
+
+    readonly Dictionary<AssetLocation, TextureMean> textureMeans = new();
+
+    TextureMean MeanOf(CompositeTexture? tex, int atlasSubId)
+    {
+        AssetLocation? loc = tex?.Base?.Clone().WithPathPrefixOnce("textures/").WithPathAppendixOnce(".png");
+        if (loc != null && textureMeans.TryGetValue(loc, out TextureMean cached)) return cached;
+
+        TextureMean mean = loc != null && TryReadTextureMean(loc, out TextureMean read)
+            ? read
+            : AtlasMean(atlasSubId);
+
+        if (loc != null) textureMeans[loc] = mean;
+        return mean;
+    }
+
+    /// <summary>The four-pixel atlas answer, for a texture whose own file cannot be read.</summary>
+    TextureMean AtlasMean(int subId)
+    {
+        int c = capi.BlockTextureAtlas.GetAverageColor(subId);
+        return new TextureMean(c & 0xFF, (c >> 8) & 0xFF, (c >> 16) & 0xFF, ((c >> 24) & 0xFF) / 255f);
+    }
+
+    bool TryReadTextureMean(AssetLocation loc, out TextureMean mean)
+    {
+        mean = default;
+        try
+        {
+            IAsset? asset = capi.Assets.TryGet(loc);
+            if (asset?.Data == null) return false;
+
+            using BitmapExternal bmp = capi.Render.BitmapCreateFromPng(asset.Data);
+
+            // Read through Pixels, not GetPixel: the latter returns an SKColor, which would
+            // put SkiaSharp on the mod's reference list for no gain. Both are 0xAARRGGBB -
+            // red at bits 16-23, the order the atlas reads pixels in before it reverses the
+            // bytes for AvgColor and does not for RndColors (G48). The caller puts red back
+            // in the low byte. The decoder asks for unpremultiplied alpha, so weighting the
+            // colour by it below is a weighting and not a second application of it.
+            int[] argb = bmp.Pixels;
+            if (argb == null || argb.Length == 0) return false;
+            long pixels = argb.Length;
+
+            double r = 0, g = 0, b = 0, alpha = 0;
+            foreach (int p in argb)
+            {
+                double aPixel = ((p >> 24) & 0xFF) / 255.0;
+                r += ((p >> 16) & 0xFF) * aPixel;
+                g += ((p >> 8) & 0xFF) * aPixel;
+                b += (p & 0xFF) * aPixel;
+                alpha += aPixel;
+            }
+
+            if (alpha <= 0) return false;
+
+            mean = new TextureMean((float)(r / alpha), (float)(g / alpha), (float)(b / alpha),
+                (float)(alpha / pixels));
+            return true;
+        }
+        catch (Exception e)
+        {
+            Mod.Logger.Notification(
+                "Could not read texture '{0}' for its true average; using the atlas estimate instead. {1}",
+                loc, e.Message);
+            return false;
+        }
+    }
 
     /// <summary>
     /// A colour texture that resolved to the unknown.png placeholder is not a colour, it
