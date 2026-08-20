@@ -1,8 +1,8 @@
-# Session 30 — The colour of a block was a dice roll, twice
+# Session 30 — Four faults in one colour
 
 **Date:** `2026-08-19`
 **Branch/commit:** `codex/chunk-aware-mask`, from `809c74c`
-**Mod version:** `0.3.18`, then `0.3.19`
+**Mod version:** `0.3.18`, `0.3.19`, then `0.3.20`
 **Assist protocol / blob / schema:** `1 / 4 / 6`
 
 > Session records are Tier 3 history. Write narrative as needed, but preserve the four required tail sections so future harvesting remains mechanical.
@@ -81,6 +81,26 @@ coarseness report.
    every sample to row 0, and it drops the height-above-sealevel term the two-altitude tint
    depends on.
 
+7. **A screenshot reopened it, and there were two more.** On 0.3.19 the owner reported
+   distant grass still substantially greener than vanilla's and offered a guess: *"it almost
+   looks like the colors should be swapped between the grass and the tree color."* That was
+   literally true. `GetAverageColor` is byte-reversed and `GetRandomColor` is not, so red
+   arrives in opposite bytes; `BlockWithGrassOverlay` is one of the few classes answering
+   `GetColorWithoutTint` with the latter, so grass-covered ground alone had red and blue
+   exchanged while leaves and rock were correct. Both populations are visible in the cache:
+   rgb(105,83,60) from the repair path, which is the dirt texture read correctly, and
+   rgb(128,141,140), which is the grass overlay's rgb(148,149,129) swapped.
+
+   Under it sat a larger fault. `chunktopsoil.fsh` draws these blocks as
+   `brownSoil * (1 - grass.a) + grass * grass.a` and colour-maps only the grass; the overlay
+   is about 69% opaque, so a third of every grassy block is untinted brown. The mod tinted
+   all of it, which removed the olive and — because the seasonal tint's blue channel is near
+   zero — essentially all the blue. 0.3.20 composites the two from the atlas and dilutes the
+   tint slot by the untinted share, which is now part of the slot key.
+
+   Measured against the shader for `soil-low-normal` at midsummer: G/R 1.03 against vanilla's
+   1.09 where 0.3.19 was 1.40, and B/G 0.33 against 0.26 where it was 0.08.
+
 ---
 
 ## Delivered
@@ -97,6 +117,18 @@ Source, 0.3.18:
   already on disk are corrected as they load. 0 means "keep what is stored".
 - `RepairPlaceholder` factors out the unknown.png repair with an explicit fallback, so the
   chisel path keeps its sampled colour as the last resort and the repair paths keep grey.
+
+Source, 0.3.20:
+
+- `TryTopSoilColor` rebuilds vanilla's top-soil composite from the atlas for any block in the
+  `TopSoil` render pass, using `GetAverageColor` for both textures so nothing arrives
+  byte-swapped, and taking the overlay's coverage from the alpha `AvgColor` carries.
+- `LodUntintedShare` and `LodTopSoil` carry the split; the tint-slot key includes the share
+  bucket so full, sparse and very sparse coverage do not share one dilution.
+- New `TopSoilColorChecks`: 43 assertions, including the identity
+  `composite * (share + (1 - share) * tint) == soil*(1-a) + grass*a*tint` over 1,440
+  combinations. Totals now 1,431 Release assertions and 1,388 documentation checks.
+- G48 (opposite channel orders) and G49 (top-soil compositing).
 
 Source, 0.3.19:
 
@@ -146,7 +178,15 @@ the TODO entry that had merged the land and water colour reports.
 
 Judgement calls awaiting human review:
 
-- The 0.3.19 tint averaging has not been seen in game. The 0.3.18 fix is human-confirmed.
+- 0.3.20 has not been seen in game, and 0.3.19's tint averaging was never judged on its own
+  either - the screenshot that prompted 0.3.20 was taken on it. Only 0.3.18 is
+  human-confirmed.
+- The atlas reports overlay coverage from four pixels: 146 against a true 175 for full grass.
+  The LOD therefore shows slightly more untinted dirt than vanilla does, which is why the
+  predicted B/G lands at 0.33 against vanilla's 0.26. Conservative direction, deliberately
+  not corrected by a texture-specific fudge factor.
+- 0.3.20 changes the stored colour of every block vanilla draws in the TopSoil pass - soil,
+  peat, clay, cob and forest floor - not only full-coverage grass.
 - The averaged tint is now the *mean* of a spread that vanilla renders as per-block mottling.
   That is right for distant ground, where a pixel covers many blocks, and it is a deliberate
   loss of variation at the near edge of the cached band.
