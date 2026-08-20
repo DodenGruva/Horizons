@@ -1,5 +1,6 @@
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
+using Vintagestory.API.MathTools;
 
 namespace VintageHorizons;
 
@@ -122,22 +123,57 @@ public class LodTintRegistry
         }
     }
 
+    /// <summary>
+    /// Positions each tint is averaged over, on a lattice of this many blocks. A seasonal
+    /// map is not one colour: `seasonalGrass` is 128x16, and the engine picks the ROW from
+    /// a hash of each block's own position, so what a field actually looks like is all
+    /// sixteen rows mixed together. A single sample takes one row and paints every distant
+    /// field with it - in midsummer the rows run #628100 to #97B825 around a true mean of
+    /// #7B9C0D, so the green was off by up to a quarter in red, and it re-rolled every time
+    /// the player moved far enough to change the hash.
+    ///
+    /// 64 positions eight blocks apart cover a 56-block square: wide enough for the hashes
+    /// to decorrelate, narrow enough that the climate underneath them is still the player's
+    /// own. It runs every 240 frames for a handful of slots, so the cost is nothing.
+    /// </summary>
+    const int SampleGridSide = 8;
+    const int SampleGridStride = 8;
+
     static void Sample(IClientWorldAccessor world, Block block, int x, int y, int z, float[] into, int slot)
     {
-        int rgba = world.ApplyColorMapOnRgba(
-            block.ClimateColorMapResolved, block.SeasonColorMapResolved,
-            unchecked((int)0xFFFFFFFF), x, y, z);
+        // Clamped to the map: GetClimate answers 0 - freezing and bone dry - for a position
+        // off the edge of the world, and one such sample drags the whole average with it.
+        int maxX = world.BlockAccessor.MapSizeX - 1;
+        int maxZ = world.BlockAccessor.MapSizeZ - 1;
 
-        // ApplyColorMapOnRgba flips red and blue by default, so red is the high byte -
-        // which is exactly what ColorUtil.ToRGBAFloats unpacks, rather than restating
-        // the engine's channel order here.
-        // ToRGBAFloats[0] is the HIGH byte, which is where ApplyColorMapOnRgba puts red
-        // (it flips red and blue by default). Wiring [2] to red swapped R and B and
-        // turned every grass tint teal.
-        float[] rgbaf = Vintagestory.API.MathTools.ColorUtil.ToRGBAFloats(rgba);
-        into[slot * 4 + 0] = rgbaf[0];
-        into[slot * 4 + 1] = rgbaf[1];
-        into[slot * 4 + 2] = rgbaf[2];
+        int r = 0, g = 0, b = 0;
+        for (int i = 0; i < SampleGridSide; i++)
+        {
+            int sx = GameMath.Clamp(x + (i - SampleGridSide / 2) * SampleGridStride, 0, maxX);
+            for (int j = 0; j < SampleGridSide; j++)
+            {
+                int sz = GameMath.Clamp(z + (j - SampleGridSide / 2) * SampleGridStride, 0, maxZ);
+
+                int rgba = world.ApplyColorMapOnRgba(
+                    block.ClimateColorMapResolved, block.SeasonColorMapResolved,
+                    unchecked((int)0xFFFFFFFF), sx, y, sz);
+
+                // Unpacked by hand rather than through ColorUtil.ToRGBAFloats, which
+                // allocates a float[4] per call and this now calls it 64 times per slot
+                // per height. The channel order is the one that function uses, and it is
+                // the trap here: ApplyColorMapOnRgba flips red and blue by default, so red
+                // arrives at bits 16-23. Reading red out of the low byte swapped R and B
+                // and turned every grass tint teal.
+                r += (rgba >> 16) & 0xFF;
+                g += (rgba >> 8) & 0xFF;
+                b += rgba & 0xFF;
+            }
+        }
+
+        const float scale = SampleGridSide * SampleGridSide * 255f;
+        into[slot * 4 + 0] = r / scale;
+        into[slot * 4 + 1] = g / scale;
+        into[slot * 4 + 2] = b / scale;
         into[slot * 4 + 3] = 1f;
     }
 }
