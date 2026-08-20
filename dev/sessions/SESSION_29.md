@@ -2,7 +2,7 @@
 
 **Date:** `2026-08-19`
 **Branch/commit:** `codex/chunk-aware-mask`
-**Mod version:** `0.3.16`
+**Mod version:** `0.3.16`, then `0.3.17` (mask default)
 **Assist protocol / blob / schema:** `1 / 4 / 6`
 
 > Session records are Tier 3 history. Write narrative as needed, but preserve the four required tail sections so future harvesting remains mechanical.
@@ -75,9 +75,21 @@ report, all still open in `dev/TODO.md`.
 
 6. **Human-tested and confirmed.** The owner reported the band closed on 0.3.16.
 
+7. **The mask became the default, 0.3.17.** The owner's verdict was that the band was gone
+   and the seam overlap went unnoticed, which is acceptance of the tradeoff the draw-range
+   threshold deliberately makes. Two things were changed beyond the flag itself, both to
+   avoid traps rather than because they were asked for. Persistence reads
+   `ChunkMaskRequested` rather than `ChunkMaskEnabled`: the latter reports the *effective*
+   state, so a transient texture failure would have written `false` and disabled the feature
+   for every future session with no visible cause. And `VINTAGEHORIZONS_CHUNK_MASK` became an
+   override in both directions, with `bench-windows.ps1` pinning it explicitly, because a
+   benchmark run without `-ChunkMask` would otherwise measure the saved setting — now the
+   mask — instead of the radial control it exists to compare against. The static check
+   asserting the opt-in gate was rewritten to assert the override survives, for that reason.
+
 ## Delivered
 
-Source, 0.3.16, both behind `.vhmask`:
+Source, 0.3.16, both behind `.vhmask` (which 0.3.17 then turned on by default):
 
 - Ownership denies any cell whose column lies beyond `viewDistance − 46` blocks, air
   included, with the constant derived from the in-chunk diagonal and documented on itself.
@@ -137,12 +149,16 @@ CHANGELOG regenerated around a solved band.
 
 Judgement calls awaiting human review:
 
-- The accepted seam overlap. Cached terrain may now draw over the outermost chunk and a
-  half of live vanilla terrain. The owner confirmed the band closed but has not separately
-  judged whether that seam reads acceptably at the horizon.
-- Whether the per-cell mask should now become the default. It works and is human-confirmed
-  for the first time; the radial handoff remains the shipped path and nothing has been
-  benchmarked since 0.3.9.
+- **Resolved in-session:** the seam overlap was accepted ("I didn't even notice it") and the
+  mask became the default in 0.3.17. Both were the owner's calls. Note the shape of the
+  evidence: acceptance by non-observation is weaker than acceptance by inspection, and it now
+  underwrites a default that reaches every player rather than an opt-in.
+- Whether the default survives a benchmark. It was flipped on visual evidence alone, and
+  reverting it is one line if the numbers disagree.
+- The `.vhmask` persistence path has no test. It writes and reloads a config field like the
+  other saved settings, but nothing exercises the write/reload cycle, and the failure mode it
+  was designed against — saving the effective state after a texture failure — would only ever
+  appear in a later session.
 
 Claims lacking their evidence level:
 
