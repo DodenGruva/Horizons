@@ -18,6 +18,7 @@ public static class StaticAssetChecks
         ReadinessShadowWiring(c);
         ReadinessTelemetryContract(c);
         OwnershipMaskWiring(c);
+        OcclusionCullingWiring(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
         ChatCommandNamesAreUnique(c);
@@ -475,6 +476,40 @@ public static class StaticAssetChecks
         c.True(scanned > 0, "found shader files to scan for integer vector uniforms");
         c.SeqEq(Array.Empty<string>(), offenders,
             "no shader declares an integer vector uniform the client cannot set");
+    }
+
+    /// <summary>
+    /// The experimental culler relies only on render order: vanilla terrain populates the
+    /// depth buffer at 0.37, then cached terrain follows at 0.38. The engine sorts a
+    /// renderer only when it is registered, so a live toggle must unregister and register
+    /// again rather than merely change the property returned by RenderOrder.
+    /// </summary>
+    static void OcclusionCullingWiring(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src", "Render",
+            "LodTerrainRenderer.cs"));
+        string mod = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "VintageHorizonsModSystem.cs"));
+
+        c.True(mod.Contains("ChatCommands.Create(\"vhocclusion\")", StringComparison.Ordinal),
+            "the live occlusion toggle is registered");
+        c.True(mod.Contains("VINTAGEHORIZONS_OCCLUSION_CULLING\") != \"0\"", StringComparison.Ordinal),
+            "post-vanilla depth rejection is default-on with an explicit off override");
+        c.True(renderer.Contains("bool postVanillaDepthCulling = true", StringComparison.Ordinal),
+            "direct renderer construction also starts at the accepted post-vanilla order");
+        c.True(renderer.Contains("PreVanillaRenderOrder = 0.36", StringComparison.Ordinal)
+            && renderer.Contains("PostVanillaRenderOrder = 0.38", StringComparison.Ordinal),
+            "the experiment brackets vanilla terrain's established 0.37 order");
+        c.True(renderer.Contains("capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque)",
+                StringComparison.Ordinal)
+            && CountOccurrences(renderer,
+                "capi.Event.RegisterRenderer(this, EnumRenderStage.Opaque") == 1,
+            "changing order re-registers the renderer through one shared registration path");
+        c.False(renderer.Contains("BeginConditionalRender", StringComparison.Ordinal)
+            || renderer.Contains("lodocclusion", StringComparison.Ordinal)
+            || renderer.Contains("LodOcclusionProbe", StringComparison.Ordinal),
+            "the rejected query path is absent");
     }
 
     /// <summary>

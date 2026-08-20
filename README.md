@@ -53,6 +53,7 @@ in advance.
 | `.vhcoarse` | Standing where far terrain looks blockier than it should, run this. It reports which nearby detail is missing and what it is waiting for. |
 | `.vhbackface [on\|off]` | Reject back-facing cached solid terrain before shading it. On by default and not saved; water and thin surfaces remain two-sided. |
 | `.vhfront [on\|off]` | Submit cached solid terrain nearest first so nearer ground can hide farther ground sooner. On by default and not saved; water keeps its original order. |
+| `.vhocclusion [on\|off]` | Draw cached terrain just after vanilla so the ordinary depth test rejects pixels behind current hills. On by default and not saved; `.vhocclusion off` immediately restores the pre-vanilla order. |
 | `.vhdefer [on\|off]` | Stay idle when another LOD mod draws (on by default). A change applies at the next start, not at once. |
 
 ### If your server runs Farseer, ChunkLOD or TopoHorizon

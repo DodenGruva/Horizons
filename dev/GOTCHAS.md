@@ -1090,6 +1090,37 @@ future conservative occlusion must address.
 
 **Found:** 2026-08-20, from separate owner-run `.vhbackface` and `.vhfront` comparisons.
 
+### G54 — A high occlusion-query rejection rate can save no time
+
+**Trigger:** a nearby vanilla hill hides kilometres of cached terrain, while the cached
+renderer runs immediately before vanilla terrain and GPU work still changes sharply with
+view direction.
+
+**Trap:** same-frame `GL_SAMPLES_PASSED` boxes eventually reported 83% hidden, yet conditional
+rendering changed 156 FPS to 155 FPS. The percentage counted boxes rather than work, the CPU
+still prepared and submitted every real mesh, and proxy raster/query dependencies replaced
+the fragment work they suppressed. More fundamentally, Vintage Horizons queried at opaque
+order 0.36 and vanilla terrain drew at 0.37, so the current hill the player expected to be
+the occluder did not exist in depth yet.
+
+**Do:** put the established occluder into depth first. Cached terrain now registers at 0.38,
+then ordinary depth testing rejects its fragments behind vanilla terrain without proxy
+geometry or query synchronization. Re-register when toggling because the engine sorts
+`IRenderer.RenderOrder` only during registration. Keep `.vhocclusion off` at 0.36 as the
+overlap/compatibility fallback, and keep visibility independent from residency.
+
+**Evidence:** post-vanilla order raised the owner's valley view from 148 to 179 FPS (+20.9%,
+about 6.76 to 5.59 ms, a 1.17 ms reduction). Looking down at vanilla ground raised 590 to
+651 FPS (+10.3%) but saved only about 0.16 ms because the entire frame was already below
+1.7 ms. The owner saw minute distant changes only through immediate toggling and judged
+them entirely acceptable.
+
+**Know:** FPS percentage exaggerates small savings at very high rates; compare frame time.
+The accepted result is one-machine human evidence, not a GPU-timer attribution or a portable
+benchmark.
+
+**Found:** 2026-08-20, from the rejected query playtest and accepted render-order A/B.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

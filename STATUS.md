@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-20
-**Mod version:** `0.3.27` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.30` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `42` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -35,8 +35,14 @@ Water and thin/cutout surfaces remain two-sided, and water keeps traversal order
 accepted both defaults after isolated in-game toggles: back-face culling raised 218 to 260
 FPS (about 0.74 ms per frame) and front-to-back raised 149 to 173 FPS (about 0.93 ms), with no
 visible difference. `.vhbackface off` and `.vhfront off` remain session-only fallbacks.
-These changes reduce overdraw but are not true occlusion: the renderer still has no section
-occlusion query, hierarchical depth test or conservative terrain horizon.
+Since 0.3.30 the whole cached pass also runs immediately after vanilla terrain, at opaque
+order 0.38 rather than 0.36 around vanilla's 0.37. Current hills therefore populate depth
+before hidden cached fragments reach the shader. The owner measured 148 to 179 FPS in a
+valley (about 1.17 ms saved) and 590 to 651 while looking down (about 0.16 ms), with minute
+distant changes judged entirely acceptable. `.vhocclusion off` restores the old order.
+A preceding same-frame query prototype was removed after 83% hidden boxes changed 156 FPS
+to 155 FPS; rejection count alone did not pay its proxy/query/submission cost, and vanilla
+terrain was not yet in depth at the query point.
 
 **The band is closed** (0.3.16, confirmed in game by the owner on 2026-08-19). It was the
 engine's own per-frame range cull, and it is the reason six releases of ownership rules
@@ -360,6 +366,10 @@ regression coverage pins the convention.
 depth reject farther fragments without per-frame allocation. Water retains traversal order.
 The owner accepted both GPU changes after +19.3% and +16.1% same-view comparisons with no
 visual difference.
+36. Cached terrain registers immediately after vanilla terrain so current hills populate
+depth first. The owner accepted the default after +20.9% in a valley and +10.3% while looking
+down, with minute distant changes judged entirely acceptable. A same-frame query prototype
+that reported 83% hidden boxes but no FPS gain was removed.
 
 ## 4. Measured diagnosis and result
 
@@ -517,12 +527,11 @@ with residency, selected nodes and evictions unchanged. The mask alone was neutr
 gain is the whole-mesh skip. The readiness tracker's integrated convergence and
 cost are now measured; GPU mask publication, mixed-mesh sampling, CPU skipping, and any
 resulting net frame-time effect remain open.
-6. View direction still exposes a large cached-terrain GPU remainder. The owner measured
-about 150 FPS while facing roughly 4,000 blocks of mountainous cached terrain and more than
-300 FPS while facing away, at least 3.33 ms of direction-dependent frame time. Back-face
-culling and front-to-back ordering recover about 0.74 and 0.93 ms in their sampled views,
-but no section-level occlusion exists. Conservative hidden-terrain rejection is now the
-renderer priority; GPU timer breakdown and controlled cross-driver evidence remain absent.
+6. View direction exposed a large cached-terrain GPU remainder. Back-face culling and
+front-to-back ordering recovered about 0.74 and 0.93 ms in sampled views. Moving cached
+terrain after vanilla recovered another 1.17 ms in the owner's valley case and 0.16 ms while
+looking down. The renderer still has no section-level visibility rejection, and CPU mesh
+submission remains; GPU timer breakdown and controlled cross-driver evidence remain absent.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -547,11 +556,11 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Investigate conservative section-level occlusion for cached mountainous terrain. The
-current renderer has frustum/distance/ownership rejection, back-face culling and nearest-first
-opaque submission, but it cannot reject a section hidden behind nearer cached terrain. Any
-prototype must preserve instant turn-around from resident meshes and fail toward drawing,
-never toward holes or stale camera-dependent disappearance.
+1. Measure what direction-dependent renderer cost remains after post-vanilla depth rejection
+before selecting regional buffers, multi-draw, instancing, a terrain horizon, or delayed
+visibility. The same-frame section-query prototype is rejected evidence, not unfinished
+work: 83% hidden boxes produced no FPS gain. Any later visibility result must preserve
+instant turn-around from resident meshes and fail toward drawing.
 2. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
@@ -567,7 +576,7 @@ are not normally achievable. `.vhcoarse` remains ready if the symptom becomes pr
 100 meshes in 6.6 s against the old 6.1 s baseline, reversing the 36.4 s regression, but it
 is still one sample.
 6. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
-warranted after occlusion evidence and cross-driver testing.
+warranted after post-vanilla evidence and cross-driver testing.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -747,6 +756,12 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The owner reported about 150 FPS while facing roughly 4,000 blocks of cached mountainous
   terrain and more than 300 FPS when facing away. This establishes a large view-dependent
   rendering opportunity on that machine, not its exact GPU phase or a portable result.
+- A same-frame GPU query prototype eventually reported 83% hidden boxes but changed 156 FPS
+  to 155 FPS. The owner then tested cached terrain after vanilla terrain: the same broad
+  valley case rose from 148 to 179 FPS (+20.9%, about 1.17 ms saved), and looking down rose
+  from 590 to 651 FPS (+10.3%, about 0.16 ms saved). Minute distant changes were detectable
+  only through immediate toggling and were judged entirely acceptable. This accepts the
+  post-vanilla default and rejects the query implementation on that machine.
 
 ### Not yet established
 
@@ -785,7 +800,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   multiplayer, or long-soak comparison exists.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
-- The two isolated GL-state/order toggles strongly establish avoidable GPU overdraw on the
+- The three isolated GL-state/order toggles strongly establish avoidable GPU overdraw on the
   owner's machine, but shader, raster, bandwidth and driver costs remain unseparated. There
   are no GPU timers, repeated alternating benchmarks, second driver or second machine.
 - The per-cell ownership band is **resolved** in 0.3.16 and confirmed in game; it moved to

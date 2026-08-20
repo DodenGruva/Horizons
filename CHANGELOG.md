@@ -8,6 +8,28 @@ first.
 
 ## [Unreleased]
 
+## [0.3.30]
+
+In development. The rendering change below was accepted in game on the owner's machine.
+
+**Nearby real terrain now hides distant cached terrain before the cached shader runs.**
+Vintage Horizons used to draw immediately before the game's terrain pass. The final image
+was correct because real chunks overwrote cached ground, but the GPU had already paid to
+shade everything behind the foreground. Cached terrain now draws immediately after real
+terrain, allowing the ordinary depth test to reject those hidden pixels first.
+
+In the owner's valley comparison, with roughly 4,000 blocks of cache behind a current hill,
+`.vhocclusion on` raised 148 FPS to 179 FPS (about 1.17 ms saved per frame). Looking down at
+ground raised 590 FPS to 651 FPS (about 0.16 ms saved). The owner saw only minute distant
+changes detectable through immediate toggling and judged them entirely acceptable. The
+order is on by default; `.vhocclusion off` restores the earlier order for the current
+session.
+
+An earlier same-frame bounding-box query prototype was rejected. It eventually reported
+83% of boxes hidden but changed 156 FPS to 155 FPS: its proxy/query/dependency cost replaced
+the work it suppressed, and it ran before the nearby real hill existed in depth. None of
+that query machinery remains.
+
 ## [0.3.27]
 
 In development. Both rendering changes below were accepted in game on the owner's machine.
@@ -28,7 +50,7 @@ default; `.vhfront off` restores the old order for the current session.
 
 These are overdraw reductions, not true occlusion culling. Looking across roughly 4,000
 blocks of cached mountainous terrain still measured about 150 FPS against more than 300 FPS
-when facing away, so conservative hidden-terrain rejection is the next renderer priority.
+when facing away; 0.3.30 addresses the foreground-overdraw part of that remainder.
 
 ## [0.3.23]
 

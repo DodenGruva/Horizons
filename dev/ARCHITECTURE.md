@@ -163,10 +163,17 @@ persistence; see `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
 Opaque terrain faces use outward counter-clockwise winding and render with GPU back-face
 culling enabled. Water and thin/cutout surfaces stay two-sided. Selected opaque sections are
 then submitted front-to-back from a reusable allocation-free ordering list so nearer depth
-can reject farther fragments; the translucent water pass retains traversal order. These are
-GPU overdraw reductions, not terrain occlusion. The renderer still has no section-level
-occlusion query, hierarchical depth test, or conservative horizon rejection, and any future
-visibility result must remain independent from residency and persistence.
+can reject farther fragments; the translucent water pass retains traversal order. The whole
+cached pass runs at opaque order 0.38, immediately after vanilla terrain at 0.37, so current
+chunks populate depth before cached fragments hidden behind them reach the shader. The
+renderer can be re-registered at its old 0.36 order with `.vhocclusion off`; re-registration
+is required because the engine sorts a renderer only when it is registered.
+
+This is depth ordering, not section-level occlusion: CPU traversal, uniform setup and mesh
+submission remain, while the GPU rejects hidden fragments. A same-frame bounding-box query
+prototype is a recorded rejection: 83% hidden boxes produced no FPS gain, and the nearby
+vanilla occluder did not exist in depth at the pre-vanilla query point. Any later visibility
+work must remain independent from residency and persistence.
 
 The renderer maintains a horizontal world-space rectangle over all opaque and water mesh
 keys. Additions expand it in constant time; removing an extreme marks it for one rebuild

@@ -90,42 +90,34 @@ longer a live reason to expect that to be needed.
   chunks with no exposed faces, which hold no mesh and are invisible. A blanket rule denying
   those cells ownership would strip it from everything underground and repeat 0.3.3.
 
-## Top priority — GPU visibility and mountainous-terrain occlusion
+## Top priority — renderer scaling after the depth-order win
 
 The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
-The renderer currently rejects off-screen quadtree nodes, distance-capped sections,
-fully vanilla-owned sections and back-facing opaque triangles. It also submits opaque
-sections nearest-first so the ordinary depth buffer can reject more hidden fragments. It
-does **not** yet reject a cached section merely because nearer cached terrain hides it: no
-section occlusion queries, hierarchical depth test or conservative terrain horizon exists.
-
-The first two explicit GPU experiments are accepted and complete:
+The renderer now rejects off-screen quadtree nodes, distance-capped sections, fully
+vanilla-owned sections and back-facing opaque triangles; submits opaque sections nearest
+first; and runs immediately after vanilla terrain so current hills populate depth before
+cached fragments behind them. The three accepted owner A/Bs are:
 
 | change | off | on | frame-time reduction | owner verdict |
 |---|---:|---:|---:|---|
 | opaque back-face culling | 218 FPS | 260 FPS | about 0.74 ms | no visual difference |
 | opaque front-to-back submission | 149 FPS | 173 FPS | about 0.93 ms | no visual difference |
+| post-vanilla cached pass | 148 FPS | 179 FPS | about 1.17 ms | minute distant changes; entirely acceptable |
 
-Both are on by default in 0.3.27, with `.vhbackface off` and `.vhfront off` as session-only
-fallbacks. These are one-machine, one-view comparisons rather than portable benchmarks, but
-the isolated toggles make the causal direction useful.
+All three are default-on in 0.3.30, with `.vhbackface off`, `.vhfront off`, and
+`.vhocclusion off` as session-only fallbacks. These are one-machine fixed-view comparisons,
+not portable benchmarks. The rejected same-frame query prototype reported 83% hidden boxes
+but changed 156 FPS to 155 FPS and has been removed; do not revive it from the rejection
+percentage alone. Remaining work:
 
-The remaining opportunity is larger. Facing roughly 4,000 blocks of cached mountainous
-terrain measured about 150 FPS, while facing away measured more than 300 FPS. That is at
-least 3.33 ms of direction-dependent frame time after the earlier renderer work. Next:
-
-- Record conservative vertical bounds for candidate sections/nodes if the existing bounds
-  are insufficient for an occlusion test.
-- Prototype the least stateful conservative rejection that fits the engine — a terrain
-  horizon/software test or delayed GPU visibility result — and count tested/rejected
-  sections before treating frame rate as evidence.
-- Keep visibility independent from residency and persistence. Turning around must reveal
-  already-built terrain without load, upload or remesh storms.
-- Prefer false visibility to false occlusion. Any popping, holes, missing overhangs or stale
-  camera-dependent result rejects the prototype regardless of FPS.
-- Compare the mountainous view on/off repeatedly, and retain a runtime fallback until the
-  owner accepts cliffs, valleys, caves, high/low views and rapid turns.
+- Repeat the post-vanilla comparison across another driver/machine and during sustained
+  fast chunk loading; the accepted visual evidence is one owner, world and machine.
+- Measure the remaining direction-dependent frame time before choosing regional combined
+  buffers, multi-draw, instancing, a horizon test, or delayed visibility. Do not assume
+  section queries are next merely because sections remain the submission unit.
+- Keep any future visibility independent from residency and persistence. Turning around
+  must reveal already-built terrain without load, upload or remesh storms.
 
 ### Existing near-handoff coverage
 
@@ -234,7 +226,7 @@ Human-reported and still open:
 - Human-check clipping and turn-around behavior on the thousands-section build. Automated
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
-- Measure whether regional buffers or multi-draw are warranted after the occlusion work.
+- Measure whether regional buffers or multi-draw are warranted after the accepted depth-order work.
 - Select a practical default far cap only from benchmark and playtest evidence. The mask's
   benefit scales with vanilla render distance (above), so the two interact: a larger cap
   makes the mask worth more, not less.
@@ -253,8 +245,6 @@ Human-reported and still open:
 
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
-- What conservative occlusion policy, if any, can survive cliffs, valleys, caves and rapid
-  turns without visible popping? Do not decide this before a prototype exists.
 - Is the hybrid's one-time chunk handoff pop preferable to any residual overlap? The
   "cliff/water seams" half of this question is closed: the seams were the mesher's frontier
   rule, not the handoff, and both cases were confirmed clean on 0.3.23.

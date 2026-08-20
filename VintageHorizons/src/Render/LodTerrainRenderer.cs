@@ -21,7 +21,11 @@ namespace VintageHorizons;
 /// </summary>
 public class LodTerrainRenderer : IRenderer
 {
-    public double RenderOrder => 0.36; // just before opaque terrain → occluded by real chunks
+    internal const double PreVanillaRenderOrder = 0.36;
+    internal const double PostVanillaRenderOrder = 0.38;
+    public double RenderOrder => postVanillaDepthCulling
+        ? PostVanillaRenderOrder
+        : PreVanillaRenderOrder;
     public int RenderRange => 9999;
 
     const int MeshSchedulesPerFrame = 4;
@@ -211,6 +215,56 @@ public class LodTerrainRenderer : IRenderer
     /// 173 FPS with no visible change; `.vhfront off` remains the immediate fallback.
     /// </summary>
     public bool OpaqueFrontToBack { get; set; } = true;
+
+    /// <summary>
+    /// Render cached terrain just after vanilla terrain so the ordinary depth test can
+    /// reject fragments hidden behind current chunks. The established order stays the
+    /// default after an owner A/B measured a substantial gain and found only minute,
+    /// acceptable distant changes. Changing this property re-registers the renderer because
+    /// the engine sorts render order only during registration. The pre-vanilla order remains
+    /// the immediate compatibility fallback.
+    /// </summary>
+    public bool OcclusionCullingEnabled
+    {
+        get => postVanillaDepthCulling;
+        set
+        {
+            if (postVanillaDepthCulling == value) return;
+            if (!rendererRegistered)
+            {
+                postVanillaDepthCulling = value;
+                return;
+            }
+
+            bool previous = postVanillaDepthCulling;
+            capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
+            rendererRegistered = false;
+            postVanillaDepthCulling = value;
+            try
+            {
+                RegisterRenderer();
+            }
+            catch (Exception orderError)
+            {
+                postVanillaDepthCulling = previous;
+                try
+                {
+                    RegisterRenderer();
+                }
+                catch (Exception restoreError)
+                {
+                    throw new AggregateException(
+                        "Changing cached-terrain render order failed, and restoring its previous order also failed.",
+                        orderError, restoreError);
+                }
+                capi.Logger.Warning(
+                    "[VintageHorizons] Post-vanilla depth culling unavailable; restored ordinary render order: {0}",
+                    orderError.Message);
+            }
+        }
+    }
+    bool postVanillaDepthCulling = true;
+    bool rendererRegistered;
     public double ReadinessOwnedWithoutGeometryNearest { get; private set; }
     public double ReadinessOwnedWithoutGeometryFarthest { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
@@ -444,8 +498,13 @@ public class LodTerrainRenderer : IRenderer
         capi.Event.ReloadShader += LoadShader;
         capi.Event.ChunkDirty += OnReadinessChunkDirty;
         LoadShader();
+        RegisterRenderer();
+    }
 
+    void RegisterRenderer()
+    {
         capi.Event.RegisterRenderer(this, EnumRenderStage.Opaque, "vintagehorizons-lod");
+        rendererRegistered = true;
     }
 
     void OnReadinessChunkDirty(Vec3i chunkCoord, IWorldChunk chunk, EnumChunkDirtyReason reason)
@@ -2138,6 +2197,10 @@ public class LodTerrainRenderer : IRenderer
 
     readonly HashSet<long> skippedLastFrame = new();
 
+    public string DescribeOcclusionCulling() => OcclusionCullingEnabled
+        ? "on: cached terrain renders after vanilla for ordinary depth rejection"
+        : "off: cached terrain renders before vanilla";
+
     bool SetupSectionTransform(long key, float cullDistSq)
     {
         int footprint = LodWorld.KeyFootprintBlocks(key);
@@ -2242,6 +2305,10 @@ public class LodTerrainRenderer : IRenderer
         world.SectionBecameResident -= OnSectionBecameResident;
         capi.Event.ChunkDirty -= OnReadinessChunkDirty;
         capi.Event.ReloadShader -= LoadShader;
-        capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
+        if (rendererRegistered)
+        {
+            capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
+            rendererRegistered = false;
+        }
     }
 }

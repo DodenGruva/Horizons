@@ -486,3 +486,19 @@ by the owner.**
   about 150 FPS while facing roughly 4,000 blocks of cached mountainous terrain and more
   than 300 FPS while facing away. Fast-flight coarseness remains recorded but is demoted
   because those speeds are outside normal play and extensive ordinary play found no issue.
+
+## 2026-08-20 — post-vanilla depth rejection
+
+- Built a default-off same-frame bounding-box query prototype with a live `.vhocclusion`
+  toggle. Fixed its missing shader include, then rejected the design after it reported 83%
+  hidden boxes while changing 156 FPS to 155 FPS.
+- Removed the query objects, proxy shaders, direct OpenTK dependency and opaque bounds
+  metadata rather than retaining a zero-gain experimental branch in production source.
+- Source-traced the installed renderer ordering: Vintage Horizons ran at opaque order 0.36
+  before vanilla terrain at 0.37, so the nearby current hill was absent from query depth.
+- Reused `.vhocclusion` to re-register cached terrain at 0.38. Ordinary depth rejection then
+  raised the owner's valley view from 148 to 179 FPS (about 1.17 ms saved) and a ground view
+  from 590 to 651 FPS (about 0.16 ms saved).
+- The owner found only minute distant changes detectable through immediate A/B toggling and
+  judged them entirely acceptable. Post-vanilla order is default-on in 0.3.30;
+  `.vhocclusion off` restores 0.36 immediately.

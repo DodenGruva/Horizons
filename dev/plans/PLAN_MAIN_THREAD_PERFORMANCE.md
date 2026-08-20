@@ -1,6 +1,6 @@
 # Plan — main-thread stutter and renderer scaling
 
-**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots/GPU uploads, revision-acknowledged persistence, opaque back-face culling, and front-to-back opaque submission are implemented and verified. Conservative cached-terrain occlusion is next on `codex/gpu-overdraw-culling`.
+**Status:** In progress. Reconciliation, client/server instrumentation, the Windows benchmark route, versioned asynchronous mip work, incremental key discovery/request correctness, cached bounds/stable projection, tick-smoothed server work, bounded client installs and capture publication, ordered off-thread server-assist blob reads, visibility-aware traversal, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots/GPU uploads, revision-acknowledged persistence, opaque back-face culling, front-to-back opaque submission, and post-vanilla depth rejection are implemented and verified. Regional submission and remaining renderer scaling follow the accepted visibility work on `codex/gpu-overdraw-culling`.
 **Review baseline:** Supplied source snapshot, code-equivalent to fork commit `27e5e6a` (0.2.0 development line).
 **Working baseline:** Fork master at commit `4496948`, branch `codex/gpu-overdraw-culling`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
@@ -348,10 +348,17 @@ Back-face rejection and front-to-back opaque submission are complete and human-t
 On one machine and fixed views they raised 218 to 260 FPS and 149 to 173 FPS respectively,
 with no visible change. The fallbacks remain `.vhbackface off` and `.vhfront off`.
 
-The next measured problem is hidden cached terrain behind mountainous foreground: the owner
-reported about 150 FPS while facing roughly 4,000 blocks of it and more than 300 FPS while
-facing away. Investigate conservative section-level occlusion without coupling visibility
-to residency. Only after that evidence:
+The next measured problem was hidden cached terrain behind mountainous foreground. A
+same-frame bounding-box query prototype was rejected despite eventually reporting 83% hidden
+boxes: 156 FPS became 155, its work ran before the nearby vanilla hill existed in depth, and
+conditional rendering retained CPU submission plus proxy/query cost. The accepted design
+instead moves cached terrain from opaque order 0.36 to 0.38, just after vanilla terrain at
+0.37, and lets the ordinary depth test reject hidden fragments. The owner measured 148 to
+179 FPS in the valley (about 1.17 ms saved) and 590 to 651 while looking down (about 0.16 ms),
+with only minute acceptable distant changes. It is default-on in 0.3.30 and retains
+`.vhocclusion off`.
+
+After that evidence:
 
 - Evaluate regional combined buffers.
 - Evaluate multi-draw or instancing with per-section metadata.

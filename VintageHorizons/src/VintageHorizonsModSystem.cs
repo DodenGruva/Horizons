@@ -142,6 +142,8 @@ public class VintageHorizonsModSystem : ModSystem
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_BACKFACE_CULLING") != "0",
             OpaqueFrontToBack =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_FRONT_TO_BACK") != "0",
+            OcclusionCullingEnabled =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_OCCLUSION_CULLING") != "0",
         };
 
         // The saved setting applies unless the environment variable has taken a side, which
@@ -1396,6 +1398,7 @@ public class VintageHorizonsModSystem : ModSystem
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +
                 $"detail distance: {(int)LodWorld.DetailDistance} (.vhdetail to change), " +
+                $"occlusion order: {renderer.DescribeOcclusionCulling()}, " +
                 $"readiness: {renderer.DescribeReadiness()}, " +
                 $"server assist: {assist?.Status ?? "off"}" +
                 (assist != null && assist.RemoteKeys.Count > 0
@@ -1596,6 +1599,24 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success(
                     $"[VintageHorizons] opaque front-to-back submission {(renderer.OpaqueFrontToBack ? "on" : "off")} (on by default, not saved). " +
                     "Applies on the next frame; water keeps its existing order.");
+            });
+
+        capi.ChatCommands.Create("vhocclusion")
+            .WithDescription("Draw cached terrain after vanilla so ordinary depth testing rejects hidden pixels. On by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] post-vanilla depth culling {renderer.DescribeOcclusionCulling()}. " +
+                        "On by default and not saved.");
+
+                renderer.OcclusionCullingEnabled = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] post-vanilla depth culling {renderer.DescribeOcclusionCulling()}. " +
+                    "Applies on the next frame; on by default and not saved.");
             });
 
         capi.ChatCommands.Create("vhholes")
