@@ -8,6 +8,42 @@ first.
 
 ## [Unreleased]
 
+## [0.3.37]
+
+In development. The delayed occlusion default and its aggressive visual tradeoff were
+accepted in game on the owner's machine.
+
+**Cached solid terrain proven hidden by hills is no longer submitted every frame.** The
+renderer now wraps selected ordinary opaque terrain draws in asynchronous GPU visibility
+queries after vanilla terrain has populated depth. Results are consumed only after the GPU
+reports them ready; a zero-sample result skips later submissions, and a periodically drawn
+exact mesh doubles as both the visibility probe and the correct terrain for that frame. No
+proxy boxes, same-frame wait, or conditional draw dependency is involved.
+
+This is deliberately different from the rejected 0.3.30 prototype. That experiment queried
+extra boxes and tried to consume their answers in the same frame, so its overhead replaced
+its saving. The accepted path measures real terrain now and reuses the answer later. In the
+owner's roughly 4,000-block hill view, the first stationary version raised about 170 FPS to
+nearly 500. The accepted motion policy produced roughly 250-350 FPS while moving and turning,
+with the exact result varying by area. These are owner-observed playtest ranges, not a
+controlled benchmark.
+
+The default `aggressive` profile keeps hidden results through camera turns, rechecks hidden
+terrain every four frames while turning, and invalidates after two blocks of translation.
+Cached sections at the vanilla/cache ownership seam never inherit a whole-section hidden
+answer. A narrow left/right screen-edge band also draws normally while turning, addressing
+the fringe distortion exposed by fast yaw without disabling central or stationary culling.
+The owner judged the resulting 0.3.37 tradeoff acceptable. `.vhtemporal off` disables the
+feature immediately; `.vhtemporalprofile safe|aggressive|extreme` exposes the safety,
+accepted, and deliberately unguarded limits for live comparison.
+
+Continuous terrain streaming initially invalidated every visibility result globally. In a
+new area this held the game near 190 FPS even when the player was enclosed, while pausing
+stopped the churn and allowed about 500 FPS. Mesh replacement now invalidates only that
+mesh; readiness events and mask uploads do not erase unrelated results. Hidden exact-mesh
+probes provide bounded recovery when the scene changes. `.vhinfo` reports hidden draws,
+seam/turning-edge protection, stale results, global invalidations, and pending queries.
+
 ## [0.3.30]
 
 In development. The rendering change below was accepted in game on the owner's machine.

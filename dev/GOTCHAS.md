@@ -1121,6 +1121,52 @@ benchmark.
 
 **Found:** 2026-08-20, from the rejected query playtest and accepted render-order A/B.
 
+### G55 — Global invalidation can make delayed occlusion appear to work only while paused
+
+**Trigger:** reusing an asynchronous visibility result across frames while terrain,
+readiness state, or a GPU ownership mask is still changing.
+
+**Trap:** treating every local scene update as a reason to invalidate every query prevents
+the state from ever becoming old enough to suppress a draw. During active exploration,
+mesh uploads and chunk-dirty/readiness events can arrive every frame. The feature then looks
+healthy in a settled test area and inert in a new one. Pausing stops the update stream, so
+the same view suddenly accelerates; that is invalidation churn, not pause-specific GPU
+behavior. In the owner's new-area test, the enclosed view stayed near 190 FPS while running
+and rose to about 500 FPS while paused.
+
+**Do:** scope invalidation to the identity that changed. Replacing a mesh invalidates that
+section's result; mask upload and chunk-dirty notification do not erase unrelated answers.
+Let periodic fail-open exact-geometry probes discover changed occlusion, and reject any
+pending answer whose view epoch is stale. Report accepted, stale, and globally invalidated
+results separately so a zero-skip state can be attributed.
+
+**Found:** 0.3.35, after the same feature worked in one settled area, stopped in a streaming
+area, and resumed only when the game was paused.
+
+### G56 — Keeping visibility through camera turns needs explicit disocclusion guards
+
+**Trigger:** preserving delayed hidden results while the camera rotates so culling does not
+collapse under normal mouse steering.
+
+**Trap:** invalidating every turn is visually conservative but gives away most of the gain;
+retaining every answer indefinitely produces brief missing terrain where a fast turn reveals
+the side of the old view. A whole-section answer is also too coarse at the mixed
+vanilla/cache ownership seam: a small cache-owned remainder can disappear because the rest
+of its section passed no samples.
+
+**Do:** fail toward drawing at known disocclusion boundaries. Never suppress a mixed-
+ownership seam section. Shorten hidden probe cadence while turning, and protect only a
+narrow angular band at the left/right frustum edges while rotation is occurring. Keep an
+unguarded profile available to expose the limit, but make the accepted default the guarded
+policy. Visibility must still not evict or rebuild the resident mesh.
+
+**Evidence:** the owner found the unguarded extreme profile visibly distorted the edge of
+the screen during very fast turns. Aggressive retained substantial performance with the
+artifact nearly unnoticeable; the final turning-edge guard was judged acceptable. An earlier
+occasional seam loss motivated the mixed-section bypass.
+
+**Found:** 0.3.33-0.3.37, through owner-run seam, motion, rapid-turn, and profile comparisons.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

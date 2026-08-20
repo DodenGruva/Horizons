@@ -13,6 +13,78 @@ public static class TraversalChecks
         ResidencyIgnoresCameraDirection(c);
         ResidencyUsesTheColdSectionGraceBand(c);
         OpaqueSubmissionOrdersNearestFirst(c);
+        TemporalOcclusionFailsTowardDrawing(c);
+    }
+
+    static void TemporalOcclusionFailsTowardDrawing(Check c)
+    {
+        var state = new LodTemporalOcclusionState();
+
+        c.True(state.ShouldDraw(10, 1, 8), "an unmeasured section draws");
+        c.True(state.ShouldIssueQuery(10, 1, 4, 8), "an unmeasured section starts an exact query");
+        state.BeginQuery(10, 1);
+        c.False(state.ShouldIssueQuery(11, 1, 4, 8), "a pending query is never overlapped");
+
+        c.True(state.CompleteQuery(anySamplesPassed: false, currentEpoch: 1),
+            "a current GPU answer is accepted");
+        c.False(state.ShouldDraw(11, 1, 8), "a zero-sample result skips a stable hidden draw");
+        c.False(state.ShouldDraw(17, 1, 8), "a hidden result remains useful before its probe interval");
+        c.True(state.ShouldDraw(18, 1, 8), "hidden exact geometry periodically draws as its own probe");
+        c.True(state.ShouldIssueQuery(18, 1, 4, 8), "the periodic hidden draw is queried");
+
+        state.BeginQuery(18, 1);
+        c.True(state.ShouldDraw(19, 2, 8), "a changed camera or scene invalidates hiding immediately");
+        c.False(state.CompleteQuery(anySamplesPassed: false, currentEpoch: 2),
+            "an older-view GPU answer is consumed but rejected");
+        c.True(state.ShouldDraw(20, 2, 8), "a stale zero-sample result cannot hide a newer view");
+
+        c.True(state.ShouldIssueQuery(22, 2, 4, 8), "visible geometry is sampled on a bounded cadence");
+        state.BeginQuery(22, 2);
+        c.True(state.CompleteQuery(anySamplesPassed: true, currentEpoch: 2),
+            "a current visible answer is accepted");
+        c.True(state.ShouldDraw(23, 2, 8), "a positive sample result keeps terrain visible");
+        c.False(state.ShouldIssueQuery(23, 2, 4, 8), "visible query overhead is not paid every frame");
+
+        state.BeginQuery(26, 2);
+        state.Invalidate(2);
+        c.False(state.CompleteQuery(anySamplesPassed: false, currentEpoch: 2),
+            "section-local invalidation rejects an answer issued for replaced geometry");
+        c.True(state.ShouldDraw(27, 2, 8),
+            "an old local zero-sample answer cannot hide a replacement or protected seam");
+
+        c.False(LodTerrainRenderer.TranslationExceeded(
+                0.249, 0, 0, 0, 0, 0, LodTerrainRenderer.SafeTemporalTranslationBlocks),
+            "sub-quarter-block movement keeps a recent hidden result coherent");
+        c.True(LodTerrainRenderer.TranslationExceeded(
+                0.25, 0, 0, 0, 0, 0, LodTerrainRenderer.SafeTemporalTranslationBlocks),
+            "a quarter-block cumulative translation fails back to drawing");
+
+        float[] identity = Mat4f.Create();
+        float[] tinyTurn = (float[])identity.Clone();
+        tinyTurn[0] += LodTerrainRenderer.SafeTemporalRotationMatrix * 0.9f;
+        c.False(LodTerrainRenderer.ViewRotationExceeded(
+                tinyTurn, identity, LodTerrainRenderer.SafeTemporalRotationMatrix),
+            "a sub-threshold view turn retains temporal visibility briefly");
+        tinyTurn[0] += LodTerrainRenderer.SafeTemporalRotationMatrix * 0.2f;
+        c.True(LodTerrainRenderer.ViewRotationExceeded(
+                tinyTurn, identity, LodTerrainRenderer.SafeTemporalRotationMatrix),
+            "a threshold-sized view turn fails back to drawing");
+        c.False(LodTerrainRenderer.ViewRotationExceeded(
+                tinyTurn, identity, float.PositiveInfinity),
+            "a persistent profile never globally invalidates on camera rotation");
+        c.True(LodTerrainRenderer.ViewRotationChanged(tinyTurn, identity),
+            "turning is still detected so persistent profiles can probe hidden draws faster");
+        c.False(LodTerrainRenderer.ViewRotationChanged(identity, identity),
+            "an unchanged view does not pay the turning probe cadence");
+        c.False(LodTerrainRenderer.TranslationExceeded(
+                1000, 1000, 1000, 0, 0, 0, double.PositiveInfinity),
+            "the extreme profile can retain visibility through all finite translation");
+
+        float[] projection = Projection();
+        float[] changedProjection = (float[])projection.Clone();
+        changedProjection[10] = MathF.BitIncrement(changedProjection[10]);
+        c.True(LodTerrainRenderer.ProjectionChanged(changedProjection, projection),
+            "any projection change invalidates temporal visibility");
     }
 
     static void OpaqueSubmissionOrdersNearestFirst(Check c)

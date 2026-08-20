@@ -1399,6 +1399,7 @@ public class VintageHorizonsModSystem : ModSystem
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +
                 $"detail distance: {(int)LodWorld.DetailDistance} (.vhdetail to change), " +
                 $"occlusion order: {renderer.DescribeOcclusionCulling()}, " +
+                $"delayed occlusion: {renderer.DescribeTemporalOcclusion()}, " +
                 $"readiness: {renderer.DescribeReadiness()}, " +
                 $"server assist: {assist?.Status ?? "off"}" +
                 (assist != null && assist.RemoteKeys.Count > 0
@@ -1617,6 +1618,48 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success(
                     $"[VintageHorizons] post-vanilla depth culling {renderer.DescribeOcclusionCulling()}. " +
                     "Applies on the next frame; on by default and not saved.");
+            });
+
+        capi.ChatCommands.Create("vhtemporal")
+            .WithDescription("Skip opaque cached meshes proven hidden on later frames. Aggressive profile on by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] delayed exact-geometry occlusion {renderer.DescribeTemporalOcclusion()}. " +
+                        "Aggressive profile on by default; not saved.");
+
+                renderer.TemporalOcclusionEnabled = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] delayed exact-geometry occlusion {renderer.DescribeTemporalOcclusion()}. " +
+                    "Applies on the next frame; aggressive profile is the default. Use it with .vhocclusion on. " +
+                    "Tune live with .vhtemporalprofile safe|aggressive|extreme.");
+            });
+
+        capi.ChatCommands.Create("vhtemporalprofile")
+            .WithDescription("Tune delayed occlusion: safe invalidates on turns; aggressive/extreme persist while turning.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWordRange(
+                "profile", ["safe", "aggressive", "extreme"]))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] delayed occlusion profile: {renderer.TemporalOcclusionProfileName}. " +
+                        "Safe invalidates on turns; aggressive persists through turns and rechecks quickly; " +
+                        "extreme persists through all camera motion. Changes are not saved.");
+
+                string profile = (string)args[0];
+                if (!renderer.SetTemporalOcclusionProfile(profile))
+                    return TextCommandResult.Error(
+                        "[VintageHorizons] profile must be safe, aggressive, or extreme.");
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] delayed occlusion profile: {renderer.TemporalOcclusionProfileName}. " +
+                    "Previous visibility was invalidated; the new profile applies immediately.");
             });
 
         capi.ChatCommands.Create("vhholes")

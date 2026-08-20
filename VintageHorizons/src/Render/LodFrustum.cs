@@ -61,4 +61,30 @@ public class LodFrustum
         }
         return true;
     }
+
+    /// <summary>
+    /// True when a box touches a narrow angular band along the left or right screen edge.
+    /// The planes are normalized, so signed distance divided by camera distance is an
+    /// angular-scale measure: the guard remains the same apparent width for both near and
+    /// far terrain. Only side planes matter here; this protects terrain entering during
+    /// ordinary mouse yaw without exempting the top and bottom of every world-height box.
+    /// </summary>
+    public bool BoxNearSideEdge(double minX, double minY, double minZ,
+        double maxX, double maxY, double maxZ, double angularMargin)
+    {
+        double centerX = (minX + maxX) * 0.5;
+        double centerZ = (minZ + maxZ) * 0.5;
+        double margin = Math.Max(1.0, Math.Sqrt(centerX * centerX + centerZ * centerZ))
+            * Math.Max(0, angularMargin);
+
+        for (int i = 0; i < 2; i++)
+        {
+            double a = planes[i, 0], b = planes[i, 1], c = planes[i, 2], d = planes[i, 3];
+            double nx = a >= 0 ? minX : maxX;
+            double ny = b >= 0 ? minY : maxY;
+            double nz = c >= 0 ? minZ : maxZ;
+            if (a * nx + b * ny + c * nz + d <= margin) return true;
+        }
+        return false;
+    }
 }

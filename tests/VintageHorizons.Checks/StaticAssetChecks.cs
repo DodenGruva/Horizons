@@ -509,7 +509,21 @@ public static class StaticAssetChecks
         c.False(renderer.Contains("BeginConditionalRender", StringComparison.Ordinal)
             || renderer.Contains("lodocclusion", StringComparison.Ordinal)
             || renderer.Contains("LodOcclusionProbe", StringComparison.Ordinal),
-            "the rejected query path is absent");
+            "the rejected proxy/conditional-render path is absent");
+        c.True(mod.Contains("ChatCommands.Create(\"vhtemporal\")", StringComparison.Ordinal)
+            && mod.Contains("ChatCommands.Create(\"vhtemporalprofile\")", StringComparison.Ordinal)
+            && renderer.Contains("RenderOpaqueMesh(key, mesh)", StringComparison.Ordinal)
+            && renderer.Contains("QueryTarget.AnySamplesPassed", StringComparison.Ordinal)
+            && renderer.Contains("readiness.Classify(key) == VanillaSectionOwnership.Mixed", StringComparison.Ordinal),
+            "the accepted delayed exact-geometry path is wired behind its own live toggle");
+        c.True(renderer.Contains("VINTAGEHORIZONS_TEMPORAL_OCCLUSION\") != \"0\"", StringComparison.Ordinal)
+            && renderer.Contains("TemporalOcclusionProfileName { get; private set; } = \"aggressive\"", StringComparison.Ordinal)
+            && renderer.Contains("float temporalOcclusionRotationMatrixLimit = float.PositiveInfinity;", StringComparison.Ordinal),
+            "accepted aggressive temporal occlusion, including turn persistence, is default-on with an explicit off override");
+        c.Eq(3, CountOccurrences(renderer, "InvalidateTemporalOcclusionScene();"),
+            "only profile, render-order, and camera/projection changes globally invalidate temporal results");
+        c.True(renderer.Contains("query.State.Invalidate(temporalOcclusionEpoch)", StringComparison.Ordinal),
+            "a replaced cached mesh invalidates its own query rather than every hidden section");
     }
 
     /// <summary>

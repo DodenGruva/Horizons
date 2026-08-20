@@ -24,6 +24,17 @@ public static class FrustumChecks
         Rejects(c, frustum);
         NearAndFar(c, frustum);
         Conservative(c, frustum);
+        SideEdgeGuard(c, frustum);
+    }
+
+    static void SideEdgeGuard(Check c, LodFrustum f)
+    {
+        c.False(f.BoxNearSideEdge(-5, -5, -105, 5, 5, -95, 0.06),
+            "a centred box remains eligible for temporal culling while turning");
+        c.True(f.BoxNearSideEdge(90, -5, -105, 100, 5, -95, 0.06),
+            "a box entering at the right edge is protected from delayed hiding");
+        c.True(f.BoxNearSideEdge(-100, -5, -105, -90, 5, -95, 0.06),
+            "a box entering at the left edge is protected from delayed hiding");
     }
 
     /// <summary>Looking down -Z, the OpenGL convention, from a camera at the origin.</summary>

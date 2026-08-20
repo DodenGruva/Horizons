@@ -502,3 +502,30 @@ by the owner.**
 - The owner found only minute distant changes detectable through immediate A/B toggling and
   judged them entirely acceptable. Post-vanilla order is default-on in 0.3.30;
   `.vhocclusion off` restores 0.36 immediately.
+
+## 2026-08-20 — delayed exact-geometry occlusion
+
+- Reintroduced GPU visibility as an asynchronous reuse policy around the real opaque terrain
+  draw after vanilla depth, rather than the rejected same-frame proxy/conditional design.
+  Available zero-sample answers skip later submissions; hidden meshes periodically draw as
+  their own exact visibility probes, and stale view-epoch answers fail toward drawing.
+- Added `.vhtemporal`, `.vhtemporalprofile safe|aggressive|extreme`, an environment fallback,
+  and `.vhinfo` counters for skipped draws, hidden/accepted/stale results, global
+  invalidations, pending queries, seam protection and turning-edge protection.
+- The first stationary hill test raised about 170 FPS to nearly 500. Motion initially erased
+  the gain; retaining results through rotation and probing every four frames while turning
+  produced roughly 250-350 FPS in the owner's sampled areas.
+- Excluded mixed vanilla/cache ownership sections after occasional seam loss. Extreme then
+  exposed visible fringe distortion during very fast yaw; aggressive retained very good
+  performance with the distortion nearly unnoticeable, and 0.3.37 added a narrow horizontal
+  turning-edge guard. The owner accepted the final tradeoff.
+- Diagnosed a location-dependent failure from the pause control: continuous chunk/readiness/
+  mesh activity globally invalidated every answer, holding an enclosed running view near
+  190 FPS while pause allowed about 500. Mesh replacement now invalidates its own section;
+  readiness events and mask uploads preserve unrelated state and periodic probes converge.
+- Made aggressive default-on in 0.3.37. Safe invalidates on small camera changes; extreme
+  deliberately retains results through all camera motion without the edge guard.
+- Added pure state-machine, view-threshold, exact-rotation, profile/default wiring, seam-
+  invalidation and horizontal frustum-edge coverage. The Release fast tier passes 1,503
+  assertions; the packaged and installed archive hash is
+  `BF69FB931BCAAFFD5395FA67EDCFD8198F78ABA64903596F98E6A72826C88473`.

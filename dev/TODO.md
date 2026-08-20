@@ -90,34 +90,42 @@ longer a live reason to expect that to be needed.
   chunks with no exposed faces, which hold no mesh and are invisible. A blanket rule denying
   those cells ownership would strip it from everything underground and repeat 0.3.3.
 
-## Top priority — renderer scaling after the depth-order win
+## Renderer scaling after delayed occlusion
 
 The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
-The renderer now rejects off-screen quadtree nodes, distance-capped sections, fully
+The renderer rejects off-screen quadtree nodes, distance-capped sections, fully
 vanilla-owned sections and back-facing opaque triangles; submits opaque sections nearest
-first; and runs immediately after vanilla terrain so current hills populate depth before
-cached fragments behind them. The three accepted owner A/Bs are:
+first; runs after vanilla terrain; and reuses asynchronous exact-geometry query results to
+skip later opaque submissions. Completed rendering narrative lives in `dev/history/DONE.md`.
+The accepted owner evidence is:
 
 | change | off | on | frame-time reduction | owner verdict |
 |---|---:|---:|---:|---|
 | opaque back-face culling | 218 FPS | 260 FPS | about 0.74 ms | no visual difference |
 | opaque front-to-back submission | 149 FPS | 173 FPS | about 0.93 ms | no visual difference |
 | post-vanilla cached pass | 148 FPS | 179 FPS | about 1.17 ms | minute distant changes; entirely acceptable |
+| delayed exact-geometry occlusion, stationary | about 170 FPS | nearly 500 FPS | about 3.88 ms | accepted after motion/seam/edge guards |
 
-All three are default-on in 0.3.30, with `.vhbackface off`, `.vhfront off`, and
-`.vhocclusion off` as session-only fallbacks. These are one-machine fixed-view comparisons,
-not portable benchmarks. The rejected same-frame query prototype reported 83% hidden boxes
-but changed 156 FPS to 155 FPS and has been removed; do not revive it from the rejection
-percentage alone. Remaining work:
+All four are default-on in 0.3.37, with `.vhbackface off`, `.vhfront off`, `.vhocclusion off`,
+and `.vhtemporal off` as session-only fallbacks. Delayed occlusion defaults to the aggressive
+profile; `.vhtemporalprofile safe|aggressive|extreme` exposes the safety and artifact limits.
+The first three rows are same-view A/Bs. The temporal row and its roughly 250-350 FPS motion
+range are sequential owner playtests across evolving builds and areas, not a controlled
+benchmark. The rejected same-frame proxy/query prototype remains rejected: delayed queries
+over real geometry after vanilla depth are a different design. Remaining work:
 
-- Repeat the post-vanilla comparison across another driver/machine and during sustained
-  fast chunk loading; the accepted visual evidence is one owner, world and machine.
-- Measure the remaining direction-dependent frame time before choosing regional combined
-  buffers, multi-draw, instancing, a horizon test, or delayed visibility. Do not assume
-  section queries are next merely because sections remain the submission unit.
-- Keep any future visibility independent from residency and persistence. Turning around
-  must reveal already-built terrain without load, upload or remesh storms.
+- Run a controlled alternating 0.3.37 `.vhtemporal off/on` comparison in the same settled
+  view, plus a second pair during sustained streaming. Quantify the final edge guard rather
+  than inferring its cost from the earlier profile ranges.
+- Repeat on another driver/machine and cover multiplayer, caves/structures, vertical
+  look transitions, long turns, teleports and long sessions. The accepted evidence is one
+  owner, machine and world.
+- Watch `.vhinfo`: global invalidations should follow profile/view thresholds rather than
+  mesh-upload cadence; stale results may occur but must never hide terrain; seam and
+  turning-edge protection should rise only in their intended cases.
+- Measure remaining CPU draw-submission time before choosing regional combined buffers,
+  multi-draw, or instancing. Keep visibility independent from residency and persistence.
 
 ### Existing near-handoff coverage
 
@@ -226,7 +234,7 @@ Human-reported and still open:
 - Human-check clipping and turn-around behavior on the thousands-section build. Automated
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
-- Measure whether regional buffers or multi-draw are warranted after the accepted depth-order work.
+- Measure whether regional buffers or multi-draw are warranted after the accepted delayed-occlusion work.
 - Select a practical default far cap only from benchmark and playtest evidence. The mask's
   benefit scales with vanilla render distance (above), so the two interact: a larger cap
   makes the mask worth more, not less.
@@ -272,9 +280,9 @@ Human-reported and still open:
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Both dedicated client/server and integrated-singleplayer durability
   are established for the guarded routes.
-- The complete game-backed Release tier passes 1,176 assertions, including the Session 24
-  handoff/shader coverage, 89 readiness-model assertions, and static guards that prevent
-  the Phase 1 shadow state from entering draw classification. A real game process still
+- The complete game-backed Release tier passes 1,503 assertions, including the Session 24
+  handoff/shader coverage, readiness and water-frontier suites, delayed-occlusion state/view/
+  seam/edge coverage, and static renderer/query/default wiring. A real game process still
   supplies the only end-to-end proof of callback ordering, renderer cost, and GPU behavior.
 - The world-stable color coordinate, removed approach sink, and conservative radial
   handoff have source/build evidence and a packaged playtest. The user found the first

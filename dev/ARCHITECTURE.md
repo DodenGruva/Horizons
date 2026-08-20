@@ -169,11 +169,35 @@ chunks populate depth before cached fragments hidden behind them reach the shade
 renderer can be re-registered at its old 0.36 order with `.vhocclusion off`; re-registration
 is required because the engine sorts a renderer only when it is registered.
 
-This is depth ordering, not section-level occlusion: CPU traversal, uniform setup and mesh
-submission remain, while the GPU rejects hidden fragments. A same-frame bounding-box query
-prototype is a recorded rejection: 83% hidden boxes produced no FPS gain, and the nearby
-vanilla occluder did not exist in depth at the pre-vanilla query point. Any later visibility
-work must remain independent from residency and persistence.
+Post-vanilla ordering supplies the depth used by delayed exact-geometry occlusion. Selected
+ordinary opaque draws are wrapped in asynchronous `AnySamplesPassed` queries; results are
+polled only after the driver reports them available, so the render thread never waits for a
+same-frame answer. A zero-sample result suppresses later mesh submissions. Hidden sections
+periodically draw their real geometry again, making one operation both the visibility probe
+and the correct terrain draw for that frame. Water is not queried.
+
+Visibility state is fail-open and remains independent from residency and persistence. A
+projection change or profile-specific camera threshold advances a scene epoch, and results
+from an older epoch are consumed but cannot hide anything. Streamed mesh replacement
+invalidates only the replaced section; chunk-dirty events and readiness-mask uploads do not
+globally erase unrelated results. This distinction is required for convergence during active
+exploration. Query allocation/driver failure disables the optimization and draws everything.
+
+The default `aggressive` policy retains results through rotation, invalidates after two
+blocks of translation, checks visible sections every eight frames, hidden sections every
+sixteen frames, and shortens hidden probes to four frames while turning. A section with mixed
+vanilla/cache ownership always draws, protecting the handoff seam from a whole-section
+answer. While turning, a narrow normalized band at the horizontal frustum edges also draws,
+protecting newly revealed terrain without sacrificing central or stationary culling.
+`safe` invalidates on small camera changes; `extreme` retains results through all camera
+motion and deliberately removes the edge guard. `.vhtemporal` and
+`.vhtemporalprofile` change these session-only controls; `.vhinfo` exposes their counters.
+
+The earlier same-frame bounding-box experiment remains a recorded rejection, not a
+contradiction: 83% hidden proxy boxes produced no FPS gain because proxy raster, same-frame
+dependency and retained submission cost replaced the saved work, and it ran before the
+nearby vanilla occluder existed in depth. The accepted delayed path queries the real draw
+after that depth exists and skips later CPU/GPU submissions.
 
 The renderer maintains a horizontal world-space rectangle over all opaque and water mesh
 keys. Additions expand it in constant time; removing an extreme marks it for one rebuild

@@ -3,9 +3,9 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-20
-**Mod version:** `0.3.30` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.37` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `42` C# files under `VintageHorizons/src`
+**Source files:** `43` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -43,6 +43,30 @@ distant changes judged entirely acceptable. `.vhocclusion off` restores the old 
 A preceding same-frame query prototype was removed after 83% hidden boxes changed 156 FPS
 to 155 FPS; rejection count alone did not pay its proxy/query/submission cost, and vanilla
 terrain was not yet in depth at the query point.
+
+**Delayed exact-geometry occlusion now skips later opaque submissions** (0.3.37). An
+ordinary cached terrain draw after vanilla depth doubles as an asynchronous GPU visibility
+probe. The renderer consumes a result only after it is available; a zero-sample result skips
+later `RenderMesh` calls, and periodic real-mesh probes restore visibility without proxy
+geometry or a same-frame wait. The owner's roughly 4,000-block hill view rose from about
+170 FPS to nearly 500 stationary. After motion tuning, sampled movement/turning produced
+roughly 250-350 FPS. Those are sequential human playtests rather than a controlled benchmark.
+
+Aggressive is default-on. It keeps answers through rotation, invalidates after two blocks of
+translation, and shortens hidden probes to four frames while turning. Mixed vanilla/cache
+ownership sections always draw, and a narrow horizontal screen-edge band draws while
+turning. Extreme deliberately removes that guard and showed visible fringe distortion under
+very fast yaw; aggressive retained very good performance with the distortion nearly
+unnoticeable, and the owner judged the final 0.3.37 guard acceptable. `.vhtemporal off` and
+`.vhtemporalprofile safe|aggressive|extreme` are live, unsaved controls.
+
+A location/pause failure was global invalidation churn, not failed GPU visibility. In a
+streaming area, mesh/readiness updates erased all answers and held an enclosed view near
+190 FPS; pausing stopped the updates and allowed about 500. Mesh replacement now invalidates
+only its section, while chunk-dirty events and mask uploads preserve unrelated answers.
+Pending results carry a view epoch and stale answers fail toward drawing. `.vhinfo` reports
+skipped draws, seam/turning-edge protection, accepted hidden results, stale results, global
+invalidations and pending queries. See G55-G56 and session 34.
 
 **The band is closed** (0.3.16, confirmed in game by the owner on 2026-08-19). It was the
 engine's own per-frame range cull, and it is the reason six releases of ownership rules
@@ -370,6 +394,11 @@ visual difference.
 depth first. The owner accepted the default after +20.9% in a valley and +10.3% while looking
 down, with minute distant changes judged entirely acceptable. A same-frame query prototype
 that reported 83% hidden boxes but no FPS gain was removed.
+37. Delayed exact-geometry queries now reuse available results to skip later opaque mesh
+submissions without a same-frame wait. Local streaming invalidation, mixed-seam bypass,
+turning probes and a narrow horizontal edge guard preserve convergence and accepted visuals.
+The owner observed about 170 to nearly 500 FPS stationary and roughly 250-350 FPS in sampled
+motion; aggressive is default-on in 0.3.37.
 
 ## 4. Measured diagnosis and result
 
@@ -530,8 +559,10 @@ resulting net frame-time effect remain open.
 6. View direction exposed a large cached-terrain GPU remainder. Back-face culling and
 front-to-back ordering recovered about 0.74 and 0.93 ms in sampled views. Moving cached
 terrain after vanilla recovered another 1.17 ms in the owner's valley case and 0.16 ms while
-looking down. The renderer still has no section-level visibility rejection, and CPU mesh
-submission remains; GPU timer breakdown and controlled cross-driver evidence remain absent.
+looking down. Delayed exact-geometry occlusion now skips opaque mesh submission after an
+available zero-sample result; the owner saw about 170 to nearly 500 FPS stationary and
+roughly 250-350 in sampled motion. A controlled alternating 0.3.37 comparison, final edge-
+guard cost, GPU timer breakdown and cross-driver evidence remain absent.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
@@ -556,11 +587,13 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Measure what direction-dependent renderer cost remains after post-vanilla depth rejection
-before selecting regional buffers, multi-draw, instancing, a terrain horizon, or delayed
-visibility. The same-frame section-query prototype is rejected evidence, not unfinished
-work: 83% hidden boxes produced no FPS gain. Any later visibility result must preserve
-instant turn-around from resident meshes and fail toward drawing.
+1. Measure what direction-dependent renderer cost remains after delayed exact-geometry
+occlusion before selecting regional buffers, multi-draw, or instancing. Repeat a controlled
+alternating 0.3.37 comparison in settled and streaming views, quantify the final edge guard,
+and cover other drivers, multiplayer, vertical look transitions, caves/structures, teleports
+and long sessions. The same-frame proxy-query prototype remains rejected evidence; it is not
+the accepted delayed real-draw design. Visibility must remain fail-open and independent from
+residency and persistence.
 2. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
@@ -576,7 +609,7 @@ are not normally achievable. `.vhcoarse` remains ready if the symptom becomes pr
 100 meshes in 6.6 s against the old 6.1 s baseline, reversing the 36.4 s regression, but it
 is still one sample.
 6. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
-warranted after post-vanilla evidence and cross-driver testing.
+warranted after delayed-occlusion evidence and cross-driver testing.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -632,7 +665,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,441 assertions, including the water-seam
+- The full game-backed Release tier passes 1,503 assertions, including delayed-occlusion
+  state transitions, stale-epoch rejection, camera/profile thresholds, exact turn detection,
+  mixed-seam invalidation, horizontal edge guards and static GL/query/default wiring; the water-seam
   frontier coverage added in 0.3.23 (four wall states plus the opposite-side pairing the
   repair depends on) and the 240-assertion
   readiness suite with the draw-range no-hole sweep and the mask-exclusion regression, 44
@@ -762,6 +797,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   from 590 to 651 FPS (+10.3%, about 0.16 ms saved). Minute distant changes were detectable
   only through immediate toggling and were judged entirely acceptable. This accepts the
   post-vanilla default and rejects the query implementation on that machine.
+- The owner then tested delayed queries around the real opaque draw. The established
+  roughly 4,000-block hill view rose from about 170 FPS to nearly 500 while stationary.
+  Motion tuning produced roughly 250-350 FPS while moving/turning in sampled areas. In a
+  different streaming area an enclosed view stayed near 190 FPS while running and rose to
+  about 500 paused; localizing invalidation restored the feature and was reported much
+  better. Extreme exposed visible screen-edge distortion during very fast yaw; aggressive
+  retained very good performance with the artifact nearly unnoticeable, and the final
+  turning-edge guard was judged acceptable. The observations establish product acceptance
+  on one machine, not a controlled benchmark or portable effect size.
 
 ### Not yet established
 
@@ -800,9 +844,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   multiplayer, or long-soak comparison exists.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
-- The three isolated GL-state/order toggles strongly establish avoidable GPU overdraw on the
-  owner's machine, but shader, raster, bandwidth and driver costs remain unseparated. There
-  are no GPU timers, repeated alternating benchmarks, second driver or second machine.
+- The three isolated GL-state/order toggles plus the accepted delayed-occlusion playtests
+  strongly establish avoidable GPU overdraw on the owner's machine, but shader, raster,
+  bandwidth, query and driver costs remain unseparated. The final 0.3.37 edge guard has no
+  isolated cost. There are no GPU timers, repeated alternating temporal comparisons, second
+  driver or second machine.
 - The per-cell ownership band is **resolved** in 0.3.16 and confirmed in game; it moved to
   the human-tested section above. What remains unestablished about it is everything the fix
   did not measure: its frame-rate cost, whether the accepted seam overlap reads acceptably at

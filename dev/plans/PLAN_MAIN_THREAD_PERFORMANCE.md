@@ -358,10 +358,25 @@ instead moves cached terrain from opaque order 0.36 to 0.38, just after vanilla 
 with only minute acceptable distant changes. It is default-on in 0.3.30 and retains
 `.vhocclusion off`.
 
+Delayed exact-geometry occlusion is also complete and human-tested in 0.3.37. Ordinary
+opaque draws are queried asynchronously after vanilla depth exists; an available zero-sample
+answer skips later submissions, and periodic exact-mesh probes recover visibility without a
+proxy or same-frame wait. The owner's roughly 4,000-block hill view rose from about 170 FPS
+to nearly 500 while stationary. The accepted aggressive motion policy produced roughly
+250-350 FPS while moving/turning in sampled areas. Continuous streaming originally erased
+all answers globally and reproduced about 190 FPS until pausing; section-local invalidation
+fixed that failure. Mixed ownership bypasses suppression, turning shortens hidden probes,
+and a narrow horizontal edge guard protects rapid-yaw disocclusion. The owner accepted the
+0.3.37 tradeoff; `.vhtemporal off` and safe/aggressive/extreme profiles remain live controls.
+
 After that evidence:
 
-- Evaluate regional combined buffers.
-- Evaluate multi-draw or instancing with per-section metadata.
+- Repeat a controlled alternating 0.3.37 comparison and quantify the edge guard rather than
+  treating the reported playtest ranges as a benchmark.
+- Exercise other drivers, sustained streaming, multiplayer, caves/structures, long turns,
+  and long sessions before broadening the default's portability claim.
+- Evaluate regional combined buffers or multi-draw only if the remaining measured CPU draw
+  submission cost justifies their complexity.
 
 ### Acceptance
 

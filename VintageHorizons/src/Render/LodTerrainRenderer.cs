@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Text;
+using OpenTK.Graphics.OpenGL4;
 using Vintagestory.API.Client;
 using Vintagestory.API.Common;
 using Vintagestory.API.Common.Entities;
@@ -36,6 +37,8 @@ public class LodTerrainRenderer : IRenderer
     internal const double MeshSnapshotMaxMillisecondsPerFrame = 1.0;
     internal const long MeshUploadMaxBytesPerFrame = 4 * 1024 * 1024;
     internal const double MeshUploadMaxMillisecondsPerFrame = 2.0;
+    internal const double SafeTemporalTranslationBlocks = 0.25;
+    internal const float SafeTemporalRotationMatrix = 0.0005f;
     internal const int ReadinessProbeMaxItemsPerFrame = 256;
     internal const double ReadinessProbeMaxMillisecondsPerFrame = 0.25;
 
@@ -135,6 +138,15 @@ public class LodTerrainRenderer : IRenderer
     public long MeshSnapshotBytes { get; private set; }
     public int MeshSnapshotItems { get; private set; }
     public int MeshUploadItems { get; private set; }
+    public long TemporalOcclusionQueries { get; private set; }
+    public long TemporalOcclusionResults { get; private set; }
+    public long TemporalOcclusionHiddenResults { get; private set; }
+    public long TemporalOcclusionStaleResults { get; private set; }
+    public long TemporalOcclusionGlobalInvalidations { get; private set; }
+    public long TemporalOcclusionDrawsSkipped { get; private set; }
+    public int LastTemporalOcclusionDrawsSkipped { get; private set; }
+    public int LastTemporalOcclusionSeamDraws { get; private set; }
+    public int LastTemporalOcclusionEdgeDraws { get; private set; }
     public long ReadinessProbes { get; private set; }
     public long ReadinessTrueResults { get; private set; }
     public long ReadinessFalseResults { get; private set; }
@@ -217,6 +229,65 @@ public class LodTerrainRenderer : IRenderer
     public bool OpaqueFrontToBack { get; set; } = true;
 
     /// <summary>
+    /// Delayed exact-geometry occlusion. Ordinary opaque draws are sampled
+    /// asynchronously after vanilla has populated depth. A zero-sample result skips later
+    /// submissions. Profile/projection and selected camera-threshold changes invalidate
+    /// globally; streamed scene changes invalidate only affected pieces and rely on the
+    /// periodic exact probe for convergence. Camera turns shorten that probe cadence.
+    /// Unlike the rejected prototype this has no proxy boxes, conditional rendering, or
+    /// same-frame dependency. The aggressive profile is default-on after in-game testing
+    /// found a substantial FPS gain; mixed ownership and a narrow turning-edge band are
+    /// deliberately protected from delayed hiding.
+    /// </summary>
+    public bool TemporalOcclusionEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_TEMPORAL_OCCLUSION") != "0";
+
+    double temporalOcclusionTranslationLimitBlocks = 2.0;
+    float temporalOcclusionRotationMatrixLimit = float.PositiveInfinity;
+    int temporalOcclusionVisibleQueryIntervalFrames = 8;
+    int temporalOcclusionHiddenProbeIntervalFrames = 16;
+    int temporalOcclusionTurningProbeIntervalFrames = 4;
+    double temporalOcclusionEdgeGuard = 0.06;
+    public string TemporalOcclusionProfileName { get; private set; } = "aggressive";
+
+    public bool SetTemporalOcclusionProfile(string profile)
+    {
+        switch (profile.ToLowerInvariant())
+        {
+            case "safe":
+                temporalOcclusionTranslationLimitBlocks = SafeTemporalTranslationBlocks;
+                temporalOcclusionRotationMatrixLimit = SafeTemporalRotationMatrix;
+                temporalOcclusionVisibleQueryIntervalFrames = 4;
+                temporalOcclusionHiddenProbeIntervalFrames = 8;
+                temporalOcclusionTurningProbeIntervalFrames = 8;
+                temporalOcclusionEdgeGuard = 0;
+                break;
+            case "aggressive":
+                temporalOcclusionTranslationLimitBlocks = 2.0;
+                temporalOcclusionRotationMatrixLimit = float.PositiveInfinity;
+                temporalOcclusionVisibleQueryIntervalFrames = 8;
+                temporalOcclusionHiddenProbeIntervalFrames = 16;
+                temporalOcclusionTurningProbeIntervalFrames = 4;
+                temporalOcclusionEdgeGuard = 0.06;
+                break;
+            case "extreme":
+                temporalOcclusionTranslationLimitBlocks = double.PositiveInfinity;
+                temporalOcclusionRotationMatrixLimit = float.PositiveInfinity;
+                temporalOcclusionVisibleQueryIntervalFrames = 16;
+                temporalOcclusionHiddenProbeIntervalFrames = 32;
+                temporalOcclusionTurningProbeIntervalFrames = 8;
+                temporalOcclusionEdgeGuard = 0;
+                break;
+            default:
+                return false;
+        }
+
+        TemporalOcclusionProfileName = profile.ToLowerInvariant();
+        InvalidateTemporalOcclusionScene();
+        return true;
+    }
+
+    /// <summary>
     /// Render cached terrain just after vanilla terrain so the ordinary depth test can
     /// reject fragments hidden behind current chunks. The established order stays the
     /// default after an owner A/B measured a substantial gain and found only minute,
@@ -240,6 +311,7 @@ public class LodTerrainRenderer : IRenderer
             capi.Event.UnregisterRenderer(this, EnumRenderStage.Opaque);
             rendererRegistered = false;
             postVanillaDepthCulling = value;
+            InvalidateTemporalOcclusionScene();
             try
             {
                 RegisterRenderer();
@@ -291,6 +363,12 @@ public class LodTerrainRenderer : IRenderer
         MeshSnapshotBytes = 0;
         MeshSnapshotItems = 0;
         MeshUploadItems = 0;
+        TemporalOcclusionQueries = 0;
+        TemporalOcclusionResults = 0;
+        TemporalOcclusionHiddenResults = 0;
+        TemporalOcclusionStaleResults = 0;
+        TemporalOcclusionGlobalInvalidations = 0;
+        TemporalOcclusionDrawsSkipped = 0;
         ReadinessProbes = 0;
         ReadinessTrueResults = 0;
         ReadinessFalseResults = 0;
@@ -335,6 +413,28 @@ public class LodTerrainRenderer : IRenderer
     readonly Dictionary<long, long> lastResidencyFrame = new();
     readonly List<long> evictBatch = new();
     long frameCounter;
+
+    sealed class TemporalOcclusionQuery
+    {
+        public int QueryId;
+        public readonly LodTemporalOcclusionState State = new();
+    }
+
+    readonly Dictionary<long, TemporalOcclusionQuery> temporalOcclusionQueries = new();
+    readonly List<long> temporalOcclusionPending = new();
+    readonly float[] temporalOcclusionView = new float[16];
+    readonly float[] temporalOcclusionProjection = new float[16];
+    readonly float[] temporalOcclusionPreviousFrameView = new float[16];
+    double temporalOcclusionCameraX;
+    double temporalOcclusionCameraY;
+    double temporalOcclusionCameraZ;
+    long temporalOcclusionEpoch = 1;
+    bool temporalOcclusionHasView;
+    bool temporalOcclusionHasPreviousFrameView;
+    bool temporalOcclusionTurningThisFrame;
+    bool temporalOcclusionQueryTargetAvailable;
+    bool temporalOcclusionFailed;
+    bool temporalOcclusionFailureReported;
 
     /// <summary>
     /// Sides (W, E, N, S as bits 0-3) whose live mesh was built against a neighbour that
@@ -1010,6 +1110,7 @@ public class LodTerrainRenderer : IRenderer
     void RemoveMeshes(long key)
     {
         meshedWithoutNeighbor.Remove(key);
+        RemoveTemporalOcclusionQuery(key);
         if (!HasAnyMesh(key)) return;
         DisposeMeshRefs(key);
         meshBounds.Remove(key);
@@ -1035,6 +1136,12 @@ public class LodTerrainRenderer : IRenderer
         // throws, the new mesh pair is still the live pair and will not leak or vanish.
         DisposeMeshRef(oldOpaque);
         DisposeMeshRef(oldWater);
+        // The replaced section itself must draw until remeasured. Do not globally reset
+        // everything behind it: active exploration can publish several meshes per frame,
+        // which previously kept every query stale forever. Hidden terrain already performs
+        // periodic exact probes, so a changed occluder converges without defeating culling.
+        if (temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query))
+            query.State.Invalidate(temporalOcclusionEpoch);
     }
 
     void DisposeMeshRef(MeshRef? mesh)
@@ -1629,6 +1736,9 @@ public class LodTerrainRenderer : IRenderer
 
             readinessMask.MarkUploaded();
             readinessMaskActive = true;
+            // Mixed-ownership seam sections bypass temporal hiding altogether. A mask
+            // upload therefore needs no global reset: newly mixed sections draw normally,
+            // while cache-only hidden sections keep their periodic exact probes.
         }
         catch (Exception e)
         {
@@ -2031,8 +2141,15 @@ public class LodTerrainRenderer : IRenderer
         // must happen after ApplyZFar, because that can rebuild the projection matrix.
         worldHeight = capi.World.BlockAccessor.MapSizeY;
         frustum.Update(rapi.CurrentProjectionMatrix, rapi.CameraMatrixOriginf);
+        UpdateTemporalOcclusionView(rapi.CameraMatrixOriginf, rapi.CurrentProjectionMatrix,
+            camPos.X, camPos.Y, camPos.Z);
+        ResolveTemporalOcclusionQueries();
+        PrepareTemporalOcclusionQueries();
         traversalCulledThisFrame = 0;
         culledThisFrame = 0;
+        LastTemporalOcclusionDrawsSkipped = 0;
+        LastTemporalOcclusionSeamDraws = 0;
+        LastTemporalOcclusionEdgeDraws = 0;
 
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         drawList.Clear();
@@ -2134,7 +2251,7 @@ public class LodTerrainRenderer : IRenderer
                 if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
                 if (SkipVanillaOwnedSection(key)) continue;
                 if (!SetupSectionTransform(key, cullDistSq)) continue;
-                capi.Render.RenderMesh(mesh);
+                RenderOpaqueMesh(key, mesh);
             }
         }
         else
@@ -2144,7 +2261,7 @@ public class LodTerrainRenderer : IRenderer
                 if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
                 if (SkipVanillaOwnedSection(key)) continue;
                 if (!SetupSectionTransform(key, cullDistSq)) continue;
-                capi.Render.RenderMesh(mesh);
+                RenderOpaqueMesh(key, mesh);
             }
         }
 
@@ -2200,6 +2317,308 @@ public class LodTerrainRenderer : IRenderer
     public string DescribeOcclusionCulling() => OcclusionCullingEnabled
         ? "on: cached terrain renders after vanilla for ordinary depth rejection"
         : "off: cached terrain renders before vanilla";
+
+    public string DescribeTemporalOcclusion()
+    {
+        if (temporalOcclusionFailed) return "failed; drawing all terrain";
+        if (!TemporalOcclusionEnabled) return "off";
+        if (!OcclusionCullingEnabled) return "suspended until post-vanilla order is on";
+        return $"on ({TemporalOcclusionProfileName}): {LastTemporalOcclusionDrawsSkipped} hidden opaque draws skipped last frame, "
+            + $"{LastTemporalOcclusionSeamDraws} seam draws protected, "
+            + $"{LastTemporalOcclusionEdgeDraws} turning-edge draws protected, "
+            + $"{TemporalOcclusionHiddenResults}/{TemporalOcclusionResults} hidden results, "
+            + $"{TemporalOcclusionStaleResults} stale results/{TemporalOcclusionGlobalInvalidations} global invalidations, "
+            + $"{temporalOcclusionPending.Count} queries pending";
+    }
+
+    bool TemporalOcclusionActive => TemporalOcclusionEnabled
+        && OcclusionCullingEnabled && !temporalOcclusionFailed;
+
+    void RenderOpaqueMesh(long key, MeshRef mesh)
+    {
+        if (!TemporalOcclusionActive)
+        {
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        if (!temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query))
+        {
+            query = new TemporalOcclusionQuery();
+            temporalOcclusionQueries.Add(key, query);
+        }
+
+        // A mixed section is the exact vanilla/cache ownership seam: some of its
+        // fragments are deliberately discarded for ready vanilla chunks and the rest
+        // complete cached coverage. Never let one zero-sample result hide that entire
+        // section, because the small cache-owned remainder is precisely the seam the
+        // player notices. Cache-only sections beyond it retain full temporal culling.
+        if (readinessMaskActive && readiness != null
+            && readiness.Classify(key) == VanillaSectionOwnership.Mixed)
+        {
+            query.State.Invalidate(temporalOcclusionEpoch);
+            LastTemporalOcclusionSeamDraws++;
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        // A previous-frame hidden answer is least reliable where a fast yaw is bringing
+        // terrain onto the screen. Protect only a narrow side band, and only while the
+        // view is actually turning. The centre retains temporal culling, stationary views
+        // pay nothing, and the extreme profile deliberately disables this guard so the
+        // visual limit remains available for comparison.
+        if (temporalOcclusionTurningThisFrame && temporalOcclusionEdgeGuard > 0
+            && TemporalOcclusionNearSideEdge(key))
+        {
+            query.State.Invalidate(temporalOcclusionEpoch);
+            LastTemporalOcclusionEdgeDraws++;
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        int hiddenProbeInterval = temporalOcclusionTurningThisFrame
+            ? Math.Min(temporalOcclusionHiddenProbeIntervalFrames,
+                temporalOcclusionTurningProbeIntervalFrames)
+            : temporalOcclusionHiddenProbeIntervalFrames;
+        if (!query.State.ShouldDraw(frameCounter, temporalOcclusionEpoch,
+            hiddenProbeInterval))
+        {
+            TemporalOcclusionDrawsSkipped++;
+            LastTemporalOcclusionDrawsSkipped++;
+            return;
+        }
+
+        if (!query.State.ShouldIssueQuery(frameCounter, temporalOcclusionEpoch,
+            temporalOcclusionVisibleQueryIntervalFrames,
+            hiddenProbeInterval))
+        {
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        // A renderer earlier in this stage may deliberately span a query across us.
+        // Beginning the same target would fail, and blindly ending afterwards could close
+        // the other renderer's query. Check once per frame and simply draw when occupied.
+        if (!temporalOcclusionQueryTargetAvailable)
+        {
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        try
+        {
+            if (query.QueryId == 0) query.QueryId = GL.GenQuery();
+            GL.BeginQuery(QueryTarget.AnySamplesPassed, query.QueryId);
+        }
+        catch (Exception e)
+        {
+            DisableTemporalOcclusion(e);
+            // Query failure is an optimization failure, never a reason to lose terrain.
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
+        query.State.BeginQuery(frameCounter, temporalOcclusionEpoch);
+        temporalOcclusionPending.Add(key);
+        TemporalOcclusionQueries++;
+        try
+        {
+            // This is both the ordinary visible draw and the exact visibility probe.
+            // A hidden section therefore adds only two query commands, not proxy
+            // geometry plus a conditional submission of the real mesh.
+            capi.Render.RenderMesh(mesh);
+        }
+        finally
+        {
+            try { GL.EndQuery(QueryTarget.AnySamplesPassed); }
+            catch (Exception e) { DisableTemporalOcclusion(e); }
+        }
+    }
+
+    void ResolveTemporalOcclusionQueries()
+    {
+        if (!TemporalOcclusionActive || temporalOcclusionPending.Count == 0) return;
+
+        try
+        {
+            for (int i = temporalOcclusionPending.Count - 1; i >= 0; i--)
+            {
+                long key = temporalOcclusionPending[i];
+                if (!temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query)
+                    || query.QueryId == 0)
+                {
+                    temporalOcclusionPending.RemoveAt(i);
+                    continue;
+                }
+
+                GL.GetQueryObject(query.QueryId, GetQueryObjectParam.QueryResultAvailable,
+                    out int available);
+                if (available == 0) continue;
+
+                GL.GetQueryObject(query.QueryId, GetQueryObjectParam.QueryResult, out int samples);
+                if (query.State.CompleteQuery(samples != 0, temporalOcclusionEpoch))
+                {
+                    TemporalOcclusionResults++;
+                    if (samples == 0) TemporalOcclusionHiddenResults++;
+                }
+                else
+                {
+                    TemporalOcclusionStaleResults++;
+                }
+                temporalOcclusionPending.RemoveAt(i);
+            }
+        }
+        catch (Exception e)
+        {
+            DisableTemporalOcclusion(e);
+        }
+    }
+
+    bool TemporalOcclusionNearSideEdge(long key)
+    {
+        int footprint = LodWorld.KeyFootprintBlocks(key);
+        double relX = LodWorld.KeySx(key) * (double)footprint - camPos.X;
+        double relZ = LodWorld.KeySz(key) * (double)footprint - camPos.Z;
+        return frustum.BoxNearSideEdge(
+            relX, -camPos.Y, relZ,
+            relX + footprint, worldHeight - camPos.Y, relZ + footprint,
+            temporalOcclusionEdgeGuard);
+    }
+
+    void PrepareTemporalOcclusionQueries()
+    {
+        temporalOcclusionQueryTargetAvailable = false;
+        if (!TemporalOcclusionActive) return;
+
+        try
+        {
+            GL.GetQuery(QueryTarget.AnySamplesPassed, GetQueryParam.CurrentQuery,
+                out int activeQuery);
+            temporalOcclusionQueryTargetAvailable = activeQuery == 0;
+        }
+        catch (Exception e)
+        {
+            DisableTemporalOcclusion(e);
+        }
+    }
+
+    void UpdateTemporalOcclusionView(float[] view, float[] projection,
+        double cameraX, double cameraY, double cameraZ)
+    {
+        temporalOcclusionTurningThisFrame = temporalOcclusionHasPreviousFrameView
+            && ViewRotationChanged(view, temporalOcclusionPreviousFrameView);
+        Array.Copy(view, temporalOcclusionPreviousFrameView, 16);
+        temporalOcclusionHasPreviousFrameView = true;
+
+        bool changed = !temporalOcclusionHasView
+            || TranslationExceeded(cameraX, cameraY, cameraZ,
+                temporalOcclusionCameraX, temporalOcclusionCameraY, temporalOcclusionCameraZ,
+                temporalOcclusionTranslationLimitBlocks)
+            || ViewRotationExceeded(view, temporalOcclusionView,
+                temporalOcclusionRotationMatrixLimit)
+            || ProjectionChanged(projection, temporalOcclusionProjection);
+        if (!changed) return;
+
+        Array.Copy(view, temporalOcclusionView, 16);
+        Array.Copy(projection, temporalOcclusionProjection, 16);
+        temporalOcclusionCameraX = cameraX;
+        temporalOcclusionCameraY = cameraY;
+        temporalOcclusionCameraZ = cameraZ;
+        temporalOcclusionHasView = true;
+        InvalidateTemporalOcclusionScene();
+    }
+
+    internal static bool TranslationExceeded(double x, double y, double z,
+        double anchorX, double anchorY, double anchorZ, double limit)
+    {
+        double dx = x - anchorX;
+        double dy = y - anchorY;
+        double dz = z - anchorZ;
+        return dx * dx + dy * dy + dz * dz >= limit * limit;
+    }
+
+    internal static bool ViewRotationExceeded(float[] current, float[] previous, float limit)
+    {
+        if (current.Length < 16) return true;
+        // CameraMatrixOriginf has no useful world translation for cached geometry. Only
+        // compare the 3x3 orientation basis; translation has its own block-space bound.
+        ReadOnlySpan<int> rotation = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+        foreach (int i in rotation)
+        {
+            if (Math.Abs(current[i] - previous[i])
+                >= limit) return true;
+        }
+        return false;
+    }
+
+    internal static bool ViewRotationChanged(float[] current, float[] previous)
+    {
+        if (current.Length < 16) return true;
+        ReadOnlySpan<int> rotation = [0, 1, 2, 4, 5, 6, 8, 9, 10];
+        foreach (int i in rotation)
+        {
+            if (BitConverter.SingleToInt32Bits(current[i])
+                != BitConverter.SingleToInt32Bits(previous[i])) return true;
+        }
+        return false;
+    }
+
+    internal static bool ProjectionChanged(float[] current, float[] previous)
+    {
+        if (current.Length < 16) return true;
+        for (int i = 0; i < 16; i++)
+        {
+            if (BitConverter.SingleToInt32Bits(current[i])
+                != BitConverter.SingleToInt32Bits(previous[i])) return true;
+        }
+        return false;
+    }
+
+    void InvalidateTemporalOcclusionScene()
+    {
+        TemporalOcclusionGlobalInvalidations++;
+        temporalOcclusionEpoch++;
+        if (temporalOcclusionEpoch == long.MaxValue)
+        {
+            temporalOcclusionEpoch = 1;
+            foreach (TemporalOcclusionQuery query in temporalOcclusionQueries.Values)
+                query.State.Invalidate(temporalOcclusionEpoch);
+        }
+    }
+
+    void DisableTemporalOcclusion(Exception error)
+    {
+        temporalOcclusionFailed = true;
+        if (temporalOcclusionFailureReported) return;
+        temporalOcclusionFailureReported = true;
+        capi.Logger.Warning(
+            "[VintageHorizons] delayed occlusion disabled; all cached terrain remains visible: {0}",
+            error.Message);
+    }
+
+    void DisposeTemporalOcclusionQueries()
+    {
+        foreach (TemporalOcclusionQuery query in temporalOcclusionQueries.Values)
+        {
+            if (query.QueryId == 0) continue;
+            try { GL.DeleteQuery(query.QueryId); }
+            catch { /* teardown must not throw over a query the driver already released */ }
+        }
+        temporalOcclusionQueries.Clear();
+        temporalOcclusionPending.Clear();
+        temporalOcclusionHasView = false;
+        temporalOcclusionHasPreviousFrameView = false;
+        temporalOcclusionTurningThisFrame = false;
+    }
+
+    void RemoveTemporalOcclusionQuery(long key)
+    {
+        if (!temporalOcclusionQueries.Remove(key, out TemporalOcclusionQuery? query)) return;
+        temporalOcclusionPending.Remove(key);
+        if (query.QueryId == 0) return;
+        try { GL.DeleteQuery(query.QueryId); }
+        catch { /* eviction must not fail over an optional driver object */ }
+    }
 
     bool SetupSectionTransform(long key, float cullDistSq)
     {
@@ -2281,6 +2700,7 @@ public class LodTerrainRenderer : IRenderer
         EffectiveFarDistance = LodFarDistance.MinimumProjectionDistance;
         meshJobInFlight.Clear();
         lastResidencyFrame.Clear();
+        DisposeTemporalOcclusionQueries();
         ClearReadiness();
     }
 
