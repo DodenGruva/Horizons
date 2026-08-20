@@ -166,15 +166,12 @@ Human-reported and still open:
   an overall hue shift rather than grass alone being wrong. The `(rain, temp)` overload cannot
   fix it - see G47 - but the mod can sample the climate map alone and blend it against the
   season map with the shader's own weight.
-- Cached water shows the boundary of every chunk, with colour differing across those
-  boundaries. This is a SEPARATE report from the land colour above and is untouched by the
-  0.3.18 fix - water's palette colour was already stable (`water-still-7`, sd 4). One cheap
-  experiment separates the two candidates: if the seams disappear with `.vhmask off`, the
-  mask is drawing cached water only in unowned cells and the 32-block ownership edges are
-  visible on a flat surface that hides nothing; if they persist, it is the existing
-  per-section water tint and predates this work. A third candidate worth eliminating first:
-  cached water is drawn at 66% alpha, so anywhere cached and vanilla water overlap it blends
-  twice and reads as a different colour from where only one of them draws.
+- **Water seams are fixed and human-confirmed (0.3.23); one measurement is still owed.**
+  See G51 and session 31 for the cause. `seam repairs` on the periodic log line has never
+  been read from a real join: it should be non-zero while terrain arrives and then settle,
+  and a figure that climbs without settling means a repair is re-queueing itself. The cost
+  of the repair meshes is likewise bounded by construction but unmeasured, and belongs to
+  the benchmark owed above rather than to a run of its own.
 - Cached terrain becoming coarser than expected during fast flight. `.vhcoarse` reports why:
   a parent keeps covering ground when a visible child with data has no mesh, and each
   interval logs whether those children were waiting on storage, a mesh worker, a scheduling
@@ -185,7 +182,9 @@ Human-reported and still open:
 - Re-run the visual matrix. The 2026-08-18 playtest was reported acceptable overall, but
   seams, boundary flicker and approach popping were not separately confirmed, and no cliff,
   water, cave or structure case was reported individually. Nothing in the matrix has been
-  re-run since the mask began working.
+  re-run since the mask began working. Water, shoreline and cliff were each confirmed
+  individually on 0.3.23; seams elsewhere, boundary flicker, approach popping, cave and
+  structure remain unconfirmed.
 
 ### Documentation and baseline
 
@@ -204,8 +203,9 @@ Human-reported and still open:
 - What default far-distance cap, if any, gives the best product experience after the renderer fixes?
 - Is temporary coarseness acceptable while time-budgeted installs catch up during fast travel?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
-- Is the hybrid's one-time chunk handoff pop preferable to any residual overlap, and do
-  observed cliff/water seams require a frontier-only correction?
+- Is the hybrid's one-time chunk handoff pop preferable to any residual overlap? The
+  "cliff/water seams" half of this question is closed: the seams were the mesher's frontier
+  rule, not the handoff, and both cases were confirmed clean on 0.3.23.
 
 ## Verification debt
 

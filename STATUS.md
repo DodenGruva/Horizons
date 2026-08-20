@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-20
-**Mod version:** `0.3.22` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.23` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -194,6 +194,22 @@ Source-traced from the engine's shaders, and **human-confirmed on 2026-08-20**: 
 evaluated it across the daylight cycle and asked for it to stay as the default. What that
 covers is the look of distant ground through a day on one machine and one world; cached water
 takes the same floor and was not judged separately. See G50.
+
+Since 0.3.23 a cached section edge is walled off only where the CACHE has no data beyond
+it, rather than wherever the neighbouring section is absent from RAM. The two had diverged
+since the mesher was written: sections load and mesh nearest-first, so the outward side of
+nearly every section was meshed before its neighbour arrived and was walled off permanently,
+because neither `InstallLoaded` nor `MarkChanged` re-meshes on a mere load. On land the wall
+is hidden behind the neighbouring terrain; on water, drawn at 66% alpha, it read through the
+surface as a dark vertical line at every chunk boundary. Measured offline on a synthetic
+ocean section: 1 water quad with the neighbour resident, 65 without it, 64 of them a
+3,200 block^2 sheet on the shared plane. A side whose neighbour merely has not loaded is now
+left open for water and still walled for solids - a missing solid wall would open a
+see-through gap at a cliff, a missing water wall costs nothing - and the section is re-meshed
+when the neighbour lands, tracked per side so the repair costs one mesh per side that
+actually guessed rather than a mesh per arrival. `seam repairs` on the periodic log line
+counts them. **Human-confirmed on 2026-08-20**, ocean, shores and cliffs. See G51 and
+session 31.
 
 One known mismatch remains and is unquantified: the mod takes its tint from
 `ApplyColorMapOnRgba`, while terrain is drawn by `chunkopaque`/`chunktopsoil` through
@@ -503,14 +519,15 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 - The color-noise and sink causes are source-traced and corrected. A distance-only handoff
   remains unable to express individual vanilla readiness: one unowned column near the camera
   pulls the global radius in and restores overlap everywhere, and that case has not been
-  deliberately reproduced. Exact per-cell draw ownership and seam behavior remain open.
+  deliberately reproduced. Exact per-cell draw ownership and the cached/vanilla handoff seam
+  remain open - a different thing from the mesher's chunk-boundary seams, which 0.3.23 fixed.
 
 ## 7. Current open work
 
-1. **Cached water shows the boundary of every chunk, with colour differing across those
-boundaries.** The next piece of work, and untouched by the 0.3.18-0.3.22 land colour fixes -
-water's stored colour was already stable. Three candidates are ranked cheapest-first in
-`dev/TODO.md`, and `.vhmask off` separates two of them in a single look.
+1. Read `seam repairs` from an ordinary join. The water-seam fix is human-confirmed, but
+that counter has never been seen on a real route: it should be non-zero while terrain
+arrives and then settle, and a figure that climbs without settling would mean a repair is
+re-queueing itself. Its cost belongs to the benchmark owed below, not to a run of its own.
 2. The per-cell mask shipped as the default in 0.3.17, so what is open about it is evidence,
 not the decision: no benchmark since 0.3.9, the seam overlap was accepted by non-observation
 rather than inspection, and the visual matrix has not been re-run since the mask started
@@ -578,7 +595,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,383 assertions, including the 240-assertion
+- The full game-backed Release tier passes 1,441 assertions, including the water-seam
+  frontier coverage added in 0.3.23 (four wall states plus the opposite-side pairing the
+  repair depends on) and the 240-assertion
   readiness suite with the draw-range no-hole sweep and the mask-exclusion regression, 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
@@ -672,6 +691,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   mechanism that operates between periodic repairs. This is acceptance of the band's closure
   on one machine, one world, one view distance and one flight speed; the seam overlap the fix
   accepts was not separately judged, and no performance verdict is attached.
+
+- The owner confirmed on 2026-08-20 that 0.3.23 removes the water chunk seams, and
+  confirmed shores and cliffs specifically - the one case the water-only frontier rule could
+  have broken. This is acceptance of the seam fix on one machine, one world and one view
+  distance; no performance verdict is attached, and `seam repairs` was not read.
 
 ### Not yet established
 

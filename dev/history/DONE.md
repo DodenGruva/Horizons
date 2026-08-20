@@ -451,3 +451,14 @@ by the owner.**
   `WriteMask` air gap was the primary cause, which the owner's report of a permanent band
   while stationary refuted in one exchange.
 
+## 2026-08-20 — water chunk seams
+
+- Corrected the recorded symptom: the fault was a vertical seam standing at every cached water chunk boundary, never a colour difference, and all three colour candidates previously listed were wrong.
+- Found the cause in the mesh scheduler, which established whether a neighbouring section exists from RAM residency (`Sections`) rather than from stored data (`HasDataSet`), the question the shader's `openEdges` has always asked.
+- Established why it reached nearly every boundary: sections load and mesh nearest-first, so a section's outward neighbour is routinely still in flight, and neither `InstallLoaded` nor `MarkChanged` ever re-meshed it afterwards.
+- Measured the artefact offline on a synthetic ocean section: 1 water quad with the neighbour present against 65 without it, 64 of them a 3,200 block2 sheet of 66%-opaque water on the shared plane.
+- Established why only water showed it: an opaque neighbour hides the same wall on land, which is why every land case in the visual matrix concealed the fault.
+- Added a per-side assumed-covered mask, permissive for water and conservative for solids, with a targeted re-mesh driven by a new `SectionBecameResident` callback; rejected blanket neighbour dirtying and deferred meshing, both of which spend the join fill-in budget.
+- Added mesher regression coverage for all four wall states and pinned the opposite-side pairing the repair depends on; 1,441 assertions pass.
+- Added `seam repairs` telemetry, promoted G51, and shipped 0.3.23.
+- Human-confirmed in game: ocean seams gone, shores and cliffs clean.

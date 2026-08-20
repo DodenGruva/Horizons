@@ -8,6 +8,28 @@ first.
 
 ## [Unreleased]
 
+## [0.3.23]
+
+In development. The water fix below is confirmed in game.
+
+**Distant water no longer shows a seam at every chunk boundary.** On a large ocean the
+cached surface was crossed by a grid of dark vertical lines, one at each cached chunk edge,
+and they never went away while you stayed put.
+
+Each cached chunk builds its own shape, and where it has no neighbour to compare against it
+closes that edge off with a wall - which is right at the edge of explored world, and wrong
+everywhere else. It was deciding "no neighbour" by asking whether the neighbouring chunk was
+in memory rather than whether the cache had data for it. Cached chunks are read from disk
+nearest-first, so the outward-facing edge of nearly every one of them was built before its
+neighbour had arrived, and nothing went back to correct it afterwards. On land the resulting
+wall is hidden behind the neighbouring ground; water is see-through, so the wall showed
+through the surface as a line.
+
+Cached water now leaves such an edge open, and the chunk is rebuilt once the missing
+neighbour actually arrives. Solid ground keeps its wall in the meantime, so a cliff on a
+chunk boundary cannot open into a gap. The periodic log reports these repairs as
+`seam repairs`.
+
 ## [0.3.22]
 
 In development.

@@ -977,6 +977,47 @@ copying.
 
 **Found:** 0.3.22, from a report that the colour matched at some light levels and not others.
 
+### G51 — "Not in RAM" is not "no data there", and the mesher was asking the wrong one
+
+**Trigger:** any mesh decision that reads `LodWorld.Sections` to establish whether a
+neighbouring section exists.
+
+**Trap:** `Sections` is residency. It answers what is in memory this instant, and a section
+with a perfectly good row on disk is absent from it constantly - evicted by the sweep, or
+simply not read yet. `HasDataSet` is the durable question, and the shader's `openEdges` has
+always asked it.
+
+The mesher walls off a section edge whose neighbour is missing, which is correct at the
+frontier of explored space and wrong everywhere else, and it was deciding that from
+residency. Sections load and mesh NEAREST-FIRST, so the outward-facing side of nearly every
+section was meshed before its neighbour had landed. Nothing repaired it afterwards:
+`MarkChanged` refreshes a neighbour's mesh, but only content changes call it, and
+`InstallLoaded` deliberately marks nothing.
+
+On land the spurious wall is invisible - the neighbouring ground is opaque and hides it,
+which is why this survived so long. On water it is the whole bug. Measured on one synthetic
+ocean section: 1 water quad with the neighbour present, 65 without it, 64 of them a
+3,200 block² sheet of 66%-opaque water standing on the shared plane from the surface to the
+seabed. An ocean showed a grid of dark vertical lines that never healed.
+
+**Do:** ask `HasDataSet` when the question is "is there terrain there", and treat a
+data-bearing but unloaded neighbour as covered rather than as the frontier. Do NOT force the
+neighbour resident to find out - a neighbour outside the draw set is meant to end in nothing,
+and loading one to prove it pulls the cache into memory a ring at a time.
+
+**Do:** repair rather than pre-empt. Record which sides a mesh guessed at and re-mesh only
+those when the neighbour actually arrives. The blunt version - dirtying all four neighbours
+of every arriving section - is three lines and roughly doubles the mesh work of a warm join,
+which collides with the join fill-in cost that is already the top open issue.
+
+**Know:** the permissive side is water-only on purpose. A missing solid wall opens a
+see-through gap at a cliff for as long as the repair takes; a missing water wall costs
+nothing, because at a true frontier the edge dissolves into the sky anyway.
+
+**Found:** 0.3.23, from a report of vertical seams between water chunks. The TODO had it
+recorded as a COLOUR fault with three candidates, all of them wrong, and the experiment it
+proposed (`.vhmask off`) could not have separated anything - the seams are geometry.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
