@@ -949,6 +949,34 @@ where the four-pixel estimate gave rgb(86.5, 89.2, 29.8).
 
 **Found:** 0.3.20, alongside G48; they were two independent faults in the same surface.
 
+### G50 — Matching vanilla's colour is not finished when the albedo matches
+
+**Trigger:** comparing cached terrain against vanilla terrain and concluding from one
+screenshot that the colour is right, or that it is wrong.
+
+**Trap:** the final pixel is albedo times lighting, and the mod supplies both halves itself.
+0.3.18 to 0.3.21 made the albedo exact, and the owner then reported that the match held at
+some times of day and broke at others - which is the signature of the other half.
+
+Vanilla's terrain lighting is not a sun-angle shade. `getBrightnessFromNormal` floors its
+value at `normal.y * 0.95`, so an up-facing surface never darkens as the sun drops, with a
+comment in the engine source that block tops darker than block sides look uncanny; and
+`chunkliquid.fsh` does not shade by normal at all. The mod's `0.55 + 0.45 * sunAngle` took
+flat ground to 0.55 at dawn and dusk against vanilla's 0.95, a 40% gap that closes to nothing
+at midday.
+
+**Do:** separate the two halves before attributing a mismatch. An error that varies with the
+TIME OF DAY at a fixed season is lighting. One that varies with the SEASON at a fixed time of
+day is the tint. One that is constant is the albedo. The owner isolated the first of those by
+sweeping the daylight cycle with everything else held still, which is worth asking for.
+
+**Do:** expect the remaining lighting difference to be a floor, not a match. Vanilla's colour
+also carries per-vertex light values baked into each chunk and a shadow-map term; LOD sections
+store neither, and should not. The normal rule is the dominant term and the only one worth
+copying.
+
+**Found:** 0.3.22, from a report that the colour matched at some light levels and not others.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

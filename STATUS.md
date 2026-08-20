@@ -3,7 +3,7 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.3.21` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.22` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -183,6 +183,15 @@ layer's coverage as 0.573 against a true 0.687. With the true means the LOD repr
 vanilla's own blend exactly for `soil-low-normal` at midsummer - rgb(80.5, 88.1, 22.8) either
 side - where 0.3.20 gave rgb(86.5, 89.2, 29.8) and 0.3.19 gave rgb(61.7, 86.3, 7.1). The
 owner has seen 0.3.20 and called it better but not perfect; 0.3.21 is unseen.
+
+Since 0.3.22 cached ground follows vanilla's own rule that an up-facing surface never darkens
+as the sun drops - `getBrightnessFromNormal` floors at `normal.y * 0.95`, and the liquid
+shader does not shade by normal at all - instead of the mod's `0.55 + 0.45 * sunAngle`, which
+took flat ground to 0.55 at dawn and dusk beside vanilla's 0.95. Applied as a maximum, so
+cliffs and side faces are unchanged. `.vhtoplight off` restores the old shading for
+comparison and does not persist. Source-traced from the engine's shaders and reported by a
+person as the colour matching at some times of day and not others; the fix itself is unseen.
+See G50.
 
 One known mismatch remains and is unquantified: the mod takes its tint from
 `ApplyColorMapOnRgba`, while terrain is drawn by `chunkopaque`/`chunktopsoil` through

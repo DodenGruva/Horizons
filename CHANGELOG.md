@@ -8,6 +8,27 @@ first.
 
 ## [Unreleased]
 
+## [0.3.22]
+
+In development.
+
+**Distant flat ground no longer darkens at dawn and dusk when the ground at your feet does
+not.** With the colour itself finally exact, what was left showed up as a match that held at
+some times of day and broke at others.
+
+The game deliberately never darkens a flat, upward-facing surface as the sun gets low - there
+is a note in its own code saying that block tops coming out darker than block sides looks
+wrong. The mod had no such rule and shaded everything by sun angle, so cached ground dropped
+to about 55% brightness at sunrise and sunset while the real ground beside it stayed at 95%.
+At midday the two agreed, which is why it looked right some of the time.
+
+Cached ground now follows the same rule. Cliffs, slopes and anything not facing upwards are
+untouched - the rule can only brighten, never darken.
+
+`.vhtoplight off` goes back to the old shading if you want to compare the two. Worth doing at
+dawn or dusk; at midday there is nothing to see. The setting lasts until you quit.
+
+
 ## [0.3.21]
 
 In development.
