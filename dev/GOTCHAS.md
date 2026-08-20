@@ -930,10 +930,22 @@ identity over 1,440 combinations.
 presence of `specialSecondTexture`. The liquids use that texture key for flow animation and
 would be composited into mud.
 
-**Know:** `GetAverageColor` averages four pixels, alpha included, so the overlay's coverage
-arrives in the high byte — but as a four-pixel estimate, measured at 146 against a true 175.
-The LOD therefore shows slightly more dirt than vanilla. That is the conservative direction
-and it is not worth fudging with a correction factor that is texture-specific.
+**Do:** read the texture, not `GetAverageColor`. That call is not an average: it samples
+exactly four pixels, at 35% and 65% of each axis. For an opaque texture it is close enough,
+but for a partly transparent overlay those four pixels also decide how much of the block
+below shows through, and it read 146 where the true mean alpha is 175 — a fifth too much
+bare dirt, which was the entire residual error after 0.3.20 and was visible in game as
+distant ground still not quite matching. `capi.Assets.TryGet` plus
+`capi.Render.BitmapCreateFromPng` gives the real thing; take the colour alpha-weighted and
+the coverage as the mean alpha, and that pair is exactly what averaging vanilla's per-pixel
+blend over the whole face reduces to. Read it through `BitmapExternal.Pixels` rather than
+`GetPixel`, which returns an `SKColor` and would put SkiaSharp on the mod's reference list;
+both are `0xAARRGGBB`, and the decoder asks for unpremultiplied alpha, so weighting by alpha
+is a weighting and not a second application of it.
+
+**Know:** with the true means the LOD reproduces vanilla's own blend exactly — rgb(80.5,
+88.1, 22.8) against vanilla's rgb(80.5, 88.1, 22.8) for `soil-low-normal` at midsummer,
+where the four-pixel estimate gave rgb(86.5, 89.2, 29.8).
 
 **Found:** 0.3.20, alongside G48; they were two independent faults in the same surface.
 

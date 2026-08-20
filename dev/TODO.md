@@ -138,9 +138,25 @@ Human-reported and still open:
   and blue exchanged. Under that sat a larger fault: vanilla composites untinted dirt with a
   two-thirds-opaque grass overlay and tints only the grass (G49), and the mod tinted
   everything, which removed the olive and nearly all the blue. 0.3.20 fixes both.
+  0.3.20 was reported better but still not perfect, and the reason was measurable:
+  `GetAverageColor` samples four pixels, and for the see-through grass layer those four also
+  decide how much dirt shows through - 0.573 against a true 0.687, a fifth too much dirt.
+  0.3.21 reads the whole texture and now reproduces vanilla's blend exactly.
   **What the playtest has to say:** whether distant grass now reads the same as the meadow
   underfoot, and whether sparse/very sparse ground and the non-grass surfaces still look
   right - the change touches every block vanilla draws in the TopSoil pass.
+
+- **If the colour is still off after 0.3.21, this is the remaining candidate.** The mod takes
+  its tint from `ApplyColorMapOnRgba`; terrain is actually drawn through `calcColorMapUvs` in
+  `colormap.vsh`, and the two compute the climate/season blend weight differently. The C#
+  version's `Math.Max(0, 128 - temp) / 512` and `Math.Max(0, temp - 130) / 200` are INTEGER
+  divisions and evaluate to zero for every reachable temperature; the shader computes both as
+  floats and adds an altitude term. At a temperate summer temperature that is roughly a third
+  more seasonal colour in the mod's tint than vanilla draws. Unquantified because it needs the
+  world's actual temperature and rainfall. It biases grass and leaves together, so the tell is
+  an overall hue shift rather than grass alone being wrong. The `(rain, temp)` overload cannot
+  fix it - see G47 - but the mod can sample the climate map alone and blend it against the
+  season map with the shader's own weight.
 - Cached water shows the boundary of every chunk, with colour differing across those
   boundaries. This is a SEPARATE report from the land colour above and is untouched by the
   0.3.18 fix - water's palette colour was already stable (`water-still-7`, sd 4). One cheap

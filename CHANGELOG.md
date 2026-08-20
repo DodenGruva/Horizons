@@ -8,6 +8,25 @@ first.
 
 ## [Unreleased]
 
+## [0.3.21]
+
+In development.
+
+**Distant grass now matches vanilla's exactly, rather than nearly.** 0.3.20 got the shape of
+it right - bare dirt showing through a see-through grass layer, with only the grass coloured
+for the season - but it asked the game how see-through that grass layer is, and the game
+answers that question by looking at **four pixels** of the texture. Four pixels said the
+layer covers 57% of the block; the real answer is 69%. So the mod was showing about a fifth
+too much bare dirt, and distant ground came out slightly too brown.
+
+The mod now reads the whole texture instead of asking for the four-pixel summary. Measured
+against vanilla's own blend for ordinary grassy soil at midsummer, the result is no longer
+close - it is the same number.
+
+Sparse and very sparse grass, peat, clay, cob and forest floor all go through the same path,
+so they are exact now too. Existing caches repair themselves as they load, as before.
+
+
 ## [0.3.20]
 
 In development.
