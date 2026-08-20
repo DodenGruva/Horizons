@@ -42,6 +42,9 @@ uniform int maskVerticalChunks;
 // 1 paints hidden pixels red instead of hiding them. Diagnostic only.
 uniform int maskDebug;
 
+// 1 applies vanilla's own rule that an up-facing surface never darkens with the sun.
+uniform int flatTopLight;
+
 // This section's origin in whole vanilla chunks. Section origins are multiples of the
 // chunk size, so this is exact, and adding a small local offset to it cannot round.
 //
@@ -140,6 +143,22 @@ void main()
     // vector. The call below passes it to getSkyColorAt unnormalized for the same reason.
     float sunAngle = max(0.0, dot(normal, sunPosition));
     float shade = 0.55 + 0.45 * sunAngle;
+
+    // Vanilla never lets an up-facing surface darken as the sun drops. Its
+    // getBrightnessFromNormal floors the shade at normal.y * 0.95, with a comment in the
+    // engine's own source saying that block tops coming out darker than block sides looks
+    // uncanny; its liquid shader does not shade by normal at all. Without the same floor,
+    // cached ground fell to 0.55 at dawn and dusk while the vanilla ground beside it stayed
+    // near 0.95, and the two only matched around midday - reported as the colour matching
+    // well at some times of day and not others, after the albedo itself was already exact.
+    //
+    // A max, so this can only ever brighten: cliffs and side faces keep the shading they
+    // had, and only surfaces that actually face upwards are affected.
+    //
+    // Behind a switch because it is a judgement call about how distant ground should look at
+    // dawn and dusk, and the only way to settle that is to flip it while looking at the
+    // ground. See .vhtoplight.
+    if (flatTopLight == 1) shade = max(shade, clamp(normal.y, 0.0, 1.0) * 0.95);
 
     // Decode the tint slot, then snow line on up-facing terrain.
     // Only the blend band is needed here; the tint itself arrives interpolated.

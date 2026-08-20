@@ -184,6 +184,16 @@ public class LodTerrainRenderer : IRenderer
     /// ownership is needed to tell them apart.
     /// </summary>
     public bool MaskDebugPaint { get; set; }
+
+    /// <summary>
+    /// Apply vanilla's own rule that an up-facing surface never darkens as the sun drops:
+    /// `getBrightnessFromNormal` floors its shade at `normal.y * 0.95`, and the liquid shader
+    /// does not shade by normal at all. Without it cached ground fell to 0.55 at dawn and
+    /// dusk beside vanilla ground still at 0.95, which is why the colour matched at midday
+    /// and not at other times once the albedo itself was exact. On by default; `.vhtoplight
+    /// off` restores the old shading for comparison.
+    /// </summary>
+    public bool FlatTopLight { get; set; } = true;
     public double ReadinessOwnedWithoutGeometryNearest { get; private set; }
     public double ReadinessOwnedWithoutGeometryFarthest { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
@@ -1920,6 +1930,7 @@ public class LodTerrainRenderer : IRenderer
                 : LodNearHandoff.InnerDiscardRadius(viewDistance));
         prog.Uniform("maskEnabled", maskOwnsPixels ? 1 : 0);
         prog.Uniform("maskDebug", MaskDebugPaint ? 1 : 0);
+        prog.Uniform("flatTopLight", FlatTopLight ? 1 : 0);
         if (maskOwnsPixels && readiness != null && readinessMaskTexture != null)
         {
             prog.Uniform("maskMinX", readiness.ActiveMinChunkX);

@@ -1524,6 +1524,24 @@ public class VintageHorizonsModSystem : ModSystem
                     "Red is terrain the mask is hiding. A gap that stays empty is not the mask.");
             });
 
+        capi.ChatCommands.Create("vhtoplight")
+            .WithDescription("Light flat cached ground the way the game lights flat ground, instead of by sun angle. On by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] flat-top lighting {(renderer.FlatTopLight ? "on" : "off")}.");
+
+                renderer.FlatTopLight = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] flat-top lighting {(renderer.FlatTopLight ? "on" : "off")}. " +
+                    "The game never darkens flat ground as the sun drops; off shades it by sun angle " +
+                    "as before. Worth comparing at dawn or dusk, not at midday.");
+            });
+
         capi.ChatCommands.Create("vhskip")
             .WithDescription("While the chunk mask is on: allow dropping a cached piece entirely when the game covers all of it. On by default.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
