@@ -1018,6 +1018,47 @@ nothing, because at a true frontier the edge dissolves into the sky anyway.
 recorded as a COLOUR fault with three candidates, all of them wrong, and the experiment it
 proposed (`.vhmask off`) could not have separated anything - the seams are geometry.
 
+### G52 — A GPU-side saving measured in a CPU-bound scene reports its cost and none of its benefit
+
+**Trigger:** comparing frame rate with and without the chunk mask, or any other change whose
+saving is fragment shading rather than draw submission.
+
+**Trap:** the mask does not simply draw less. With it off, cached terrain is suppressed
+inside a plain radius; with it on, that radius is pulled in to `MaskNearFloor()` and the
+per-cell mask decides per fragment instead. So the mask SUBMITS MORE cached geometry and pays
+one texture fetch per fragment to throw most of it away. The saving is GPU-side and only
+materialises where vanilla genuinely covers the ground.
+
+Measure that in a scene the CPU is limiting and the benefit is invisible while the overhead
+is not, so the change reads as a regression. Measured in game on 0.3.23:
+
+| vanilla render distance | mask off | mask on | |
+|---|---|---|---|
+| 320 | ~315 FPS | ~310 FPS | CPU-bound: mask costs ~1.6% |
+| 1024 | ~180 FPS | ~190 FPS | GPU-bound: mask gains ~5.6% |
+
+Same build, same machine, opposite conclusions. A test run only at 320 would have condemned
+the feature.
+
+**Do:** state which resource is limiting the scene before quoting a frame-rate delta, and
+measure a fragment-side change where the GPU is the limit - high render distance, vanilla
+terrain filling the screen. A number without that context is not portable to another
+setting, and the earlier +7.3% stationary pair has the same weakness.
+
+**Do:** remember that the mod exists for long view distances. Where the mask costs anything
+is a regime nobody runs it in, which is what makes the default defensible rather than merely
+harmless.
+
+**Know:** this compounds a standing limitation - GPU bottleneck attribution has never been
+measured on this project, and CPU/render-thread phase counters (`DrawCost`, `WalkCost`) can
+report a subsystem healthy while the GPU carries the cost. They cannot see a fragment saving
+either.
+
+**Know:** toggling the mask on disposes and rebuilds its texture, so an average that starts
+accumulating immediately after `.vhmask on` includes the rebuild and penalises the "on" side.
+
+**Found:** 2026-08-20, from the owner measuring both render distances instead of one.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

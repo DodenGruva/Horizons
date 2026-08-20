@@ -116,6 +116,45 @@ Packaged as 0.3.23 and installed. The owner reported the ocean seams gone and sp
 confirmed shores and cliffs, which was the one case the water-only restriction could have
 broken. Human-tested.
 
+### 8. Three questions answered from the log afterwards, at no cost
+
+The playtest log was worth reading for more than the seam verdict. The 2026-08-20
+`client-main.log` on 0.3.23 settled two items that had been sitting open for want of a
+measurement nobody had taken:
+
+- `Fill-in: 100 meshes after 6.6s`, against `36.4s` on 0.3.7 and a `6.1s` baseline on 0.3.4,
+  with the same 3,016-key manifest. **The top TODO item was already fixed** - the 0.3.8
+  probe-lock restriction worked and nobody had checked.
+- `974 seam repairs` beside `599 meshes` at the 30-second mark. The repair path is active and
+  cost no visible fill-in time. Whether it settles is still unknown: `Stats after 30s` fires
+  once, so an ordinary session yields exactly one sample.
+
+### 9. The mask's frame-rate question, settled by the owner
+
+Asked whether toggling the mask in game and comparing FPS was sufficient. The answer given
+was no for a benchmark - the only prior measurement was 0.7% at ~445 FPS, far below what a
+counter resolves - but yes for ruling out a disaster.
+
+The owner then did better than the question implied and measured TWO render distances:
+
+| vanilla render distance | mask off | mask on | |
+|---|---|---|---|
+| 320 | ~315 FPS | ~310 FPS | mask costs ~1.6% |
+| 1024 | ~180 FPS | ~190 FPS | mask gains ~5.6% |
+
+Their reading - the mask helps more at range because it culls more - is directionally right
+but does not explain the sign flip, which is the informative part. With the mask off, cached
+terrain is suppressed inside a plain radius; with it on, the radius is pulled in to
+`MaskNearFloor()` and the per-cell mask decides per fragment, so the mask submits MORE
+geometry and pays a texture fetch per fragment to discard it. The saving is fragment shading.
+At 320 the scene is CPU-bound and only the overhead shows; at 1024 it is GPU-bound and the
+saving dominates. Promoted as G52, because a test run at one distance would have condemned
+the feature.
+
+The owner's verdict: negligible either way, looks much better, keep it. That closes the
+ship/shelve decision the mask has carried since 0.3.17, and the benchmark drops from top
+priority to ordinary coverage.
+
 ---
 
 ## Delivered
@@ -134,8 +173,13 @@ broken. Human-tested.
 opposite-side pairing in `KeyMathChecks`; `Fixtures.Job` takes the mask. 1,441 assertions
 pass.
 
-**Documentation:** G51; this record; TODO and STATUS corrected away from the colour framing;
-CHANGELOG 0.3.23.
+**Documentation:** G51 and G52; this record; TODO and STATUS corrected away from the colour
+framing; the join-fill-in and mask-benchmark items retired from top priority on measured
+evidence; CHANGELOG 0.3.23.
+
+**Repository:** master fast-forwarded from `Release 0.2.1` to 0.3.23, 56 commits covering
+sessions 24-31; `codex/main-thread-performance` deleted after confirming it held nothing
+unique.
 
 **Release:** `dist/vintagehorizons_0.3.23.zip`, installed and playtested.
 
@@ -175,10 +219,14 @@ Judgement calls awaiting human review:
 Claims lacking their evidence level:
 
 - The repair's cost is unmeasured. It is bounded by construction — one re-mesh per side that
-  actually guessed — but no benchmark separates it, and nothing has been benchmarked since
-  0.3.9 regardless.
-- `seam repairs` has never been read from a real join. It should be non-zero while terrain
-  arrives and settle; a figure that climbs without settling would mean a repair re-queueing
-  itself, and no run has confirmed it settles.
+  actually guessed — and the 974 repairs observed did not delay the 100-mesh mark, but no
+  benchmark separates it and nothing has been benchmarked since 0.3.9 regardless.
+- `seam repairs` has been read once, at 30 seconds. Whether it SETTLES is still unknown, and
+  that is the reading that would rule out a repair re-queueing itself.
+- The join fill-in recovery is one sample. `6.6s` against a `6.1s` baseline is convincing,
+  but it is one join on one machine against a regression nobody has reproduced since.
+- The mask frame-rate figures are the owner's in-game averages, not a controlled benchmark:
+  two samples, one per condition, no alternation, and possibly including the mask texture
+  rebuild on the "on" side.
 - Multiplayer, other view distances and long sessions are untouched by this session, as they
   are by every session so far.

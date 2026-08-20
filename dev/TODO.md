@@ -2,52 +2,63 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## Top priority — cached terrain is slow to appear after joining
+## Cached terrain slow to appear after joining — recovered, on one sample
 
-Reported 2026-08-19 on 0.3.7: no cached terrain at all for a while after loading in, and it
-only appeared after flying around. Never seen before.
+Reported 2026-08-19 on 0.3.7: `Fill-in: 100 meshes after 36.4s` against `6.1s` on 0.3.4 with
+the same cache and manifest. The suspect was ours - the drawn-without-geometry diagnostic
+added in 0.3.5 called `BlockAccessor.GetChunk` per probe, taking `ClientWorldMap.chunksLock`
+while the world was coming up - and 0.3.8 restricted that lookup. Nobody checked afterwards.
 
-The user's log for that session says the mask was **off** and `handoff 0 blocks`, so
-ownership was suppressing nothing and this is not the mask. It is residency or meshing:
-`Fill-in: 100 meshes after 36.4s`, against `6.1s` on 0.3.4 with the same 3,012-section
-cache and the same 3,016-key manifest.
+**The 2026-08-20 client log reads `Fill-in: 100 meshes after 6.6s` on 0.3.23**, against the
+same 3,016-key manifest (`3016 from cache`). That is the 0.3.4 baseline, so 0.3.8 appears to
+have fixed it and the regression is not live.
 
-One suspect, unproven, and it is ours: the drawn-without-geometry diagnostic added in 0.3.5
-called `BlockAccessor.GetChunk` for every probe. That takes `ClientWorldMap.chunksLock`,
-the same lock `IsChunkRendered` has just taken and the same one the chunk loader wants,
-and the probe queue is at its longest while a world is coming up. 0.3.8 restricts the
-lookup to observations that can change ownership. Whether that is the cause is unmeasured.
+What is left is confidence, not investigation: one join, one machine, one world. If it ever
+comes back, the number is in the client log of any ordinary session and 6.1 s is the
+baseline - bisect residency against 0.3.4 rather than assuming the diagnostic again.
 
-Measure it from an ordinary join rather than a benchmark: `Fill-in: 100 meshes after Xs`
-in the client log is the number, and 0.3.4 is the baseline at 6.1 s. If 0.3.8 does not
-recover it, bisect residency against 0.3.4 rather than assuming the diagnostic.
-
-## Top priority - the mask is the default now, and its evidence has not caught up
+## The mask default is settled; what remains is coverage, not the decision
 
 **The band is closed** (0.3.16, human-confirmed 2026-08-19). It was the engine's per-frame
 range cull, which no per-chunk signal reflects; see G43 and session 29. **The mask became the
-default in 0.3.17** on the owner's decision: the band was gone and the seam overlap went
-unnoticed in play.
+default in 0.3.17** on the owner's decision.
 
-That decision is made and is not reopened here. What it outran is the evidence, and the debt
-is now shipping to players rather than sitting behind an opt-in:
+**The frame-rate question is now answered well enough to stop blocking on it** (2026-08-20,
+in-game averages on 0.3.23, mask off against on):
 
-- **A benchmark, and it is now the first priority rather than one input among three.**
-  Nothing has been measured since 0.3.9, so the culler rule, the atlas resync, the air
-  exclusion, the draw-range clause and the stored exclusion bit are all unmeasured. The only
-  performance evidence is one controlled stationary pair at +7.3%, taken before most of them
-  existed. Run it with `-ChunkMask` against a run without: the harness pins the variable in
-  both directions since 0.3.17, so an unflagged run measures the radial path rather than
-  whatever the sandbox had saved.
-- **The visual matrix, unexercised since the mask began working.** Seams, boundary flicker,
-  approach popping, cliff, water, cave and structure cases. One flight on one machine is the
-  whole of the current visual evidence.
-- **Anything that only appears away from this machine:** multiplayer, other view distances,
-  other drivers, long sessions. A default reaches all of them.
+| vanilla render distance | mask off | mask on | |
+|---|---|---|---|
+| 320 | ~315 FPS | ~310 FPS | mask costs ~1.6% |
+| 1024 | ~180 FPS | ~190 FPS | mask gains ~5.6% |
 
-If a benchmark shows the mask costs frame rate rather than gaining it, reverting the default
-is one line and the saved setting keeps working; do not treat the default as load-bearing
-before it is measured.
+The sign flip is the useful part, and it is not "the mask culls more at range" - that would
+predict a gain at both distances. With the mask off, cached terrain is suppressed inside a
+plain circle; with it on, that circle is pulled in to `MaskNearFloor()` and the per-cell mask
+decides instead, so the mask SUBMITS MORE cached geometry and discards it per fragment. That
+trade is paid in fragment shading, which is GPU work. At 320 the scene is CPU-bound at
+~315 FPS, so only the mask's own overhead is visible; at 1024 it is GPU-bound and the saving
+dominates. See G52.
+
+**The default is therefore defensible in the regime that matters:** the distance where the
+mask costs anything is a distance nobody runs this mod for. The owner's verdict was that the
+difference is negligible either way and the picture is much better, so it stays.
+
+Still owed, but as ordinary coverage rather than a blocker:
+
+- **A controlled benchmark, demoted.** Two samples, one per condition, no alternation, and
+  the in-game average may have started before the mask texture finished rebuilding - which
+  penalises the "on" figure, so the 1024 result is if anything understated. Run it with
+  `-ChunkMask` against a run without; the harness pins the variable in both directions since
+  0.3.17, so an unflagged run measures the radial path rather than whatever the sandbox had
+  saved. Nothing has been benchmarked since 0.3.9, so the culler rule, the atlas resync, the
+  air exclusion, the draw-range clause and the stored exclusion bit still have no number.
+- **The visual matrix.** Water, shoreline and cliff were confirmed individually on 0.3.23.
+  Boundary flicker, approach popping, cave and structure have never been.
+- **Anything that only appears away from this machine:** multiplayer, other drivers, long
+  sessions. A default reaches all of them.
+
+Reverting the default remains one line and the saved setting keeps working, but there is no
+longer a live reason to expect that to be needed.
 
 ### Standing constraints
 
@@ -167,11 +178,13 @@ Human-reported and still open:
   fix it - see G47 - but the mod can sample the climate map alone and blend it against the
   season map with the shader's own weight.
 - **Water seams are fixed and human-confirmed (0.3.23); one measurement is still owed.**
-  See G51 and session 31 for the cause. `seam repairs` on the periodic log line has never
-  been read from a real join: it should be non-zero while terrain arrives and then settle,
-  and a figure that climbs without settling means a repair is re-queueing itself. The cost
-  of the repair meshes is likewise bounded by construction but unmeasured, and belongs to
-  the benchmark owed above rather than to a run of its own.
+  See G51 and session 31 for the cause. The 2026-08-20 log reads `974 seam repairs` beside
+  `599 meshes` at the 30-second mark - non-zero as designed, and the same join reached its
+  100-mesh mark in 6.6 s, so the repairs did not cost visible fill-in time. Whether the count
+  SETTLES is still unknown: `Stats after 30s` fires once, so one sample is all an ordinary
+  session produces. A second reading needs `VINTAGEHORIZONS_STATS=1`, which prints every 15
+  seconds; a figure still climbing after terrain stops arriving would mean a repair is
+  re-queueing itself.
 - Cached terrain becoming coarser than expected during fast flight. `.vhcoarse` reports why:
   a parent keeps covering ground when a visible child with data has no mesh, and each
   interval logs whether those children were waiting on storage, a mesh worker, a scheduling
@@ -196,7 +209,9 @@ Human-reported and still open:
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
 - Measure whether regional buffers or multi-draw are warranted after CPU fixes.
-- Select a practical default far cap only from benchmark and playtest evidence.
+- Select a practical default far cap only from benchmark and playtest evidence. The mask's
+  benefit scales with vanilla render distance (above), so the two interact: a larger cap
+  makes the mask worth more, not less.
 
 ## Flagged decisions awaiting human evidence
 

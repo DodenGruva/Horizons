@@ -524,14 +524,17 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Read `seam repairs` from an ordinary join. The water-seam fix is human-confirmed, but
-that counter has never been seen on a real route: it should be non-zero while terrain
-arrives and then settle, and a figure that climbs without settling would mean a repair is
-re-queueing itself. Its cost belongs to the benchmark owed below, not to a run of its own.
-2. The per-cell mask shipped as the default in 0.3.17, so what is open about it is evidence,
-not the decision: no benchmark since 0.3.9, the seam overlap was accepted by non-observation
-rather than inspection, and the visual matrix has not been re-run since the mask started
-working. `.vhmask off` restores the measured radial handoff, which has no holes.
+1. Cached terrain becoming coarser than expected during fast flight, human-reported and
+still unexplained. `.vhcoarse` already reports whether the missing children were waiting on
+storage, a mesh worker, a scheduling slot, or nothing; read `coarse cover waits` from a
+fast-flight log before changing any budget. This is the only outstanding item a player can
+see.
+2. The per-cell mask default is settled. The frame-rate question was answered in game on
+2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
+flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
+What remains is coverage rather than the decision: no controlled benchmark since 0.3.9, and
+boundary flicker, approach popping, cave and structure have never been individually
+confirmed. `.vhmask off` restores the measured radial handoff, which has no holes.
 3. Diagnose cached terrain appearing slowly after joining: 100 fill-in meshes at 36.4 s on
 0.3.7 against 6.1 s on 0.3.4, same cache and manifest, with the mask off and the handoff at
 0 blocks. A diagnostic's per-probe chunk lock is the suspect and was narrowed in 0.3.8;
@@ -610,6 +613,12 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   This result also includes the 23 conservative-handoff/shader assertions from Session 24,
   89 readiness-model assertions, and static guards for event subscription, probe budgets,
   and the Phase 1 shadow state's exclusion from draw classification.
+- The 2026-08-20 client log on 0.3.23 reads `Fill-in: 100 meshes after 6.6s` against the same
+  3,016-key manifest that produced `36.4s` on 0.3.7 and `6.1s` on 0.3.4. The join regression
+  therefore appears to have been fixed by the 0.3.8 probe-lock restriction, on one join, one
+  machine and one world. The same line reads `974 seam repairs` beside `599 meshes` at the
+  30-second mark: the water-seam repair path is active and did not cost visible fill-in time.
+  Whether that count settles is unknown, because `Stats after 30s` fires once per session.
 - Debug builds of the mod, checks, and benchmark harness succeed with zero warnings and errors.
 - The Session 24 rendering source was built in Release and packaged as
   `vintagehorizons_0.2.1-playtest-near-handoff.zip`; no game process was launched by the
@@ -695,7 +704,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The owner confirmed on 2026-08-20 that 0.3.23 removes the water chunk seams, and
   confirmed shores and cliffs specifically - the one case the water-only frontier rule could
   have broken. This is acceptance of the seam fix on one machine, one world and one view
-  distance; no performance verdict is attached, and `seam repairs` was not read.
+  distance.
+- The owner measured the chunk mask in game on 2026-08-20 using the client's own average-FPS
+  readout, at two render distances: about 315 FPS off against 310 on at 320, and about 180
+  off against 190 on at 1024. Their verdict was that the difference is negligible either way
+  while the picture is much better, and that the default stays. This settles the ship/shelve
+  decision the mask has been carrying since 0.3.17. It is NOT a benchmark: two samples, one
+  per condition, no alternation, and an average that may include the mask texture rebuild -
+  which penalises the "on" side, so the 1024 figure is if anything understated. See G52 for
+  why the sign flips and why a single-distance test would have condemned the feature.
 
 ### Not yet established
 
