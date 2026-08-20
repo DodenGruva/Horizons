@@ -146,13 +146,14 @@ Human-reported and still open:
   underfoot, and whether sparse/very sparse ground and the non-grass surfaces still look
   right - the change touches every block vanilla draws in the TopSoil pass.
 
-- **Lighting, not colour, was the next thing.** 0.3.21's albedo was accepted as correct, and
-  the owner then found the match held at some times of day and broke at others by sweeping the
-  daylight cycle with the season held still. That is the lighting half: vanilla never darkens
-  up-facing ground as the sun drops and the mod did. Fixed in 0.3.22 behind `.vhtoplight`,
-  unseen. **What the playtest has to say:** compare at dawn or dusk with `.vhtoplight` on and
-  off; at midday there is nothing to see. Also worth a look at whether cached water reads
-  brighter than before at low sun, since it takes the same floor.
+- **Lighting, not colour, was the next thing - and it is resolved.** 0.3.21's albedo was
+  accepted as correct, and the owner then found the match held at some times of day and broke
+  at others by sweeping the daylight cycle with the season held still. That is the lighting
+  half: vanilla never darkens up-facing ground as the sun drops and the mod did. 0.3.22
+  adopts vanilla's rule, and the owner confirmed it across the daylight cycle and asked for it
+  to stay default. Still unjudged: cached water takes the same floor and was not looked at
+  separately, and no one has checked whether flat ground now reads too bright at dawn against
+  its own surroundings rather than against vanilla.
 
 - **If the colour is still off at a fixed time of day, this is the remaining candidate.** The mod takes
   its tint from `ApplyColorMapOnRgba`; terrain is actually drawn through `calcColorMapUvs` in

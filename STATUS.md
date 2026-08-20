@@ -189,9 +189,11 @@ as the sun drops - `getBrightnessFromNormal` floors at `normal.y * 0.95`, and th
 shader does not shade by normal at all - instead of the mod's `0.55 + 0.45 * sunAngle`, which
 took flat ground to 0.55 at dawn and dusk beside vanilla's 0.95. Applied as a maximum, so
 cliffs and side faces are unchanged. `.vhtoplight off` restores the old shading for
-comparison and does not persist. Source-traced from the engine's shaders and reported by a
-person as the colour matching at some times of day and not others; the fix itself is unseen.
-See G50.
+comparison and does not persist, so a restart always returns to the corrected lighting.
+Source-traced from the engine's shaders, and **human-confirmed on 2026-08-20**: the owner
+evaluated it across the daylight cycle and asked for it to stay as the default. What that
+covers is the look of distant ground through a day on one machine and one world; cached water
+takes the same floor and was not judged separately. See G50.
 
 One known mismatch remains and is unquantified: the mod takes its tint from
 `ApplyColorMapOnRgba`, while terrain is drawn by `chunkopaque`/`chunktopsoil` through

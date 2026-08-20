@@ -2,7 +2,7 @@
 
 **Date:** `2026-08-19`
 **Branch/commit:** `codex/chunk-aware-mask`, from `809c74c`
-**Mod version:** `0.3.18`, `0.3.19`, then `0.3.20`
+**Mod version:** `0.3.18` through `0.3.22`
 **Assist protocol / blob / schema:** `1 / 4 / 6`
 
 > Session records are Tier 3 history. Write narrative as needed, but preserve the four required tail sections so future harvesting remains mechanical.
@@ -101,6 +101,34 @@ coarseness report.
    Measured against the shader for `soil-low-normal` at midsummer: G/R 1.03 against vanilla's
    1.09 where 0.3.19 was 1.40, and B/G 0.33 against 0.26 where it was 0.08.
 
+8. **Then the last of the albedo, from the same screenshot.** 0.3.20 was reported better but
+   still not matching. The cause was measurable and singular: `GetAverageColor` is not an
+   average, it samples four pixels at 35% and 65% of each axis, and for the *overlay* those
+   four pixels also decide how much dirt shows through. They read 0.573 where the texture's
+   true mean alpha is 0.687 - a fifth too much bare dirt. 0.3.21 reads the whole texture
+   through `capi.Assets` and `BitmapCreateFromPng`, alpha-weighting the colour, and the result
+   stops being close: rgb(80.5, 88.1, 22.8) against vanilla's rgb(80.5, 88.1, 22.8).
+
+   Two other suspects were bounded rather than fixed. The mod's tint comes from
+   `ApplyColorMapOnRgba` while terrain is drawn through `calcColorMapUvs`, and the two differ
+   in the season row they pick and in the climate/season blend weight. The row difference was
+   measured off the shipped map and is worth at most 9/255 in a channel, 1/255 at midsummer -
+   not worth acting on. The blend weight is a real difference and remains unquantified,
+   because it needs the world's temperature and rainfall; it is recorded in `dev/TODO.md`.
+
+9. **The albedo was accepted, and the owner then found the other half of the pixel.** They
+   swept the daylight cycle with the season held still and reported that the colour matched at
+   some light levels and not others. That is a clean isolation, and it points away from colour
+   entirely: vanilla's `getBrightnessFromNormal` floors an up-facing surface at
+   `normal.y * 0.95`, with a comment in the engine source that block tops darker than block
+   sides look uncanny, and `chunkliquid.fsh` does not shade by normal at all. The mod's
+   `0.55 + 0.45 * sunAngle` took flat ground to 0.55 at dawn against vanilla's 0.95, a gap
+   that closes to nothing at midday.
+
+   0.3.22 adopts the rule as a maximum, so it can only brighten and every side face is
+   untouched, and puts it behind `.vhtoplight` rather than shipping a second build to test it.
+   The owner evaluated it across the daylight cycle and asked for it to remain the default.
+
 ---
 
 ## Delivered
@@ -117,6 +145,18 @@ Source, 0.3.18:
   already on disk are corrected as they load. 0 means "keep what is stored".
 - `RepairPlaceholder` factors out the unknown.png repair with an explicit fallback, so the
   chisel path keeps its sampled colour as the last resort and the repair paths keep grey.
+
+Source, 0.3.22:
+
+- Cached terrain takes vanilla's up-facing brightness floor instead of shading flat ground by
+  sun angle, behind `.vhtoplight` (default on, not persisted). G50.
+
+Source, 0.3.21:
+
+- `TextureMean` reads a texture's real alpha-weighted colour and mean coverage from the asset
+  rather than the four-pixel `GetAverageColor`, cached per asset, falling back to the atlas
+  estimate if the file cannot be read. Read through `BitmapExternal.Pixels` to keep SkiaSharp
+  off the reference list.
 
 Source, 0.3.20:
 
@@ -178,15 +218,20 @@ the TODO entry that had merged the land and water colour reports.
 
 Judgement calls awaiting human review:
 
-- 0.3.20 has not been seen in game, and 0.3.19's tint averaging was never judged on its own
-  either - the screenshot that prompted 0.3.20 was taken on it. Only 0.3.18 is
-  human-confirmed.
-- The atlas reports overlay coverage from four pixels: 146 against a true 175 for full grass.
-  The LOD therefore shows slightly more untinted dirt than vanilla does, which is why the
-  predicted B/G lands at 0.33 against vanilla's 0.26. Conservative direction, deliberately
-  not corrected by a texture-specific fudge factor.
-- 0.3.20 changes the stored colour of every block vanilla draws in the TopSoil pass - soil,
-  peat, clay, cob and forest floor - not only full-coverage grass.
+- 0.3.18, 0.3.21 and 0.3.22 are human-confirmed; 0.3.19 and 0.3.20 were each superseded
+  before being judged on their own. The owner's verdict on 0.3.21 was "acceptable", not
+  "matching", and 0.3.22 was accepted across the daylight cycle and made default on their
+  call. All of it is one machine, one world, one season.
+- Cached water takes the 0.3.22 brightness floor too and was not judged separately. Nor has
+  anyone checked whether flat ground now reads too bright at dawn against its own
+  surroundings rather than against vanilla.
+- 0.3.20 onwards changes the stored colour of every block vanilla draws in the TopSoil pass -
+  soil, peat, clay, cob and forest floor - not only full-coverage grass. Only grass was
+  looked at.
+- The tint-pipeline blend weight (G47's neighbour, recorded in `dev/TODO.md`) is still a real
+  difference between what the mod computes and what the terrain shader draws. Its tell is a
+  shift with the SEASON at a fixed time of day, dragging leaves along with grass, so nothing
+  observed this session rules it in or out.
 - The averaged tint is now the *mean* of a spread that vanilla renders as per-block mottling.
   That is right for distant ground, where a pixel covers many blocks, and it is a deliberate
   loss of variation at the near edge of the cached band.

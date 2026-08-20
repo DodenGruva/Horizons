@@ -26,7 +26,8 @@ Cached ground now follows the same rule. Cliffs, slopes and anything not facing 
 untouched - the rule can only brighten, never darken.
 
 `.vhtoplight off` goes back to the old shading if you want to compare the two. Worth doing at
-dawn or dusk; at midday there is nothing to see. The setting lasts until you quit.
+dawn or dusk; at midday there is nothing to see. The setting lasts until you quit, so a
+restart always returns to the corrected lighting.
 
 
 ## [0.3.21]
