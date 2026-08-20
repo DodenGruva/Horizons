@@ -3,9 +3,9 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-19
-**Mod version:** `0.3.4` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.16` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `40` C# files under `VintageHorizons/src`
+**Source files:** `41` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -17,16 +17,102 @@
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
-geometry sink, and replace the old outer cutoff with ownership the mod can actually
-prove. Two mechanisms exist. The default is a near handoff whose radius is measured rather
-than assumed. Behind `.vhmask on` or `VINTAGEHORIZONS_CHUNK_MASK=1`, per-cell ownership
-replaces that radius entirely: one marker per 32x32x32 vanilla chunk decides each fragment,
-and a cached section whose every cell is owned is never submitted at all. The 32x32x32 readiness tracker is runtime-validated across
-five isolated runs, and its measurement now drives the existing `cacheHandoffDistance`
-uniform: the radius is the distance to the nearest vanilla chunk column the client has not
-finished rendering, less one chunk. GPU mask publication, mixed-mesh shader sampling, and
-CPU whole-mesh skipping remain open under
-`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
+Two mechanisms exist. The default is a near handoff whose radius is measured rather than
+assumed: the distance to the nearest vanilla chunk column the client has not finished
+rendering, less one chunk, driving the existing `cacheHandoffDistance` uniform. Behind
+`.vhmask on` or `VINTAGEHORIZONS_CHUNK_MASK=1`, per-cell ownership replaces that radius
+entirely: one marker per 32x32x32 vanilla chunk decides each fragment, and a cached section
+whose every cell is owned is not submitted at all. Every phase of
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` is now built and, since 0.3.6, actually
+running. Since 0.3.16 they do so without the band that had made the mask unusable. It
+remains off by default pending performance and visual evidence rather than pending a fix.
+
+**The band is closed** (0.3.16, confirmed in game by the owner on 2026-08-19). It was the
+engine's own per-frame range cull, and it is the reason six releases of ownership rules
+built on four per-chunk signals could not reach it. `ModelDataPoolLocation.IsVisible` ends
+in `FrustumCulling.InFrustumAndRange`, a horizontal distance test against a per-LOD bound of
+at most `viewDistance * viewDistance + 400`, applied to every terrain mesh every frame after
+all four chunk signals have said yes. Nothing about the chunk changes when it fails:
+`quantityDrawn` only rises, the mesh stays pooled, `Hide` stays false, and
+`ChunkCuller.CullInvisibleChunks` early-returns while the camera stays in one chunk, so
+`CullVisible` is frozen rather than merely stale. Committed cells in the annulus between the
+view-distance circle and the tracked window edge therefore stayed committed forever while
+the mask discarded cached terrain there against nothing — on the trailing side only, because
+the leading side never had chunks loaded that far out, and permanent while standing still,
+because standing still is when nothing is re-evaluated. Every CPU diagnostic reported health
+throughout because all of them consumed the same incomplete signal. The cube-granularity
+theory that session 28 left standing is retired.
+
+**The remaining question is no longer correctness but whether the mask should ship.** It
+stays off by default. Nothing has been benchmarked since 0.3.9, the accepted seam overlap has
+not been judged at the horizon, and the visual matrix has not been re-run since the mask
+began working. `dev/TODO.md` carries that decision and what it needs.
+
+**Defects found and fixed in session 28**, all present in earlier builds:
+
+- `.vhwhy` was registered twice. `ChatCommandApi.Create` throws on a duplicate, the throw
+  propagated out of `StartClientSide`, and every command declared after it silently did not
+  exist while the mod kept running - `.vhdetail` was absent from 0.3.4 entirely. G41.
+- `maskSectionOrigin` was a `uniform ivec2` set through
+  `ShaderProgramBase.Uniform(string, Vec2i)`, which reaches `glUniform2f`; an integer
+  uniform rejects that with `GL_INVALID_OPERATION`. The origin never left the CPU, so every
+  fragment tested ownership against chunk (0,0) and the per-fragment mask discarded almost
+  nothing from 0.3.0 through 0.3.5, while raising a GL error every frame. Two isolated
+  sandbox runs on one stationary scene: 19,126 errors with `-ChunkMask`, zero without, zero
+  after the fix, at 456.3 fps against 455.7. G42.
+- `VanillaReadinessMask.ClearColumn` had no callers from the feature's first version through
+  0.3.12. The atlas is a wrapped ring, so a column leaving the window surrendered its texels
+  to whichever column wrapped onto the same slot, which then inherited ownership it never
+  had. `ClearSlot` now raises `ColumnEvicted`. G44.
+
+**Corrections to durable documentation.** G40 claimed the client's `IWorldChunk.Empty` is a
+stale flag. It is not: `ClientWorldMap.LoadChunkFromPacket` assigns it from the server's
+chunk packet, and the tessellator reads exactly it to skip meshing. 0.3.3 therefore failed
+on its rule, not its input - a column counts as owned only when all of its chunks do, every
+column has sky, so refusing air excluded every column at once. G40 also claimed that
+suppressing cached geometry above the real surface was correct because vanilla draws the
+ground below; that reasoning does not hold for geometry standing above the surface, where no
+lower cell draws anything, and 0.3.15 reverses it. G43 claimed until 0.3.16 that
+`ClientChunk.CullVisible[ClientChunk.bufIndex]` was the *only* signal meaning "the engine is
+drawing this now". It is necessary, not sufficient: `ModelDataPoolLocation.IsVisible` also
+range-culls every terrain pool location per frame through
+`FrustumCulling.InFrustumAndRange`, whose per-LOD bound is at most
+`viewDistance * viewDistance + 400`, and `ChunkCuller.CullInvisibleChunks` early-returns -
+freezing `CullVisible` outright - while the camera stays in one chunk. Beyond the view
+distance every chunk signal stays latched at "drawing" while nothing is drawn. `IsChunkRendered`
+is `quantityDrawn > 0`, a counter that only rises; mesh residency is closer but the engine
+keeps a mesh while declining to submit it. Human testing established the culler divergence in
+unmodded vanilla: fly high enough and the engine stops drawing the ground directly beneath
+while the counter still claims it.
+
+**Current ownership rules**, all gated on `ChunkMaskEnabled` and individually switchable:
+
+- A chunk the engine claims while not actually drawing it does not own its cell
+  (`.vhgeom`, on by default). Empty and unmeasurable chunks count as drawn, so a wrong
+  answer costs the correction rather than uncovering live terrain.
+- A wholly owned cached section may be dropped before drawing (`.vhskip`, on by default).
+- No cell further from the camera than the approved view distance owns anything, air
+  included, because the engine range-culls every terrain mesh per frame regardless of what
+  the chunk reports (0.3.16; counted as `denied beyond view distance`). The threshold is the
+  column's nearest face against `viewDistance - 46`, where 46 rounds up the in-chunk diagonal
+  `32*sqrt(2)`: the engine measures from the mesh's geometry-midpoint sphere centre, which can
+  sit anywhere in the chunk, so anything less leaves a residual stale ring. The cost is cached
+  terrain overlapping the outermost chunk and a half of live vanilla terrain.
+- Air chunks stay owned in the tracker, preserving the column aggregate and the radial
+  handoff, and are excluded from the mask texel so they can never suppress a fragment. The
+  exclusion is stored per cell, so the wholesale atlas rebuild on every window change honours
+  it too (0.3.16); before that, travel reintroduced air ownership every 32 blocks.
+- The atlas is rebuilt from committed tracker state once per second and the corrections are
+  counted, bounding any mirror desync to one second rather than permanently.
+
+**Diagnostics.** `.vhwhy` searches to the full draw distance and reports every engine signal
+per cell; `.vhholes` sweeps the window for owned cells the engine is not drawing, needing no
+aiming; `.vhpaint` paints hidden fragments red and suspends whole-mesh skipping so nothing
+escapes the paint; `.vhcoarse` explains coarse draws; `.vhgeom` and `.vhskip` isolate the two
+consumers of ownership. `VanillaChunkGeometry` binds `ClientChunk`'s internal mesh pool
+arrays by reflection and reports unavailable rather than guessing; the check tier asserts
+every binding, and the public culler fields, against the installed assembly.
 
 ## 2. Product and architecture state
 
@@ -372,12 +458,19 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Decide whether per-cell ownership ships enabled. It is implemented, opt-in, and has one
-round of human acceptance ("much better") plus three reported artifacts, two of which are
-undiagnosed. See `dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md` and `dev/TODO.md`.
-2. Complete human in-motion review of clipping, turn-around behavior, visual mesh
+1. Decide whether the per-cell mask ships. The band that blocked it is fixed and
+human-confirmed, so the question is now evidence rather than correctness: no benchmark since
+0.3.9, no human verdict on the seam overlap the draw-range threshold deliberately accepts,
+and no re-run of the visual matrix since the mask started working. The radial handoff has no
+holes and remains the shipped path, so shelving is still a legitimate outcome. See the top of
+`dev/TODO.md`.
+2. Diagnose cached terrain appearing slowly after joining: 100 fill-in meshes at 36.4 s on
+0.3.7 against 6.1 s on 0.3.4, same cache and manifest, with the mask off and the handoff at
+0 blocks. A diagnostic's per-probe chunk lock is the suspect and was narrowed in 0.3.8;
+unmeasured since.
+3. Complete human in-motion review of clipping, turn-around behavior, visual mesh
 replacement, and the current near-handoff playtest.
-3. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
+4. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
 warranted only after human and cross-driver evidence.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
@@ -434,7 +527,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,307 assertions, including 44
+- The full game-backed Release tier passes 1,383 assertions, including the 240-assertion
+  readiness suite with the draw-range no-hole sweep and the mask-exclusion regression, 44
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
   render-dirty-scheduling assertions, 7 visibility-traversal/residency,
@@ -520,6 +614,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - The user described the first Session 24 render-fixes package as better, then reported
   cached terrain still mixed into proper terrain. This establishes the remaining overlap
   in that package, not acceptance of the latest radial package or every individual fix.
+- The user confirmed on 2026-08-19 that 0.3.16 closes the band of missing terrain under
+  `.vhmask on`. Their testing also produced the observation that identified the cause: flying
+  backwards put the band ahead of them, it never filled while stationary, and it had become a
+  consistent band where earlier builds showed scattered holes. Permanence ruled out every
+  mechanism that operates between periodic repairs. This is acceptance of the band's closure
+  on one machine, one world, one view distance and one flight speed; the seam overlap the fix
+  accepts was not separately judged, and no performance verdict is attached.
 
 ### Not yet established
 
@@ -559,15 +660,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 - Allocation telemetry's uncapped steady-state average-FPS overhead measured about 0.7%
   across two warmed pairs; ordinary capped-frame-rate effect and tail impact remain unknown.
 - GPU shader/fill cost remains unseparated from CPU submission cost.
-- Per-cell ownership has an open defect. Flying backwards at high speed leaves a gap that
-  survives standing still, and `.vhmask off` fills it, so cached terrain is resident and
-  drawable and ownership is wrongly suppressing it. Four fixes across 0.3.0 to 0.3.4 have
-  not closed it: frontier-following discovery, a backlog probe budget, a full loss sweep on
-  chunk crossing, and a one-second re-confirmation of all committed ownership. One attempt
-  (0.3.3) made it far worse by removing ownership everywhere, and was reverted. The next
-  step is telemetry rather than another fix; the periodic log now reports stale committed
-  cells found, ownership count repairs, and chunks that report drawn while also reporting
-  empty.
+- The per-cell ownership band is **resolved** in 0.3.16 and confirmed in game; it moved to
+  the human-tested section above. What remains unestablished about it is everything the fix
+  did not measure: its frame-rate cost, whether the accepted seam overlap reads acceptably at
+  the horizon, and whether the closure holds at other view distances, speeds, and worlds. One
+  human report on one machine is the whole of the confirming evidence.
 - A person evaluated per-cell ownership in game on 2026-08-19 and reported it clearly
   better than the measured radius, with three artifacts, all at far above normal flight
   speed: brief cached and vanilla fighting on fast approach, a band of missing world when

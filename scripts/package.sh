@@ -15,9 +15,13 @@ mkdir -p "$OUT"
 ZIP="$OUT/vintagehorizons_${VERSION}.zip"
 rm -f "$ZIP"
 
+# Windows installs the interpreter as "python" and no "python3", so resolve it rather
+# than assuming the Linux name.
+PY=$(command -v python3 || command -v python) || { echo "no python found" >&2; exit 1; }
+
 # ModDB zips contain the mod files at the archive root (no wrapping folder),
 # and never the game's own DLLs (all references are Private=false).
-python3 - "$MOD_DIR" "$ZIP" <<'EOF'
+"$PY" - "$MOD_DIR" "$ZIP" <<'EOF'
 import os, sys, zipfile
 mod_dir, zip_path = sys.argv[1], sys.argv[2]
 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:

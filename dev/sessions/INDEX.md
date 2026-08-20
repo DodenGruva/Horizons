@@ -4,6 +4,8 @@
 
 | # | Date | Version | Compatibility change | Summary |
 |---|---|---|---|---|
+| 29 | 2026-08-19 | 0.3.16 | - | Closed the band: the engine range-culls every terrain mesh per frame against the view distance, which no per-chunk signal reflects, so ownership held the trailing annulus forever. Human-confirmed fixed. |
+| 28 | 2026-08-19 | 0.3.15 | - | Fixed a silent startup fault, made the per-cell mask actually work after an integer uniform the driver had rejected since 0.3.0, corrected G40 from the game IL, and disproved five explanations of the missing band, which remains open. |
 | 27 | 2026-08-19 | 0.3.0-dev | — | Gave each vanilla chunk its own ground behind an opt-in gate, skipped fully replaced cached meshes for +7.3% frame rate, and fixed ownership latency found by playtesting at flight speed. |
 | 26 | 2026-08-19 | 0.2.1 | — | Runtime-validated the readiness tracker, fixed a sweep that could lose ownership but never gain it, and gave the near handoff a measured radius; 1,225 assertions pass. |
 | 25 | 2026-08-18 | 0.2.1 | — | Source-traced the installed 1.22.7 chunk-render lifecycle and added a bounded, pixel-neutral vanilla-readiness shadow tracker; 1,176 assertions pass. |

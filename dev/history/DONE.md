@@ -365,3 +365,89 @@
 - Added 89 focused readiness assertions plus static wiring guards; the complete Release
   tier passes 1,176 assertions with no protocol, blob, schema, shader, package, or release
   change.
+
+## Session 28 (2026-08-19, 0.3.5 - 0.3.15)
+
+- Fixed a duplicate `.vhwhy` registration that threw out of `StartClientSide` and left every
+  later command unregistered; `.vhdetail` had not existed in 0.3.4. Coarse-draw report is now
+  `.vhcoarse`, guarded by a static uniqueness check.
+- Fixed `maskSectionOrigin`, a `uniform ivec2` set through the client's `Vec2i` overload,
+  which reaches `glUniform2f` and is rejected against an integer uniform. The per-fragment
+  mask had addressed chunk (0,0) for every section since 0.3.0 and raised a GL error every
+  frame. Split into two `uniform int`s; guarded by a static check against integer vector
+  uniforms. Attributed by a controlled sandbox pair: 19,126 GL errors with the mask, zero
+  without, zero after.
+- Fixed `VanillaReadinessMask.ClearColumn` never being called since the feature was written,
+  which let an arriving column inherit a departed column's ownership through the wrapped
+  ring. `ClearSlot` now raises `ColumnEvicted`; the regression test proves the arriving
+  column reuses the departed texel and does not inherit its value.
+- Corrected G40 from the installed game's IL: `IsChunkRendered` is `quantityDrawn > 0`, the
+  tessellator advances it and returns early for an empty chunk, and the client's `Empty`
+  flag arrives from the server in the chunk packet rather than being stale. 0.3.3 failed on
+  its rule, not its input.
+- Established the engine's only real drawing signal, `ClientChunk.CullVisible[bufIndex]`
+  (G43), after human testing showed unmodded vanilla stops drawing the ground directly
+  beneath a high-altitude camera while `IsChunkRendered` still answers true.
+- Added `.vhcoarse`, `.vhgeom`, `.vhskip`, `.vhholes` and `.vhpaint`; `.vhwhy` now searches
+  to the full draw distance instead of 512 blocks and prints every engine signal.
+- Added a once-per-second rebuild of the ownership atlas from committed tracker state, with
+  a counter, bounding any mirror desync to one second.
+- Excluded air chunks from the mask texel while keeping them owned in the tracker.
+- Added static checks for duplicate chat command names, integer vector uniforms, and control
+  characters anywhere in source; the last of these caught two escape-sequence corruptions
+  introduced while editing.
+- `scripts/package.sh` now resolves `python` where `python3` is absent, and
+  `bench-windows.ps1` rejects a label the bench mod would rewrite, which had cost a
+  five-minute timeout per run.
+
+### Resolved - OpenGL errors every frame
+
+Every client log on this machine carries `after final compo - OpenGL threw an error:
+InvalidOperation`, tens of thousands of times per session: 30,052 in the ~2 minute 0.3.4
+run, and 22k-86k in each of the five archived runs before it. It is the bulk of a 5 MB log.
+
+Not attributed. All six sessions had VintageHorizons installed **and** ten other mods,
+several of which touch rendering, so there is no control. The errors start seconds to
+tens of seconds after the mod's first fill-in rather than at world join, which is
+suggestive and nothing more; GL errors are sticky and are reported at the next checkpoint,
+not where they were raised.
+
+**Resolved, 0.3.6.** It was ours: a `uniform ivec2` set through the client's `Vec2i`
+overload, which reaches `glUniform2f` and is rejected outright. Two isolated sandbox runs
+on one stationary scene separated it - 19,126 with `-ChunkMask`, zero without - and a third
+confirmed zero after the fix. See G42. The user's own logs should be clean from 0.3.6; if
+they are not, what remains belongs to another mod and the same paired-run method applies.
+
+## 2026-08-19 — the band of missing terrain, closed
+
+Twelve builds, six explanations, two sessions. **Resolved in 0.3.16 and confirmed in game
+by the owner.**
+
+- **Root cause.** The engine range-culls every terrain mesh against the current camera every
+  frame, inside `ModelDataPoolLocation.IsVisible` via `FrustumCulling.InFrustumAndRange`,
+  after all four per-chunk signals have said yes. Nothing about the chunk changes when that
+  happens: `quantityDrawn` only rises, the mesh stays pooled, `Hide` stays false, and
+  `ChunkCuller.CullInvisibleChunks` early-returns while the camera holds one chunk, freezing
+  `CullVisible` outright. Committed cells in the annulus between the view-distance circle and
+  the tracked window edge therefore stayed committed forever, and the mask discarded cached
+  terrain there against nothing — on the trailing side only, permanent while stationary.
+- Ownership now denies any cell whose column lies beyond `viewDistance - 46` blocks, air
+  included. The 46 clears the in-chunk horizontal diagonal `32*sqrt(2)`, because the engine
+  measures from the mesh's geometry-midpoint bounding-sphere centre rather than the chunk
+  centre; a nearest-face comparison against the plain view distance leaves a thinner copy of
+  the same band. `OwnershipStopsAtTheEnginesDrawRange` asserts the no-hole direction over
+  every admissible midpoint placement and fails on the weaker threshold.
+- `WriteMask` now honours the air exclusion through a per-cell flag stored at publication and
+  kept authoritative by the once-per-second resync. Before this, the wholesale rebuild on
+  every window change reintroduced air ownership every 32 blocks of travel, undoing 0.3.15
+  continuously while moving.
+- `.vhwhy`, `.vhholes` and `DescribeOwnershipAt` no longer answer "engine is drawing this
+  chunk" about range-culled ground; all three had been consuming the same incomplete signal,
+  which is why every CPU diagnostic reported health for two sessions.
+- G43 rewritten: the culler's verdict is necessary, not sufficient. G45 added for the probe
+  loop's chunk lock. `scripts/bench-windows.ps1` parses the new counter.
+- Retired with it: the cube-granularity theory, which was the only surviving candidate at
+  the close of session 28 and had no evidence of its own; and the proposal that the
+  `WriteMask` air gap was the primary cause, which the owner's report of a permanent band
+  while stationary refuted in one exchange.
+

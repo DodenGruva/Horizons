@@ -21,13 +21,18 @@ For the exact current version, compatibility numbers, evidence, open work, and k
 
 ## Talking to the human
 
-The human who owns this project is not a developer and does not read code. Write to them
-in plain language.
+The human who owns this project is not a developer and does not read code, but has some
+technical knowledge. Write to them in plain language, and go one level deeper than the
+result alone: say what the underlying problem actually is, briefly, so they carry a general
+mental model of it.
 
-- Explain what changed and what it means for the game, not how it was implemented. Name a
-  file or a symbol only when they need it to do something.
-- Be brief. Lead with the answer or the state of things; leave the reasoning for when it
-  changes what they should do.
+- Lead with what changed and what it means for the game. Then add a sentence or two on the
+  mechanism - what was going wrong and why that produced the symptom - in ordinary words.
+  Enough to follow the shape of the problem, not enough to review the fix.
+- Name a file or a symbol only when they need it to do something. Concepts can be named;
+  code does not need to be.
+- Still be brief. The extra explanation is one or two sentences of mechanism, not a
+  walkthrough; leave the rest of the reasoning for when it changes what they should do.
 - Their testing is the acceptance evidence for anything visual. Ask for specific, small
   observations rather than open-ended reports.
 - Say plainly when something is broken, unproven, or your own mistake.
@@ -49,6 +54,11 @@ AI authority:
 
 Ask first:
 
+- **Before launching the game at all**, including an isolated sandbox benchmark. Ask, wait
+  for a yes, and say what the run is for and roughly how long it takes. This is not covered
+  by earlier approval of a previous run, and the isolation scripts are not consent. The
+  machine is the human's: a run takes the screen and the GPU, and a crashed one leaves a
+  dialog and a server process behind.
 - Before pushing, publishing, releasing, deleting material project data, or materially expanding scope.
 - When a missing product decision would produce meaningfully different player-facing behavior.
 
@@ -79,7 +89,8 @@ Completion evidence:
 - Fast checks: `dotnet run --project tests/VintageHorizons.Checks/VintageHorizons.Checks.csproj --configuration Release`
 - Full test tiers and isolated game-process rules are documented in `README.md`.
 - Set `VINTAGE_STORY` to the game install when it is not at the project fallback location.
-- Never launch or stop a Vintage Story test process outside the repository's isolation scripts.
+- Never launch or stop a Vintage Story test process outside the repository's isolation scripts,
+  and never launch one at all without asking first; see the authority map.
 
 ## Working method
 

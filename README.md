@@ -45,7 +45,12 @@ in advance.
 | `.vhdetail [blocks]` | Distance before detail starts to halve (default 512). A higher value gives sharper far terrain and costs more VRAM and CPU. Try 1024. Without an argument, the command reports the current value. |
 | `.vhfar <blocks>` | Cap the LOD render distance. `0` means unlimited, which is the default. |
 | `.vhmask [on\|off]` | Hand each loaded vanilla chunk its own ground instead of using one distance, and skip cached terrain that is entirely replaced. Off by default while it is being evaluated. |
-| `.vhwhy [blocks]` | Look at a hole and run this. It searches your line of sight (512 blocks by default) for the first ground nothing is drawing, and says whether the mod is hiding cached terrain it should not, or whether that ground was simply never captured. |
+| `.vhpaint [on\|off]` | Diagnostic. Paints the terrain the mask is hiding bright red instead of hiding it. A gap that turns red is the mask's doing; a gap that stays empty is not. |
+| `.vhskip [on\|off]` | Only matters with `.vhmask on`. On (the default) lets the mod drop a whole cached piece when the game covers all of it. Off keeps the per-pixel masking but never drops a whole piece. |
+| `.vhholes` | Finds ground the mod handed to the game that the game is not drawing, anywhere around you. No need to look at anything, so it works for a band behind you. |
+| `.vhgeom [on\|off]` | Only matters with `.vhmask on`. On (the default) means ground the game says it drew, but holds no terrain for, does not hide cached terrain. Turn it off to compare. |
+| `.vhwhy [blocks]` | Look at a hole and run this. It searches your line of sight (out to the mod's full draw distance by default) and reports the **first** patch of ground nothing is drawing, so whatever is visible behind the hole does not confuse the answer. It says whether the mod is hiding cached terrain it should not, whether the game claims that ground while holding none, or whether it was simply never captured. |
+| `.vhcoarse` | Standing where far terrain looks blockier than it should, run this. It reports which nearby detail is missing and what it is waiting for. |
 | `.vhdefer [on\|off]` | Stay idle when another LOD mod draws (on by default). A change applies at the next start, not at once. |
 
 ### If your server runs Farseer, ChunkLOD or TopoHorizon

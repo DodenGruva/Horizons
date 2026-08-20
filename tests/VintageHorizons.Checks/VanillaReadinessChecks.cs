@@ -1,3 +1,6 @@
+using System.Reflection;
+using Vintagestory.API.Client;
+
 namespace VintageHorizons.Checks;
 
 public static class VanillaReadinessChecks
@@ -20,6 +23,10 @@ public static class VanillaReadinessChecks
         BoundaryRevalidation(c);
         WindowInvalidationAndTeardown(c);
         SteadyStateAllocation(c);
+        ChunkGeometryBinding(c);
+        MaskForgetsEvictedColumns(c);
+        MaskExcludedCellsOwnGroundWithoutATexel(c);
+        OwnershipStopsAtTheEnginesDrawRange(c);
     }
 
     static void CoordinateMapping(Check c)
@@ -450,11 +457,23 @@ public static class VanillaReadinessChecks
         DrainQueue(model);
         DrainQueue(model);
         var owned = new VanillaChunkCell(1, 0, 1);
+        var excluded = new VanillaChunkCell(1, 1, 1);
         CommitReady(model, owned, 1);
+        CommitReady(model, excluded, 3);
+        // The rebuild must reproduce what the incremental path produces, exclusions and all.
+        // Marking every committed cell ready instead is what put air ownership back into the
+        // atlas on every window change - which is every 32 blocks of travel.
+        model.SetMaskExcluded(excluded, true);
         var rebuilt = new VanillaReadinessMask(4, 2);
         model.WriteMask(rebuilt);
         c.True(rebuilt.IsReady(owned), "a rebuild reproduces committed ownership");
-        c.Eq(1L, rebuilt.ReadyTexels, "a rebuild reproduces exactly the committed cells");
+        c.False(rebuilt.IsReady(excluded), "a rebuild honours the stored mask exclusion");
+        c.Eq(1L, rebuilt.ReadyTexels, "a rebuild reproduces exactly the committed, non-excluded cells");
+
+        model.SetMaskExcluded(excluded, false);
+        model.WriteMask(rebuilt);
+        c.Eq(2L, rebuilt.ReadyTexels, "clearing the exclusion returns the cell to the rebuild");
+        model.SetMaskExcluded(excluded, true);
 
         model.SetWindow(8, 8, 4, 4);
         model.WriteMask(rebuilt);
@@ -692,5 +711,268 @@ public static class VanillaReadinessChecks
             throw new InvalidOperationException("Test setup failed to produce a readiness publication.");
         if (!model.ResolvePublication(publication, accepted: true))
             throw new InvalidOperationException("Test setup failed to commit readiness.");
+    }
+
+    /// <summary>
+    /// The drawn-without-geometry diagnostic reads two internal fields on the game's own
+    /// ClientChunk. Reflection fails silently by design - an unbound query measures nothing
+    /// rather than guessing - so the only thing that notices a game update renaming them is
+    /// a check that asks the installed assembly directly.
+    ///
+    /// This asserts against the real game DLL, not against a fixture, which is the point.
+    /// </summary>
+    static void ChunkGeometryBinding(Check c)
+    {
+        Type? clientChunk = Type.GetType(
+            "Vintagestory.Client.NoObf.ClientChunk, VintagestoryLib", throwOnError: false);
+        c.True(clientChunk != null, "the installed game still has Vintagestory.Client.NoObf.ClientChunk");
+        if (clientChunk == null) return;
+
+        foreach (string name in VanillaChunkGeometry.FieldNames)
+        {
+            FieldInfo? field = clientChunk.GetField(name,
+                BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
+            c.True(field != null, $"ClientChunk still declares {name}");
+            c.True(field?.FieldType == typeof(ModelDataPoolLocation[]),
+                $"{name} is still a ModelDataPoolLocation array");
+        }
+
+        // The binding is what the renderer actually calls; a compiled getter that threw
+        // during static construction would leave this false with everything above passing.
+        c.True(VanillaChunkGeometry.Available,
+            "the renderer's chunk geometry query bound against the installed game");
+
+        // The culler's verdict is the only signal that means "drawing this now". It is
+        // public API and needs no reflection, but a game update could still move it, and
+        // losing it silently would put ownership back on a counter that only goes up.
+        FieldInfo? cullVisible = clientChunk.GetField("CullVisible",
+            BindingFlags.Instance | BindingFlags.Public);
+        c.True(cullVisible != null && cullVisible.FieldType.Name == "Bools",
+            "ClientChunk still exposes the culler's per-chunk visibility as a public Bools");
+        FieldInfo? bufIndex = clientChunk.GetField("bufIndex",
+            BindingFlags.Static | BindingFlags.Public);
+        c.True(bufIndex != null && bufIndex.FieldType == typeof(int),
+            "ClientChunk still exposes the public buffer index the culler writes through");
+
+        // A chunk type the query does not understand must answer "unavailable", never a
+        // confident false: the whole diagnostic depends on not inventing discrepancies.
+        c.False(VanillaChunkGeometry.TryHoldsGeometry(null, out bool holds),
+            "a missing chunk is unmeasurable rather than empty");
+        c.False(holds, "an unmeasurable chunk never reports geometry");
+    }
+
+    /// <summary>
+    /// The atlas is a wrapped ring, so a column that leaves the window hands its texels to
+    /// a different column at the same address. If the mask does not forget the old one, the
+    /// shader reads the departed column's ownership for the arriving one and discards cached
+    /// terrain in cells nothing owns - a band of missing world at the trailing edge of a
+    /// moving window, stable while standing still, invisible to every CPU-side check because
+    /// the tracker is correct and only its GPU mirror is stale.
+    ///
+    /// That shipped from 0.3.0 to 0.3.12. `VanillaReadinessMask.ClearColumn` existed the
+    /// whole time, documented as required, and nothing ever called it.
+    /// </summary>
+    static void MaskForgetsEvictedColumns(Check c)
+    {
+        const int capacity = 8;
+        const int vertical = 4;
+        var model = new VanillaRenderReadiness(capacity, vertical);
+        var mask = new VanillaReadinessMask(capacity, vertical);
+        model.ColumnEvicted = (x, z) => mask.ClearColumn(x, z);
+
+        model.SetWindow(0, 0, 4, 4);
+        var cell = new VanillaChunkCell(1, 2, 1);
+        CommitReady(model, cell, frame: 10);
+        mask.Set(cell, true);
+        c.True(mask.IsReady(cell), "the mask holds the committed column before the window moves");
+
+        // Slide far enough that the old column is outside the new window, and far enough
+        // that a different world column wraps onto the very same ring slot.
+        model.SetWindow(capacity, capacity, 4, 4);
+        c.False(mask.IsReady(cell), "the mask forgot the column that left the window");
+
+        var arriving = new VanillaChunkCell(cell.X + capacity, cell.Y, cell.Z + capacity);
+        c.Eq(VanillaReadinessMask.TexelIndex(cell.X, cell.Y, cell.Z, capacity, vertical),
+            VanillaReadinessMask.TexelIndex(arriving.X, arriving.Y, arriving.Z, capacity, vertical),
+            "the arriving column really does reuse the departed column's texel");
+        c.False(mask.IsReady(arriving),
+            "the arriving column does not inherit the departed column's ownership");
+        c.Eq(0L, mask.ReadyTexels, "no ownership survives the slide");
+    }
+
+    /// <summary>
+    /// Air owns its cell and must never own its texel, and the two halves of that rule have
+    /// to hold together. Refusing air ownership outright collapsed 0.3.3 - a column counts as
+    /// owned only when every one of its chunks does and every column has sky - while letting
+    /// air reach the atlas shears the top off the cached horizon, because cached terrain
+    /// overshoots into air chunks that vanilla draws nothing in.
+    ///
+    /// The exclusion therefore lives beside the state rather than being applied by whoever
+    /// happens to be writing the texel, and this asserts both halves at once: zero texel,
+    /// full aggregates.
+    /// </summary>
+    static void MaskExcludedCellsOwnGroundWithoutATexel(Check c)
+    {
+        var model = new VanillaRenderReadiness(4, 2);
+        model.SetWindow(0, 0, 2, 2);
+        DrainQueue(model);
+
+        long section = LodWorld.SectionKey(0, 0, 0);
+        int frame = 1;
+        for (int z = 0; z < 2; z++)
+        for (int x = 0; x < 2; x++)
+        for (int y = 0; y < 2; y++)
+        {
+            CommitReady(model, new VanillaChunkCell(x, y, z), frame);
+            frame += 2;
+        }
+
+        var air = new VanillaChunkCell(1, 1, 1);
+        c.True(model.SetMaskExcluded(air, true), "flagging a cell excluded reports the change");
+        c.False(model.SetMaskExcluded(air, true), "an unchanged exclusion is not reported as a change");
+        c.True(model.IsMaskExcluded(air), "the exclusion reads back from the tracker");
+        c.False(model.IsMaskExcluded(new VanillaChunkCell(0, 0, 0)),
+            "flagging one cell does not exclude its neighbours");
+
+        var mask = new VanillaReadinessMask(4, 2);
+        model.WriteMask(mask);
+        c.False(mask.IsReady(air), "an excluded cell produces no texel from a rebuild");
+        c.Eq(7L, mask.ReadyTexels, "only the excluded cell is withheld from the atlas");
+
+        c.Eq(8, model.CommittedReadyCells, "an excluded cell still counts as committed");
+        c.Eq(8, model.ReadyCount(section), "an excluded cell still counts toward its section");
+        c.Eq(VanillaSectionOwnership.VanillaOnly, model.Classify(section),
+            "an excluded cell does not stop its section from being wholly owned");
+        model.GetColumnReadiness(new int[2], out _, out int fullColumns, out _, out _);
+        c.Eq(4, fullColumns, "an excluded cell still completes its column");
+        c.Eq(0, model.AuditReadyCounts(), "exclusion does not disturb the audited section counts");
+
+        // The bit is cell state, so it goes when the cell does. A slot handed to different
+        // world coordinates must not answer for them with the old column's exclusion.
+        model.SetWindow(4, 4, 2, 2);
+        DrainQueue(model);
+        c.False(model.IsMaskExcluded(air), "a column leaving the window drops its exclusions");
+        var arriving = new VanillaChunkCell(air.X + 4, air.Y, air.Z + 4);
+        CommitReady(model, arriving, frame);
+        c.False(model.IsMaskExcluded(arriving),
+            "a column arriving in a reused slot does not inherit the departed exclusion");
+        model.WriteMask(mask);
+        c.True(mask.IsReady(arriving), "the arriving column reaches the atlas on its own terms");
+    }
+
+    /// <summary>
+    /// Loaded, meshed, unhidden and cull-visible is still not drawn. The engine range-culls
+    /// every terrain pool location per frame against the view distance, and none of the
+    /// signals ownership is built on follow: the drawn counter never resets, the mesh stays
+    /// in the pool, and the culler freezes its verdict outright while the camera holds still
+    /// in one chunk. Ground the player travelled away from therefore stayed committed
+    /// forever, and the mask discarded cached terrain there against nothing - a band at the
+    /// seam, on the trailing side only, that never healed.
+    ///
+    /// The threshold has to clear the whole chunk rather than merely reach it, and that is
+    /// the part worth pinning. The engine measures range from the mesh bounding sphere's
+    /// centre, which `TesselatedChunk` builds as the geometry extents midpoint
+    /// (`positionX + (xMax + xMin) / 2f`) - so it sits wherever the blocks in that chunk
+    /// happen to be, anywhere across the 32-block span. Comparing the column's nearest face
+    /// against the plain view distance would leave a residual stale ring up to 32*sqrt(2)
+    /// blocks wide, which is a thinner copy of the same band.
+    ///
+    /// So the property asserted here is the no-hole direction, not the no-overlap one: for
+    /// every cell whose sphere centre could be range-culled under any admissible midpoint,
+    /// the clause must deny. Overlap is asserted only to be bounded, because overlap is the
+    /// accepted cost.
+    /// </summary>
+    static void OwnershipStopsAtTheEnginesDrawRange(Check c)
+    {
+        // Camera at the centre of chunk 0, so a column's distance is a clean multiple of 32.
+        // At a 256-block view distance the threshold is 256 - 46 = 210 blocks.
+        const double cameraX = 16, cameraZ = 16;
+        const float viewDistance = 256;
+
+        c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(0, 0, cameraX, cameraZ, viewDistance),
+            "the camera's own column is never beyond the draw range");
+        c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(7, 0, cameraX, cameraZ, viewDistance),
+            "the last column that cannot hide a culled sphere centre is still drawn");
+        c.True(VanillaRenderReadiness.BeyondVanillaDrawRange(8, 0, cameraX, cameraZ, viewDistance),
+            "a column whose geometry could sit past the engine's bound is denied");
+        c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(-7, 0, cameraX, cameraZ, viewDistance),
+            "the denial is symmetric: the trailing side keeps the same last drawn column");
+        c.True(VanillaRenderReadiness.BeyondVanillaDrawRange(-8, 0, cameraX, cameraZ, viewDistance),
+            "the trailing side is denied at the same distance as the leading side");
+        c.True(VanillaRenderReadiness.BeyondVanillaDrawRange(6, 6, cameraX, cameraZ, viewDistance),
+            "the bound is radial, so a diagonal column is denied while its axial peer is not");
+        c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(6, 0, cameraX, cameraZ, viewDistance),
+            "that same axial offset is inside the threshold");
+
+        // The camera's own column must survive every view distance, including degenerate
+        // ones: the mask's near-field floor is gated on the camera's cell being owned, so a
+        // clamp failure here would suppress nothing at all rather than fail safe.
+        foreach (float distance in new[] { 0f, 8f, 46f, 64f })
+        {
+            c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(0, 0, cameraX, cameraZ, distance),
+                $"the camera's own column survives a {distance}-block view distance");
+        }
+
+        // A window is built at the view distance plus two guard chunks, so the annulus this
+        // rule releases covers the guard band - which is where the band was reported.
+        VanillaReadinessWindow window = VanillaRenderReadiness.CalculateWindow(
+            cameraX, cameraZ, viewDistance, mapSizeX: 32768, mapSizeZ: 32768);
+        c.True(VanillaRenderReadiness.BeyondVanillaDrawRange(
+                window.CenterX + window.OuterRadius, window.CenterZ, cameraX, cameraZ, viewDistance),
+            "the outer edge of the tracked window is beyond what the engine draws");
+        c.False(VanillaRenderReadiness.BeyondVanillaDrawRange(
+                window.CenterX + window.VanillaRadius - 3, window.CenterZ, cameraX, cameraZ, viewDistance),
+            "the interior of the vanilla radius is not touched by the rule");
+
+        // The property that matters. The engine's test is the sphere centre's horizontal
+        // distance squared against ViewDistanceSq = viewDistance^2 + 400
+        // (FrustumCulling.UpdateViewDistance), and every terrain LOD level's bound is at
+        // most that. The centre can be any point in the chunk column, so the cell is at risk
+        // of being culled as soon as the column's FARTHEST point reaches that bound - and
+        // every such cell has to be denied, or it is a hole.
+        int denied = 0;
+        int atRisk = 0;
+        int holes = 0;
+        int overlapTooDeep = 0;
+        double worstOverlapBlocks = 0;
+
+        foreach (float distance in new[] { 64f, 128f, 256f, 512f })
+        foreach (double camera in new[] { 0d, 16d, 31.9d, 1_000_016d })
+        for (int offsetZ = -24; offsetZ <= 24; offsetZ++)
+        for (int offsetX = -24; offsetX <= 24; offsetX++)
+        {
+            int chunkX = offsetX + (int)Math.Floor(camera / 32);
+            int chunkZ = offsetZ + (int)Math.Floor(camera / 32);
+            bool deniedHere = VanillaRenderReadiness.BeyondVanillaDrawRange(
+                chunkX, chunkZ, camera, camera, distance);
+            if (deniedHere) denied++;
+
+            // The worst admissible sphere centre: a corner of the column's horizontal span.
+            double farX = Math.Max(Math.Abs(chunkX * 32.0 - camera), Math.Abs(chunkX * 32.0 + 32 - camera));
+            double farZ = Math.Max(Math.Abs(chunkZ * 32.0 - camera), Math.Abs(chunkZ * 32.0 + 32 - camera));
+            double engineBoundSq = distance * (double)distance + 400;
+            if (farX * farX + farZ * farZ >= engineBoundSq)
+            {
+                atRisk++;
+                if (!deniedHere) holes++;
+            }
+
+            // Overlap is allowed, but only just past the slack the sphere centre needs.
+            double face = VanillaRenderReadiness.ColumnDistanceBlocksFrom(chunkX, chunkZ, camera, camera);
+            if (!deniedHere) continue;
+            double insideBy = distance - face;
+            if (insideBy > worstOverlapBlocks) worstOverlapBlocks = insideBy;
+            if (insideBy > 46.0001) overlapTooDeep++;
+        }
+
+        c.True(atRisk > 1000, "the sweep actually reaches cells the engine's range test can cull");
+        c.True(denied > 1000, "the sweep actually exercises the denial");
+        c.Eq(0, holes,
+            "every cell whose geometry could sit beyond the engine's range bound is denied, "
+            + "whatever the chunk's own flags say");
+        c.Eq(0, overlapTooDeep,
+            "the denial never reaches more than the in-chunk sphere-centre slack inside the view distance");
+        c.True(worstOverlapBlocks > 0,
+            "the accepted overlap is real: cells the engine may still draw are demoted at the seam");
     }
 }

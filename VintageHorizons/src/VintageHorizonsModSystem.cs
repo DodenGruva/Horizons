@@ -1186,7 +1186,10 @@ public class VintageHorizonsModSystem : ModSystem
         // deferring to another LOD mod.
         if (deferringTo != null) return;
 
-        capi.ChatCommands.Create("vhwhy")
+        // Named apart from ".vhwhy" on purpose. This one answers "why is that coarse",
+        // the other answers "why is that missing", and registering both under one name
+        // threw at startup and cost every command declared after it.
+        capi.ChatCommands.Create("vhcoarse")
             .WithDescription("Explain why nearby LOD terrain draws coarser than the detail setting allows")
             .HandleWith(_ =>
             {
@@ -1242,12 +1245,84 @@ public class VintageHorizonsModSystem : ModSystem
                 // Searching the whole line of sight rather than one chosen distance: the
                 // hole a player is looking at is wherever it is, and a confident report
                 // about the wrong chunk reads exactly like a report about the right one.
-                int range = args.Parsers[0].IsMissing ? 512 : GameMath.Clamp((int)args[0], 16, 4096);
+                // 512 blocks was a guess and it was too short: the cached band runs out to
+                // the far distance, so a hole in its outer half sat past the end of the
+                // search and the command answered "nothing wrong" about ground it never
+                // looked at. Default to the distance the mod actually draws to.
+                int range = args.Parsers[0].IsMissing
+                    ? GameMath.Clamp((int)renderer.EffectiveFarDistance, 512, 16384)
+                    : GameMath.Clamp((int)args[0], 16, 16384);
                 Vec3f look = capi.World.Player.Entity.Pos.GetViewVector();
                 var camera = capi.World.Player.Entity.CameraPos;
 
                 return TextCommandResult.Success("[VintageHorizons] " + renderer.ExplainViewRay(
                     camera.X, camera.Y, camera.Z, look.X, look.Y, look.Z, range));
+            });
+
+        capi.ChatCommands.Create("vhpaint")
+            .WithDescription("Paint the terrain the mask is hiding bright red instead of hiding it. Diagnostic.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] paint mode {(renderer.MaskDebugPaint ? "on" : "off")}.");
+
+                renderer.MaskDebugPaint = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] paint mode {(renderer.MaskDebugPaint ? "on" : "off")}. " +
+                    "Red is terrain the mask is hiding. A gap that stays empty is not the mask.");
+            });
+
+        capi.ChatCommands.Create("vhskip")
+            .WithDescription("While the chunk mask is on: allow dropping a cached piece entirely when the game covers all of it. On by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] whole-piece skipping {(renderer.WholeMeshSkip ? "on" : "off")}. " +
+                        "Off keeps the per-pixel mask working but never drops a whole cached piece.");
+
+                renderer.WholeMeshSkip = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] whole-piece skipping {(renderer.WholeMeshSkip ? "on" : "off")}. " +
+                    "Applies on the next frame.");
+            });
+
+        capi.ChatCommands.Create("vhholes")
+            .WithDescription("Find ground the mod has handed to the game that the game is not drawing. No need to look at anything.")
+            .HandleWith(_ =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                var at = capi.World.Player.Entity.Pos;
+                return TextCommandResult.Success(
+                    "[VintageHorizons] " + renderer.ExplainOwnedButNotDrawn(at.X, at.Z, 4));
+            });
+
+        capi.ChatCommands.Create("vhgeom")
+            .WithDescription("While the chunk mask is on: ignore ground the game claims but holds no terrain for. On by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] geometry rule {(renderer.GeometryOwnershipRule ? "on" : "off")}. " +
+                        "On means a chunk the game says it drew, but holds no terrain in, does not " +
+                        "hide cached terrain. Only has an effect with .vhmask on.");
+
+                renderer.GeometryOwnershipRule = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] geometry rule {(renderer.GeometryOwnershipRule ? "on" : "off")}. " +
+                    "The change applies on the next frame; ownership settles over the next second or two.");
             });
 
         capi.ChatCommands.Create("vhdetail")

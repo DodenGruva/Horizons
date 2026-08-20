@@ -2,7 +2,11 @@
 
 [CmdletBinding()]
 param(
+    # The bench mod rewrites anything outside [A-Za-z0-9_-] to '_' when it names its own
+    # output, so a label containing a dot makes this script wait five minutes for a done
+    # file that was written under a different name. Refuse it in the first second instead.
     [Parameter(Mandatory)]
+    [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$Label,
     [string]$Route,
     [double]$Settle = 20,
@@ -380,7 +384,14 @@ function Get-ClientReadinessRecord {
         '(?<errors>\d+) errors, (?<windowChanges>\d+) window changes/(?<resizes>\d+) resizes, ' +
         '(?<fullRevalidations>\d+) full revalidations, ' +
         '(?<staleCommitted>\d+) stale committed found/(?<countRepairs>\d+) count repairs, ' +
-        '(?<emptyChunks>\d+) drawn-but-empty chunks, ' +
+        '(?<emptyChunks>\d+) drawn-but-empty/' +
+        '(?<noGeometryChunks>\d+) drawn-without-geometry chunks, ' +
+        'owned without geometry (?<ownedNoGeometry>\d+) at ' +
+        '(?<ownedNoGeometryNear>-?[\d.,]+)-(?<ownedNoGeometryFar>-?[\d.,]+) blocks ' +
+        'per Y (?<ownedNoGeometryPerY>[\d/]+), ' +
+        '(?<ownershipDenied>\d+) ownership denied no-geometry/' +
+        '(?<ownershipDeniedRange>\d+) denied beyond view distance/' +
+        '(?<maskResyncs>\d+) mask resyncs, ' +
         'events (?<accepted>\d+) accepted/(?<coalesced>\d+) coalesced/(?<dropped>\d+) dropped, ' +
         'sweeps (?<sweepsAccepted>\d+) accepted/(?<sweepsCoalesced>\d+) coalesced, ' +
         'columns (?<columnsTracked>\d+) tracked/(?<columnsFull>\d+) full/(?<columnsPartial>\d+) partial, ' +

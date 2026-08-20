@@ -8,6 +8,285 @@ first.
 
 ## [Unreleased]
 
+## [0.3.16]
+
+In development. Both changes are live only with `.vhmask on`.
+
+**The band behind you was terrain the game had quietly stopped drawing.** The game only draws
+a chunk of world while it is within your view distance, and it checks that every single frame,
+right before drawing. But none of the other signs that a chunk is being drawn change when it
+falls out of range: the chunk stays loaded, keeps its shape in memory, and keeps its "drawn"
+marker, which only ever gets set and never cleared. Stand still and the game even stops
+recalculating what is visible at all.
+
+The mod was reading those signs and concluding the game had that ground covered, so it hid its
+own cached terrain there. Nothing drew it. That produced a strip of empty world a couple of
+chunks wide, always on the side you had just travelled away from - the side that had loaded
+chunks out there in the first place - and standing still never fixed it, because standing
+still is exactly when nothing gets re-evaluated.
+
+The mod now applies the same distance rule the game does before handing ground over, and stops
+about a chunk and a half short of the true edge. It has to: the game measures the distance to
+wherever the terrain in a chunk actually sits, not to the chunk itself, so stopping exactly at
+the edge would leave a thinner version of the same empty strip. The trade is that cached
+terrain may now be drawn over the outermost sliver of real terrain, which shows as a seam
+rather than a gap. The `.vhwhy` and `.vhholes` reports used to answer "the game is drawing this
+chunk" for exactly these cells; they now say the chunk is beyond the draw range.
+
+**The ownership map on the graphics card stopped re-poisoning itself with air every 32 blocks.**
+0.3.15 stopped empty air from hiding cached terrain, which fixed the sheared horizon. But that
+rule was only applied to single updates. The full rebuild - which runs every time you cross a
+chunk boundary, so constantly while moving - marked air as the game's again, and only the
+once-a-second repair pass cleaned it up. Air ownership is now recorded once and honoured by
+both paths, so travelling no longer reintroduces the fault 0.3.15 fixed.
+
+## [0.3.15]
+
+In development.
+
+**The band was the mod cutting the top off its own horizon.** Painting the hidden pixels red
+showed the whole band lighting up, which meant the mod really was hiding it - while every
+internal record said the ground there belonged to the game and the game was drawing it.
+Both were true at once, and that is the answer.
+
+The mod's cached terrain is an approximation, so in places it stands taller than the real
+world. The extra height sits in the empty air above the real ground. The mod was treating
+air as the game's to draw - correct in one sense, since there is nothing there - and hiding
+its own terrain in it. But the game draws nothing in empty air, so hiding there removes the
+only thing that was drawing and shears the top off the distant landscape. Hence a band, at
+the horizon, that never fills in.
+
+Air no longer hides anything. It still counts as the game's territory everywhere else, which
+matters: a column of world only counts as the game's when all of it does, and every column
+has sky above it - refusing that outright broke an earlier build completely.
+
+The trade is deliberate: where the approximation overshoots, cached terrain may now show
+slightly above the real ground instead of being cut off. A hole is worse than an overlap.
+
+**Also, the map on the graphics card now rebuilds itself from the mod's own records once a
+second.** It was only ever updated incrementally, and an incremental copy is only as correct
+as the completeness of its update paths - one missing path caused a separate fault fixed in
+0.3.13. Any future gap between the two now closes within a second, and the periodic log
+counts the corrections so a missing path cannot hide behind the repair.
+
+## [0.3.14]
+
+In development. Diagnostic.
+
+**`.vhpaint on` colours the terrain the mask is hiding bright red instead of hiding it.**
+Every argument about this has gone through the mod's own bookkeeping, and that bookkeeping
+has been reporting itself healthy while the gap stayed on screen. This asks the picture
+instead: if the gap turns red, the mask is hiding that terrain and the question is why; if
+the gap stays empty, the mask never touched it and every explanation offered so far - this
+one included - has been aimed at the wrong thing.
+
+Whole-piece dropping is suspended while painting, so nothing can escape the paint by never
+reaching the graphics card at all.
+
+## [0.3.13]
+
+In development.
+
+**Found and fixed the band of missing terrain.** The mod keeps a small map on the graphics
+card saying which patches of world the game is drawing, and that map is a fixed-size ring
+that scrolls as you move: a patch leaving the far side hands its slot to a patch arriving on
+the near side. When a patch left, the mod forgot it internally but never cleared its slot on
+the graphics card - so the arriving patch inherited the departed one's answer. Where that
+answer was "the game is drawing here", the mod hid its own terrain over ground nobody was
+drawing.
+
+That is why it appeared as a band rather than scattered holes, why it sat behind you as you
+flew, why it never filled in on its own, and why every check came back clean: the mod's own
+records were correct the whole time and only the copy on the graphics card was stale. It also
+explains why none of the ownership rules helped, and why turning off whole-piece dropping
+changed nothing.
+
+The routine to clear a departed patch already existed and was documented as necessary.
+Nothing had ever called it, from the first version of this feature through 0.3.12. A test now
+fails the build if that stops happening again.
+
+## [0.3.12]
+
+In development. Diagnostics.
+
+**`.vhskip` splits the two things the mask does.** Testing established that with the mask on,
+every patch of world the mod hands to the game is genuinely being drawn by the game - and the
+holes are still there. So the mod is choosing the right patches and doing the wrong thing
+with them. There are exactly two places that happens: hiding individual pixels, and dropping
+a whole cached piece before drawing it at all. Both only run with the mask on, which is why
+they have been indistinguishable.
+
+`.vhskip off` leaves the pixel masking working and stops the whole-piece dropping. If the
+holes go, it is the piece dropping; if they stay, it is the pixel masking. Nothing else in
+this build changes behaviour.
+
+Note that `.vhholes` cannot find anything while the mask is on, and that is expected rather
+than reassuring: the mod already refuses to claim a patch the game is not drawing, so the
+command has nothing left to report. It is meaningful with the mask off, where that rule does
+not run.
+
+## [0.3.11]
+
+In development. Diagnostics.
+
+**`.vhwhy` was searching 512 blocks and answering about the rest.** The cached band runs out
+to the mod's full draw distance, so a hole in its outer half sat past the end of the search
+and the command reported "nothing wrong" about ground it had never looked at. It now searches
+as far as the mod draws.
+
+**`.vhholes` finds them without aiming.** A band behind you is not something a view ray can
+be pointed at, and whatever is visible through a hole answers for itself. This sweeps every
+patch of world the mod has handed to the game, reports how many of them the game is not
+actually drawing, and lists the nearest few.
+
+Both now print every signal the game offers about a patch side by side - whether it is
+empty, whether the game holds a mesh for it, the ray culler's verdict, whether the mesh is
+flagged not to draw, and whether it was last inside the view. Each of those has been mistaken
+for "the game is drawing here" at some point in this investigation, and reading them together
+is what stops the guessing.
+
+The mod also now treats a mesh flagged not to draw as not drawn, which is a separate switch
+from the culler's verdict and was being missed.
+
+## [0.3.10]
+
+In development.
+
+**The mod was asking the game the wrong question, and a player's experiment proved it.**
+Flying high enough makes the game stop drawing the ground directly below you - in plain
+vanilla, with no mods at all. Everything the mod was using to decide "the game is drawing
+here" still said yes throughout, so the mod kept hiding its own terrain over ground nobody
+was drawing. That is the hole.
+
+The reason: the mod asked whether a patch of world had *ever* been prepared. That marker is
+set once and never cleared. Meanwhile the game decides what to actually draw every frame, by
+tracing outward from the camera and marking what it reaches, and it has a separate path for
+when the camera is above a height limit - which is exactly the case that was tested.
+
+The mod now reads the game's own per-frame verdict instead. It is public information, so no
+guesswork is involved, and a check fails the build if a game update moves it. Unknown still
+counts as "the game is drawing", so a wrong answer can only cost the correction and never
+uncover live terrain.
+
+`.vhwhy` reports the same thing now, so it will no longer say a hole looks fine. `.vhgeom`
+still switches the rule off for comparison.
+
+## [0.3.9]
+
+In development.
+
+**`.vhgeom` lets you switch 0.3.8's change off in game.** 0.3.8 stopped treating ground the
+game claims but holds no terrain for as the game's to draw. Testing found more holes after
+it, not fewer, which does not follow: that change only ever makes the mod draw *more* of its
+cached terrain, never less. So if it is responsible, it is because the extra terrain needs
+meshes that cannot be built fast enough, and the gap you see is terrain that has not been
+built yet rather than terrain being hidden.
+
+`.vhgeom off` reverts to 0.3.8's predecessor behaviour without a new build, so the same hole
+can be looked at both ways from one spot.
+
+## [0.3.8]
+
+In development.
+
+**The confirmed cause of the holes is now fixed, behind `.vhmask on`.** A player standing at
+a hole ran `.vhwhy` and it reported the exact combination this build was built to find: the
+game claimed that patch of world, held no terrain in it, and the mod suppressed its own
+cached terrain there and skipped drawing the whole cached piece as well. Nothing drew that
+ground, and nothing ever would.
+
+The reason the game can claim ground it is not drawing: its "drawn" marker is set once and
+never cleared, so it means "prepared at some point", not "there is terrain here now". A
+patch can lose its terrain afterwards and still report drawn forever. The mod no longer
+treats such a patch as the game's to draw. Empty sky still counts as the game's, which
+matters - every column of the world has sky above it, and refusing that is what broke an
+earlier build.
+
+The rule applies only while `.vhmask on`, so the default path is byte-for-byte what was
+measured before. It has not been visually confirmed yet.
+
+**Two of my own faults, fixed.** The height breakdown in the periodic log always printed
+zeros. And the diagnostic added in 0.3.5 asked the game about every patch it probed, which
+takes the same internal lock the game's own loading threads want - worst exactly while a
+world is coming up. It now asks only where the answer can change a decision. That is a
+suspect for cached terrain being slow to appear after joining, not a proven cause: a log
+from a fresh join shows the first hundred cached pieces taking 36 seconds against 6 in an
+earlier build.
+
+## [0.3.7]
+
+In development. Diagnostics only; nothing about drawing changed.
+
+**`.vhwhy` can now tell you why a hole is a hole.** Stand looking at one and run it. For
+each patch of ground along your line of sight it now also reports what the game itself is
+holding there, which is a different question from whether the game says it drew it: the
+game's "drawn" counter advances for a chunk of pure air and is never reset afterwards, so
+it means "this was prepared at some point", not "there is terrain here now". When the mod
+is hiding its cached terrain, the game claims the chunk, the chunk is not air, and the game
+holds no terrain for it, the report says so in as many words - that combination is ground
+that nothing at all is drawing.
+
+It also no longer walks past that case. `.vhwhy` used to stop only at ground the game says
+it is not drawing, so a chunk the game claims while holding nothing looked fine to it and
+the answer came back "nothing wrong". You get one verdict, not a list: it reports the first
+patch along your line of sight that qualifies, so the terrain behind the hole does not
+enter into it.
+
+The periodic log also records where those chunks are, by distance and by height. In a
+standing test most of them are underground, where holding no terrain is normal and
+invisible, which is why the raw count on its own is not evidence.
+
+## [0.3.6]
+
+In development.
+
+**The per-chunk ownership mask was never actually working, and now it is.** The mod tells
+the graphics card which patch of the world each piece of cached terrain belongs to by
+handing the shader that piece's position. That one value was being sent in a format the
+graphics driver rejects: it refused the value silently, kept the previous one - zero - and
+recorded a complaint in the log once per frame. So every piece of cached terrain asked
+about ownership as if it sat at the world origin, the answer was almost always "outside the
+tracked area", and the per-pixel half of the mask discarded nearly nothing.
+
+That is why four separate attempts to explain the holes came up empty: they were all
+looking at bookkeeping that was working correctly. What was broken sat one step later, in
+the handoff to the graphics card. Two isolated test runs on the same scene proved it -
+19,126 graphics errors per run with the mask on, zero with it off, and zero again after the
+fix - and a check now fails the test run if any value is ever sent that way again.
+
+**What this means for playing:** `.vhmask on` now does what it was described as doing, and
+it has never been visually judged in that state. The holes may be gone, changed, or moved.
+The whole-piece skipping that produced the earlier measured frame-rate gain was always
+working and is unchanged; frame rate in a standing test was unaffected by the fix.
+
+## [0.3.5]
+
+In development.
+
+**Fixed a startup fault that switched off part of the mod without saying so.** Two different
+commands had been given the same name, `.vhwhy`. The game refuses the second one and stops
+loading the mod at that point, so `.vhdetail` did not exist at all and the log recorded
+VintageHorizons as a failed system while it carried on drawing. The hole-finding `.vhwhy`
+keeps its name; the report about terrain drawing coarser than it should is now `.vhcoarse`.
+An automatic check now fails the build's test run if two commands are ever given one name
+again.
+
+**The leading explanation for the terrain holes turned out to be wrong, and the mod now
+measures the right thing instead.** The game keeps a counter that says a chunk of the world
+has been drawn, and it advances that counter for chunks that are pure air without drawing
+anything - so the mod could not tell "there is real ground here" from "there is sky here".
+The previous conclusion was that the game's own empty-or-not flag could not be trusted to
+separate them. Reading the game's compiled code shows the opposite: that flag is sent by the
+server along with the chunk, and the game itself uses exactly it to decide whether to draw.
+What went wrong in an earlier test build was the rule built on top of it, which took
+ownership away from every patch of sky and therefore from every column of the world at once.
+
+Sky being empty is normal and explains the large count reported by the previous build. The
+mod now looks for the one case that could actually leave a hole: a chunk that is not empty,
+that the game says it drew, and for which the game holds no terrain mesh at all. That count
+appears in the periodic log as `drawn-without-geometry chunks`. Nothing acts on it yet; it
+decides whether the theory survives at all.
+
 ## [0.3.4]
 
 In development. Test builds now carry an incrementing patch number so a reported symptom can

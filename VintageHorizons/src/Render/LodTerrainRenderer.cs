@@ -143,6 +143,49 @@ public class LodTerrainRenderer : IRenderer
     public long ReadinessAggregateRepairs { get; private set; }
     public long ReadinessStaleCommittedFound { get; private set; }
     public long ReadinessEmptyChunksSeen { get; private set; }
+    public long ReadinessDrawnWithoutGeometry { get; private set; }
+    public long ReadinessOwnedWithoutGeometry { get; private set; }
+    public long ReadinessOwnershipDeniedNoGeometry { get; private set; }
+
+    /// <summary>
+    /// Probes refused ownership because the cell sits outside the engine's own draw range.
+    /// A permanently non-zero figure here while standing still is the trailing annulus:
+    /// chunks the player walked away from, still loaded and still reporting every "drawing"
+    /// signal, that the engine range-culls at draw time.
+    /// </summary>
+    public long ReadinessOwnershipDeniedBeyondViewDistance { get; private set; }
+    public long ReadinessMaskResyncs { get; private set; }
+
+    /// <summary>
+    /// Whether a chunk the engine claims while holding no mesh may own its cell.
+    /// On by default and only meaningful with the chunk mask enabled. Exposed as a
+    /// runtime toggle so a hole can be judged both ways in one place without a
+    /// rebuild: the rule un-suppresses cached terrain, so if it makes holes worse it
+    /// is doing so by adding mesh work, not by hiding more, and that is a question
+    /// only a person looking at the band can settle.
+    /// </summary>
+    public bool GeometryOwnershipRule { get; set; } = true;
+
+    /// <summary>
+    /// Whether a wholly owned cached section may be dropped before it is drawn at all.
+    ///
+    /// Ownership has two consumers and they fail differently. The shader discards single
+    /// fragments in owned cells; this drops an entire cached section on the CPU. Both are
+    /// live only with the mask on, so a hole that appears with the mask could come from
+    /// either, and no amount of reasoning about ownership separates them once ownership
+    /// itself is known good. Turning this off leaves the per-pixel mask working alone.
+    /// </summary>
+    public bool WholeMeshSkip { get; set; } = true;
+
+    /// <summary>
+    /// Paint fragments the mask would hide bright red instead of hiding them, and stop
+    /// dropping whole owned sections so nothing escapes the paint. A gap that turns red is
+    /// the mask's doing; a gap that stays empty never was, and no further argument about
+    /// ownership is needed to tell them apart.
+    /// </summary>
+    public bool MaskDebugPaint { get; set; }
+    public double ReadinessOwnedWithoutGeometryNearest { get; private set; }
+    public double ReadinessOwnedWithoutGeometryFarthest { get; private set; }
     public long VanillaOwnedDrawsSkipped { get; private set; }
     public long CoarseWaitingLoad { get; private set; }
     public long CoarseWaitingMesh { get; private set; }
@@ -179,6 +222,14 @@ public class LodTerrainRenderer : IRenderer
         ReadinessAggregateRepairs = 0;
         ReadinessStaleCommittedFound = 0;
         ReadinessEmptyChunksSeen = 0;
+        ReadinessDrawnWithoutGeometry = 0;
+        ReadinessOwnedWithoutGeometry = 0;
+        ReadinessOwnershipDeniedNoGeometry = 0;
+        ReadinessOwnershipDeniedBeyondViewDistance = 0;
+        ReadinessMaskResyncs = 0;
+        ReadinessOwnedWithoutGeometryNearest = -1;
+        ReadinessOwnedWithoutGeometryFarthest = -1;
+        Array.Clear(readinessNoGeometryByY);
         VanillaOwnedDrawsSkipped = 0;
         CoarseWaitingLoad = 0;
         CoarseWaitingMesh = 0;
@@ -215,6 +266,7 @@ public class LodTerrainRenderer : IRenderer
     bool readinessFailureReported;
     int[] readinessColumnReady = Array.Empty<int>();
     readonly StringBuilder readinessColumnText = new();
+    readonly StringBuilder readinessNoGeometryText = new();
     readonly StringBuilder levelReport = new();
     readonly LodNearHandoffState nearHandoff = new();
     // Phase 2 per-cell ownership. Off unless VINTAGEHORIZONS_CHUNK_MASK=1, so the measured
@@ -231,6 +283,7 @@ public class LodTerrainRenderer : IRenderer
     float readinessOwnedRadius;
     double readinessHandoffCameraX;
     double readinessHandoffCameraZ;
+    int[] readinessNoGeometryByY = Array.Empty<int>();
     bool readinessHandoffStale = true;
     bool readinessSweepShellNow;
     long readinessLastFullRevalidateMs;
@@ -900,6 +953,7 @@ public class LodTerrainRenderer : IRenderer
                 || readiness.HorizontalCapacity < window.RequiredCapacity)
             {
                 readiness = new VanillaRenderReadiness(window.RequiredCapacity, verticalChunks);
+                readiness.ColumnEvicted = (chunkX, chunkZ) => readinessMask?.ClearColumn(chunkX, chunkZ);
                 readinessSeedCursor = readinessBoundaryCursor = readinessInteriorCursor = 0;
                 readinessHandoffStale = true;
                 ReadinessResizes++;
@@ -959,6 +1013,7 @@ public class LodTerrainRenderer : IRenderer
                 readinessLastFullRevalidateMs = now;
                 ReadinessFullRevalidations++;
                 readiness.QueueAllReadyCells(frameCounter);
+                ResyncReadinessMask();
 
                 // The counts the whole-mesh skip trusts are derived state that nothing else
                 // re-derives. A single drift high hides a section permanently, so they are
@@ -1022,16 +1077,66 @@ public class LodTerrainRenderer : IRenderer
                 if (!rendered && readiness.State(cell) == VanillaReadinessState.VanillaReady)
                     ReadinessStaleCommittedFound++;
 
-                // Measured, not acted on. The engine counts an empty chunk as drawn, so
-                // cached terrain standing taller than the real world can sit in cells that
-                // report drawn while nothing is drawn there - a candidate explanation for
-                // holes that never close. Acting on IWorldChunk.Empty broke ownership
-                // outright in 0.3.3: it is a cached flag refreshed only when a chunk is
-                // modified, and the client frees block data for packed chunks, so on the
-                // client it does not mean what its name suggests. This counts how often a
-                // chunk we consider owned reports itself empty, which says whether the
-                // mechanism is real before anything depends on it again.
-                if (rendered && IsVanillaChunkEmptyForDiagnostics(cell)) ReadinessEmptyChunksSeen++;
+                // Measured, not acted on; see G40 for what happened the one time a rule
+                // like this reached the draw path from reasoning instead of evidence.
+                if (readinessNoGeometryByY.Length < readiness.VerticalChunks)
+                    readinessNoGeometryByY = new int[readiness.VerticalChunks];
+
+                // Both the measurement and the rule below need a chunk lookup, which takes
+                // the client's chunk lock - the same lock IsChunkRendered just took, and the
+                // same one the loader threads want while a world is coming up. Ask only when
+                // this observation can actually change ownership: the second of the two true
+                // observations a commit needs, or a re-confirmation of a committed cell.
+                // Every other probe at join is a first sighting that decides nothing.
+                VanillaReadinessState decisionState = readiness.State(cell);
+                bool atOwnershipDecision = decisionState is VanillaReadinessState.ObservedRendered
+                    or VanillaReadinessState.VanillaReady;
+
+                if (rendered && atOwnershipDecision) MeasureDrawnChunk(cell, camPos.X, camPos.Z);
+
+                // Beyond the view distance the engine draws nothing here, whatever every
+                // other signal says. It range-culls each terrain pool location per frame
+                // against the view distance, and the signals ownership is built on do not
+                // follow: the drawn counter never resets, the mesh stays in the pool, Hide
+                // stays clear, and the culler freezes its verdict entirely while the camera
+                // holds still in one chunk. So a cell the player walked away from stays
+                // committed forever, and the mask discards cached terrain there against
+                // nothing - a band at the seam, on the trailing side only, that never heals.
+                //
+                // Air is denied here too, unlike the geometry rule below. Beyond this range
+                // vanilla owns nothing at all, so whole columns must demote together; that
+                // is also what releases the section aggregates the whole-mesh skip reads.
+                //
+                // Gated on the mask for the same reason as the geometry rule: the default
+                // radial-handoff path is benchmarked as it stands, and demoting the annulus
+                // would pull its single global radius in for every column.
+                if (rendered && ChunkMaskEnabled
+                    && VanillaRenderReadiness.BeyondVanillaDrawRange(
+                        cell.X, cell.Z, camPos.X, camPos.Z, viewDistance))
+                {
+                    rendered = false;
+                    ReadinessOwnershipDeniedBeyondViewDistance++;
+                }
+
+                // The confirmed hole: the engine's drawn counter is set once and never
+                // cleared, so a chunk it claims can hold no terrain at all - and where it
+                // holds none, suppressing the cache leaves nobody drawing that ground. A
+                // cell like that is not owned, whatever the counter says.
+                //
+                // Only while the mask is on. The same signal also feeds the column
+                // aggregate behind the radial handoff, and a buried chunk with no exposed
+                // faces holds no mesh either - harmless per cell, because cached terrain
+                // underground is invisible, but it would pull the radial radius in for
+                // every column. Containing it to the feature under evaluation keeps the
+                // default path exactly as measured. Widen it only on evidence: read
+                // "nearest incomplete" and "owned draws skipped" from a mask-on run.
+                if (rendered && atOwnershipDecision && ChunkMaskEnabled && GeometryOwnershipRule
+                    && VanillaChunkGeometry.Available
+                    && !VanillaChunkHoldsDrawableGround(cell))
+                {
+                    rendered = false;
+                    ReadinessOwnershipDeniedNoGeometry++;
+                }
 
                 if (!readiness.Observe(cell, rendered, frameCounter,
                     out VanillaReadinessPublication publication)) continue;
@@ -1039,7 +1144,13 @@ public class LodTerrainRenderer : IRenderer
                 // Phase 1 has no texture. Accepting into this shadow model lets diagnostics
                 // validate aggregate transitions without changing any pixel or draw call.
                 if (!readiness.ResolvePublication(publication, accepted: true)) continue;
-                readinessMask?.Set(publication.Cell, publication.Ready);
+                // Recorded, not only applied. The mask is also rebuilt wholesale on every
+                // window change, and a rebuild has no chunk to ask - so the exclusion has to
+                // live in the tracker or every 32 blocks of travel puts air ownership back
+                // into the atlas until the next resync scrubs it out again.
+                bool air = VanillaChunkIsAir(publication.Cell);
+                readiness.SetMaskExcluded(publication.Cell, air);
+                readinessMask?.Set(publication.Cell, publication.Ready && !air);
                 readinessHandoffStale = true;
                 if (publication.Ready) ReadinessReadyTransitions++;
                 else ReadinessLostTransitions++;
@@ -1131,8 +1242,9 @@ public class LodTerrainRenderer : IRenderer
         string? firstEmpty = null;
         int examined = 0;
         int verticalChunks = Math.Max(1, (worldHeight + 31) / 32);
+        float viewDistance = ApprovedViewDistance();
 
-        for (int distance = 0; distance <= maxBlocks && examined < 512; distance += 4)
+        for (int distance = 0; distance <= maxBlocks && examined < 4096; distance += 4)
         {
             double x = startX + lookX * distance;
             double y = startY + lookY * distance;
@@ -1161,6 +1273,28 @@ public class LodTerrainRenderer : IRenderer
             }
 
             bool suppressed = readinessMaskActive && readinessMask != null && readinessMask.IsReady(cell);
+
+            // "Rendered" is not "drawing". The engine's counter advances once for a chunk of
+            // air and is never reset, so a chunk it claims can hold no terrain at all: freed
+            // on overload, or never meshed because nothing in it has an exposed face. Without
+            // this the search walks straight past the one case that leaves ground undrawn
+            // while we suppress the cache over it, and answers "nothing wrong".
+            IWorldChunk? vanillaChunk = null;
+            try { vanillaChunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z); }
+            catch { /* a diagnostic never throws out of itself */ }
+            // Any reason the engine will not submit this chunk counts, not just a missing
+            // mesh: it can hold one and still be flagged not to draw. Frustum state is
+            // deliberately excluded - a chunk behind the camera is not a hole.
+            bool engineHoldsNothing = vanillaChunk is { Empty: false }
+                && VanillaChunkGeometry.TryIsVanillaDrawing(vanillaChunk, out bool drawingHere)
+                && !drawingHere;
+
+            // The other way the engine declines to draw a chunk it still holds, and the one
+            // that used to make this report say "engine is drawing this chunk" about ground
+            // nothing was drawing: every terrain pool location is range-culled per frame
+            // against the view distance, and none of the flags above follow.
+            bool beyondDrawRange = VanillaRenderReadiness.BeyondVanillaDrawRange(
+                cell.X, cell.Z, startX, startZ, viewDistance);
 
             // Ground can be drawn by any level, so report all of them. A single verdict has
             // twice now been read as evidence when it was describing a different level than
@@ -1191,18 +1325,25 @@ public class LodTerrainRenderer : IRenderer
             }
             if (levelReport.Length == 0) levelReport.Append("no cached section at any level");
 
-            if (!rendered && (suppressed || skipped))
+            if ((!rendered || engineHoldsNothing || beyondDrawRange) && (suppressed || skipped))
             {
-                return $"OURS at {distance} blocks, chunk {cell.X},{cell.Y},{cell.Z}: engine not drawing, "
+                string engineSays = !rendered
+                    ? "engine not drawing"
+                    : beyondDrawRange
+                        ? $"engine claims this chunk but it is beyond the {viewDistance:0}-block draw range"
+                        : "engine claims this chunk but is not drawing it";
+                return $"OURS at {distance} blocks, chunk {cell.X},{cell.Y},{cell.Z}: {engineSays}, "
                     + $"we say {tracker.State(cell)}, mask {(suppressed ? "suppresses" : "allows")}, "
-                    + $"draw {(skipped ? "skipped as owned" : "not skipped")} | {levelReport}";
+                    + $"draw {(skipped ? "skipped as owned" : "not skipped")} | "
+                    + $"{VanillaChunkGeometry.DescribeSignals(vanillaChunk)} | {levelReport}";
             }
 
             if (firstEmpty == null && !rendered && !meshed)
             {
                 firstEmpty = $"NO CACHED TERRAIN at {distance} blocks, chunk {cell.X},{cell.Y},{cell.Z}: "
                     + $"engine not drawing, we say {tracker.State(cell)}, "
-                    + $"mask {(suppressed ? "suppresses" : "allows")} | {levelReport}";
+                    + $"mask {(suppressed ? "suppresses" : "allows")} | "
+                    + $"{VanillaChunkGeometry.DescribeSignals(vanillaChunk)} | {levelReport}";
             }
         }
 
@@ -1246,12 +1387,48 @@ public class LodTerrainRenderer : IRenderer
             (int)Math.Floor(worldX / LodSection.SectionBlocks),
             (int)Math.Floor(worldZ / LodSection.SectionBlocks));
 
+        // What the engine actually holds here, which "rendered" does not answer: its drawn
+        // counter advances for a chunk of air and is never reset, so it reports whether the
+        // chunk was ever tesselated, not whether terrain exists in the buffers right now.
+        IWorldChunk? vanillaChunk = null;
+        try { vanillaChunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z); }
+        catch { /* a diagnostic never throws out of itself */ }
+
+        bool geometryKnown = VanillaChunkGeometry.TryIsVanillaDrawing(vanillaChunk, out bool drawingNow);
+        bool holdsGeometry = drawingNow;
+
+        // Distance outranks every flag on the chunk. The engine range-culls each terrain
+        // pool location per frame, so a chunk this far out is not drawn however loaded,
+        // meshed, unhidden and cull-visible it reports itself to be - which is exactly what
+        // this report used to describe as "engine is drawing this chunk".
+        float viewDistance = ApprovedViewDistance();
+        bool beyondDrawRange = VanillaRenderReadiness.BeyondVanillaDrawRange(
+            cell.X, cell.Z, camPos.X, camPos.Z, viewDistance);
+        string vanillaHolds = vanillaChunk == null ? "chunk not loaded"
+            : vanillaChunk.Empty ? "chunk is empty (air)"
+            : beyondDrawRange
+                ? $"chunk is beyond the {viewDistance:0}-block draw range, so the engine range-culls it"
+            : !geometryKnown ? "engine draw state unavailable"
+            : drawingNow ? "engine is drawing this chunk"
+            : "engine is NOT drawing this chunk";
+
         return $"chunk {cell.X},{cell.Y},{cell.Z}: we say {state}, engine says "
-            + $"{(renderedNow ? "rendered" : "not rendered")}, mask {(suppressed ? "suppresses" : "allows")} "
+            + $"{(renderedNow ? "rendered" : "not rendered")}, {vanillaHolds}, "
+            + $"mask {(suppressed ? "suppresses" : "allows")} "
             + $"cached terrain here; L0 section {(world.Sections.ContainsKey(sectionKey) ? "resident" : "absent")}, "
             + $"{(HasAnyMesh(sectionKey) ? "meshed" : "no mesh")}"
             + (state == VanillaReadinessState.VanillaReady && !renderedNow
                 ? " -- STALE OWNERSHIP: the mask is hiding cached terrain the engine is not drawing"
+                : "")
+            // The boundary case worth naming outright: we suppress the cache, the engine
+            // says it drew this chunk, the chunk is not air, and the engine holds no mesh
+            // for it. Nothing draws that ground, and nothing will correct it on its own.
+            + (suppressed && beyondDrawRange
+                ? " -- NOTHING DRAWS THIS: suppressed cache beyond the range the engine draws at all"
+                : "")
+            + (suppressed && !beyondDrawRange && renderedNow && vanillaChunk is { Empty: false }
+                    && geometryKnown && !holdsGeometry
+                ? " -- NOTHING DRAWS THIS: suppressed cache, and the engine claims the chunk without holding terrain"
                 : "");
     }
 
@@ -1340,18 +1517,232 @@ public class LodTerrainRenderer : IRenderer
     /// A chunk the engine does not hold at all is not empty, it is absent, and the rendered
     /// query has already answered for that case.
     /// </summary>
-    bool IsVanillaChunkEmptyForDiagnostics(VanillaChunkCell cell)
+    /// <summary>
+    /// Separates the two ways a chunk can report drawn while drawing nothing.
+    ///
+    /// <para>
+    /// "Empty" is the ordinary one and is not a fault: the flag arrives from the server in
+    /// the chunk packet, the tesselator reads exactly it to skip meshing, and every column
+    /// has sky above it. Refusing ownership to those cells is what broke 0.3.3 - a column
+    /// counts as owned only when all of its chunks do, so excluding air excluded every
+    /// column at once.
+    /// </para>
+    /// <para>
+    /// The one worth finding is the second: a chunk that is not empty, that the engine
+    /// says it drew, and for which the engine holds no mesh at all. That is ground the
+    /// player should be able to see and nothing is drawing, and it is the only shape of
+    /// discrepancy that can leave a hole standing still. Zero here retires the theory.
+    /// </para>
+    /// </summary>
+    /// <summary>
+    /// Whether the engine holds this chunk with no blocks in it.
+    ///
+    /// <para>
+    /// An air chunk keeps its ownership in the tracker, because a column counts as owned
+    /// only when every one of its chunks does and every column has sky above it - refusing
+    /// air there is what collapsed 0.3.3. But it must never suppress a fragment. Cached
+    /// terrain is an approximation and stands taller than the real world in places, so its
+    /// geometry sits inside air cells; vanilla draws nothing in an air cell, so discarding
+    /// there removes the only thing that was drawing and cuts the top off the cached
+    /// horizon. That is the band: painted red by `.vhpaint`, invisible to `.vhholes`
+    /// because the tracker is right, and unaffected by every ownership rule tried, because
+    /// ownership was never wrong.
+    /// </para>
+    /// <para>
+    /// The cost is the overlap this was originally meant to remove: cached terrain may show
+    /// above real ground where the approximation overshoots. A hole outranks an overlap.
+    /// </para>
+    /// </summary>
+    bool VanillaChunkIsAir(VanillaChunkCell cell)
     {
         try
         {
             IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
-            return chunk != null && chunk.Empty;
+            return chunk is { Empty: true };
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Rewrites the whole ownership atlas from the tracker's committed state.
+    ///
+    /// <para>
+    /// The atlas is fed incrementally, by publication, and an incremental mirror is only
+    /// ever as correct as the completeness of its update paths. One missing path - a column
+    /// scrolling out of the ring without clearing its texels - held cached terrain suppressed
+    /// over ground nothing was drawing, and no CPU-side check could see it, because every CPU
+    /// structure was right and only the mirror was wrong. `.vhholes` in particular cannot
+    /// find this class of fault at all: it walks cells the tracker owns, and the fault is a
+    /// texel claiming ownership the tracker does not have.
+    /// </para>
+    /// <para>
+    /// Rather than keep hunting for the next missing path, the mirror is rebuilt from the
+    /// authority once a second. It costs one pass over the window and at most one upload that
+    /// was already budgeted, and it bounds any future desync to a second by construction.
+    /// Disagreements are counted, because a non-zero figure here means an update path is
+    /// still missing and the resync is masking it.
+    /// </para>
+    /// </summary>
+    void ResyncReadinessMask()
+    {
+        if (readiness == null || readinessMask == null || readinessMaskFailed) return;
+
+        for (int z = readiness.ActiveMinChunkZ; z < readiness.ActiveMinChunkZ + readiness.ActiveDepth; z++)
+        for (int x = readiness.ActiveMinChunkX; x < readiness.ActiveMinChunkX + readiness.ActiveWidth; x++)
+        for (int y = 0; y < readiness.VerticalChunks; y++)
+        {
+            var cell = new VanillaChunkCell(x, y, z);
+            // The chunk lookup stays authoritative here. The stored bit is a cache of this
+            // answer for the paths that cannot ask - a rebuild, and the shader mirror - and
+            // a chunk that stops being air after its publication would otherwise keep the
+            // stale bit forever. Refreshing it here bounds that to one resync interval.
+            bool air = VanillaChunkIsAir(cell);
+            readiness.SetMaskExcluded(cell, air);
+            bool owned = readiness.State(cell) == VanillaReadinessState.VanillaReady && !air;
+            if (readinessMask.Set(cell, owned)) ReadinessMaskResyncs++;
+        }
+    }
+
+    /// <summary>
+    /// Sweeps every committed cell in the tracked window and reports the ones the engine is
+    /// not actually drawing. Written because aiming a ray at a hole is unreliable - a band
+    /// behind the player is not something a view ray finds, and the ground visible through
+    /// a hole answers for itself. This needs no aiming and no hole in view.
+    ///
+    /// One pass over the window on demand, never on a frame budget.
+    /// </summary>
+    public string ExplainOwnedButNotDrawn(double cameraX, double cameraZ, int maxListed)
+    {
+        VanillaRenderReadiness? tracker = readiness;
+        if (tracker == null) return "no readiness tracker; the distance handoff is drawing";
+
+        int owned = 0;
+        int notDrawn = 0;
+        int unknown = 0;
+        int beyondRange = 0;
+        float viewDistance = ApprovedViewDistance();
+        var worst = new List<(double Distance, string Text)>();
+
+        for (int z = tracker.ActiveMinChunkZ; z < tracker.ActiveMinChunkZ + tracker.ActiveDepth; z++)
+        for (int x = tracker.ActiveMinChunkX; x < tracker.ActiveMinChunkX + tracker.ActiveWidth; x++)
+        for (int y = 0; y < tracker.VerticalChunks; y++)
+        {
+            var cell = new VanillaChunkCell(x, y, z);
+            if (tracker.State(cell) != VanillaReadinessState.VanillaReady) continue;
+            owned++;
+            double distance = VanillaRenderReadiness.ColumnDistanceBlocksFrom(x, z, cameraX, cameraZ);
+
+            // Tested before the chunk is even looked up. The engine range-culls every
+            // terrain pool location per frame, so out here its answer is no regardless of
+            // what the chunk's own flags say, and reading them would only produce the
+            // reassuring verdict that hid this case in the first place.
+            if (VanillaRenderReadiness.BeyondVanillaDrawRange(x, z, cameraX, cameraZ, viewDistance))
+            {
+                notDrawn++;
+                beyondRange++;
+                if (worst.Count < maxListed)
+                {
+                    worst.Add((distance, $"chunk {x},{y},{z} at {distance:0} blocks | "
+                        + $"beyond the {viewDistance:0}-block draw range"));
+                }
+                continue;
+            }
+
+            IWorldChunk? chunk;
+            try { chunk = capi.World.BlockAccessor.GetChunk(x, y, z); }
+            catch { continue; }
+
+            if (!VanillaChunkGeometry.TryIsVanillaDrawing(chunk, out bool drawing)) { unknown++; continue; }
+            if (drawing) continue;
+
+            notDrawn++;
+            if (worst.Count < maxListed)
+            {
+                worst.Add((distance, $"chunk {x},{y},{z} at {distance:0} blocks | "
+                    + VanillaChunkGeometry.DescribeSignals(chunk)));
+            }
+        }
+
+        if (owned == 0) return "nothing is owned yet; the tracker has not committed a single cell.";
+        if (notDrawn == 0)
+        {
+            return $"all {owned} owned cells are being drawn by the engine"
+                + (unknown > 0 ? $" ({unknown} unmeasurable)" : "")
+                + ". Ownership is not suppressing anything the engine has abandoned.";
+        }
+
+        worst.Sort((a, b) => a.Distance.CompareTo(b.Distance));
+        return $"{notDrawn} of {owned} owned cells are NOT being drawn by the engine"
+            + (beyondRange > 0 ? $" ({beyondRange} beyond the {viewDistance:0}-block draw range)" : "")
+            + (unknown > 0 ? $" ({unknown} unmeasurable)" : "")
+            + " -- cached terrain is suppressed there and nothing replaces it. Nearest: "
+            + string.Join(" ;; ", worst.Select(w => w.Text));
+    }
+
+    /// <summary>
+    /// Whether the engine holds ground here that it could actually draw. An empty chunk
+    /// qualifies: there is nothing to draw and nothing for the cache to cover, and refusing
+    /// it ownership is what collapsed 0.3.3, because every column has sky. A chunk that is
+    /// not empty and holds no mesh does not qualify - that is ground with nothing drawing
+    /// it. An unmeasurable chunk qualifies, so a game update can only cost the fix, never
+    /// open the cache over live terrain.
+    /// </summary>
+    bool VanillaChunkHoldsDrawableGround(VanillaChunkCell cell)
+    {
+        try
+        {
+            IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
+            if (chunk == null) return true;
+            return !VanillaChunkGeometry.TryIsVanillaDrawing(chunk, out bool drawing) || drawing;
+        }
+        catch
+        {
+            return true;
+        }
+    }
+
+    void MeasureDrawnChunk(VanillaChunkCell cell, double cameraX, double cameraZ)
+    {
+        try
+        {
+            IWorldChunk? chunk = capi.World.BlockAccessor.GetChunk(cell.X, cell.Y, cell.Z);
+            if (chunk == null) return;
+
+            if (chunk.Empty)
+            {
+                ReadinessEmptyChunksSeen++;
+                return;
+            }
+
+            if (!VanillaChunkGeometry.TryIsVanillaDrawing(chunk, out bool drawingNow)) return;
+            if (drawingNow) return;
+
+            ReadinessDrawnWithoutGeometry++;
+
+            // Only a cell we have actually committed can suppress cached terrain, so this
+            // is the subset that could be showing the player a hole. Where it sits decides
+            // which explanation survives: a buried chunk with no exposed faces also holds
+            // no mesh, and that is invisible underground, while the same condition out at
+            // the handoff ring is ground the player can see with nothing drawing it.
+            if (readiness == null || readiness.State(cell) != VanillaReadinessState.VanillaReady) return;
+
+            ReadinessOwnedWithoutGeometry++;
+            if (cell.Y >= 0 && cell.Y < readinessNoGeometryByY.Length) readinessNoGeometryByY[cell.Y]++;
+
+            double distance = VanillaRenderReadiness.ColumnDistanceBlocksFrom(
+                cell.X, cell.Z, cameraX, cameraZ);
+            if (ReadinessOwnedWithoutGeometryNearest < 0 || distance < ReadinessOwnedWithoutGeometryNearest)
+                ReadinessOwnedWithoutGeometryNearest = distance;
+            if (distance > ReadinessOwnedWithoutGeometryFarthest)
+                ReadinessOwnedWithoutGeometryFarthest = distance;
         }
         catch
         {
             // A diagnostic must never be able to change ownership, including by throwing
             // into a handler that treats failure as "vanilla is not drawing here".
-            return false;
         }
     }
 
@@ -1370,10 +1761,13 @@ public class LodTerrainRenderer : IRenderer
         readiness.GetColumnReadiness(readinessColumnReady, out int columnsTracked,
             out int fullColumns, out int partialColumns, out int maxReadyPerColumn);
         readinessColumnText.Clear();
+        readinessNoGeometryText.Clear();
         for (int y = 0; y < readiness.VerticalChunks; y++)
         {
             if (y > 0) readinessColumnText.Append('/');
             readinessColumnText.Append(readinessColumnReady[y]);
+            if (y > 0) readinessNoGeometryText.Append('/');
+            readinessNoGeometryText.Append(readinessNoGeometryByY[y]);
         }
 
         double nearestIncomplete = readiness.NearestIncompleteColumnBlocks(
@@ -1405,7 +1799,8 @@ public class LodTerrainRenderer : IRenderer
             + $"{ReadinessProbeErrors} errors, {ReadinessWindowChanges} window changes/{ReadinessResizes} resizes, "
             + $"{ReadinessFullRevalidations} full revalidations, "
             + $"{ReadinessStaleCommittedFound} stale committed found/{ReadinessAggregateRepairs} count repairs, "
-            + $"{ReadinessEmptyChunksSeen} drawn-but-empty chunks, "
+            + $"{ReadinessEmptyChunksSeen} drawn-but-empty/{ReadinessDrawnWithoutGeometry} drawn-without-geometry chunks, "
+            + $"owned without geometry {ReadinessOwnedWithoutGeometry} at {ReadinessOwnedWithoutGeometryNearest:0}-{ReadinessOwnedWithoutGeometryFarthest:0} blocks per Y {readinessNoGeometryText}, {ReadinessOwnershipDeniedNoGeometry} ownership denied no-geometry/{ReadinessOwnershipDeniedBeyondViewDistance} denied beyond view distance/{ReadinessMaskResyncs} mask resyncs, "
             + $"events {readiness.CandidateEventsAccepted} accepted/{readiness.CandidateEventsCoalesced} coalesced/"
             + $"{readiness.CandidateEventsDropped} dropped, "
             + $"sweeps {readiness.ScheduledCandidatesAccepted} accepted/"
@@ -1511,6 +1906,7 @@ public class LodTerrainRenderer : IRenderer
                 ? readinessHandoffDistance
                 : LodNearHandoff.InnerDiscardRadius(viewDistance));
         prog.Uniform("maskEnabled", maskOwnsPixels ? 1 : 0);
+        prog.Uniform("maskDebug", MaskDebugPaint ? 1 : 0);
         if (maskOwnsPixels && readiness != null && readinessMaskTexture != null)
         {
             prog.Uniform("maskMinX", readiness.ActiveMinChunkX);
@@ -1591,6 +1987,9 @@ public class LodTerrainRenderer : IRenderer
     /// </summary>
     bool SkipVanillaOwnedSection(long key)
     {
+        // A skipped section never reaches the shader, so it could never be painted.
+        if (MaskDebugPaint) return false;
+        if (!WholeMeshSkip) return false;
         if (!readinessMaskActive || readiness == null) return false;
         if (readiness.Classify(key) != VanillaSectionOwnership.VanillaOnly) return false;
         VanillaOwnedDrawsSkipped++;
@@ -1634,11 +2033,15 @@ public class LodTerrainRenderer : IRenderer
         // Ownership addressing uses this integer origin plus the section-local position,
         // never a summed world coordinate, so a fragment at a chunk edge cannot round onto
         // its neighbour's ownership at large world coordinates.
+        //
+        // Set as two integer uniforms, never as one Vec2i: that overload reaches
+        // glUniform2f, which an integer uniform rejects with GL_INVALID_OPERATION, so the
+        // origin silently stayed at zero and the per-fragment mask addressed the wrong
+        // cells for every section in the world. See G42.
         if (readinessMaskActive)
         {
-            prog.Uniform("maskSectionOrigin", new Vec2i(
-                (int)(originX / VanillaReadinessMask.ChunkBlocks),
-                (int)(originZ / VanillaReadinessMask.ChunkBlocks)));
+            prog.Uniform("maskSectionOriginX", (int)(originX / VanillaReadinessMask.ChunkBlocks));
+            prog.Uniform("maskSectionOriginZ", (int)(originZ / VanillaReadinessMask.ChunkBlocks));
         }
 
         // Sides that border on never-captured area, so the shader can dissolve them

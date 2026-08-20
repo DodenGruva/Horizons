@@ -20,6 +20,9 @@ public static class StaticAssetChecks
         OwnershipMaskWiring(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
+        ChatCommandNamesAreUnique(c);
+        NoIntegerVectorUniforms(c);
+        SourceHasNoControlCharacters(c);
     }
 
     /// <summary>
@@ -155,11 +158,21 @@ public static class StaticAssetChecks
             "renderer teardown unsubscribes the readiness event");
         c.True(renderer.Contains("capi.IsChunkRendered(readinessProbePos)", StringComparison.Ordinal),
             "readiness probes use the supported public engine query");
-        // IWorldChunk.Empty is a cached flag refreshed only when a chunk is modified, and
-        // the client frees block data for packed chunks, so it does not mean "no blocks"
-        // there. Acting on it zeroed out ownership entirely. It may only be counted.
-        c.True(renderer.Contains("IsVanillaChunkEmptyForDiagnostics", StringComparison.Ordinal),
+        // Emptiness may be counted and must never decide ownership: a column counts as
+        // owned only when every one of its chunks does, and every column has sky, so
+        // refusing air its cell removes ownership from the entire world at once (G40).
+        // Returning void is the structural half of that guarantee - a measurement with no
+        // result cannot be branched on, whatever a later edit intends.
+        c.True(Regex.IsMatch(renderer, @"void MeasureDrawnChunk\(VanillaChunkCell cell"),
             "the empty-chunk question is measured rather than acted on");
+        c.True(Regex.IsMatch(renderer, @"if \(rendered && atOwnershipDecision\) MeasureDrawnChunk\(cell"),
+            "the measurement runs only for chunks the engine claims it drew");
+        // The chunk lookup takes the client's chunk lock. Doing it for every probe doubles
+        // that traffic on the render thread while a world is loading, which is when the
+        // probe queue is longest and the loader threads want the same lock.
+        c.True(renderer.Contains("bool atOwnershipDecision = decisionState is VanillaReadinessState.ObservedRendered",
+            StringComparison.Ordinal),
+            "the chunk lookup happens only where an observation can change ownership");
         c.False(renderer.Contains("IsVanillaChunkEmpty(cell)) rendered = false", StringComparison.Ordinal),
             "an empty-chunk reading cannot decide ownership");
         c.True(renderer.Contains("ReadinessProbeMaxItemsPerFrame", StringComparison.Ordinal)
@@ -223,13 +236,18 @@ public static class StaticAssetChecks
         // Ownership must come from an integer section origin plus a small local offset. A
         // summed world coordinate is not exact in float32: at 512k blocks a fragment 0.03
         // blocks below a chunk edge rounds onto the next chunk and takes its ownership.
-        c.True(fragment.Contains("maskSectionOrigin.x + int(floor(sectionLocal.x", StringComparison.Ordinal)
-            && fragment.Contains("maskSectionOrigin.y + int(floor(sectionLocal.z", StringComparison.Ordinal),
+        c.True(fragment.Contains("maskSectionOriginX + int(floor(sectionLocal.x", StringComparison.Ordinal)
+            && fragment.Contains("maskSectionOriginZ + int(floor(sectionLocal.z", StringComparison.Ordinal),
             "ownership addressing uses an integer section origin plus the section-local offset");
         c.False(fragment.Contains("floor(terrainPos.x / 32.0)", StringComparison.Ordinal),
             "ownership is never derived from a summed world coordinate");
-        c.True(renderer.Contains("prog.Uniform(\"maskSectionOrigin\"", StringComparison.Ordinal),
+        // Two scalars, and never the Vec2i overload: that one reaches glUniform2f, which an
+        // integer uniform rejects outright, so the origin never leaves the CPU. G42.
+        c.True(renderer.Contains("prog.Uniform(\"maskSectionOriginX\", (int)", StringComparison.Ordinal)
+            && renderer.Contains("prog.Uniform(\"maskSectionOriginZ\", (int)", StringComparison.Ordinal),
             "the renderer supplies that integer origin per draw");
+        c.False(renderer.Contains("new Vec2i(", StringComparison.Ordinal),
+            "no uniform is set through the integer-vector overload the driver rejects");
 
         int maskCheck = fragment.IndexOf("maskEnabled == 1", StringComparison.Ordinal);
         int shading = fragment.IndexOf("normalize(cross(", StringComparison.Ordinal);
@@ -388,5 +406,111 @@ public static class StaticAssetChecks
             c.False(admission.Contains("Mod.Logger.", StringComparison.Ordinal),
                 "the 50 ms assist admission loop contains no synchronous logger call");
         }
+    }
+
+    /// <summary>
+    /// Two commands registered under one name throw at the second registration, and the
+    /// throw aborts StartClientSide part-way: every command declared after the collision
+    /// silently does not exist, and the mod reports as a failed system while still
+    /// running. The compiler cannot see it because the names are strings, and the game
+    /// only says so in a log line nobody reads during a playtest.
+    /// </summary>
+    static void ChatCommandNamesAreUnique(Check c)
+    {
+        string src = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src");
+        var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+        var duplicates = new List<string>();
+
+        foreach (string path in Directory.EnumerateFiles(src, "*.cs", SearchOption.AllDirectories))
+        {
+            string rel = Path.GetRelativePath(GameAssemblies.RepoRoot, path);
+            foreach (Match m in Regex.Matches(File.ReadAllText(path),
+                @"ChatCommands\s*\.\s*Create\s*\(\s*""(?<name>[^""]+)"""))
+            {
+                string name = m.Groups["name"].Value;
+                if (seen.TryGetValue(name, out string? first)) duplicates.Add($"{name} in {first} and {rel}");
+                else seen[name] = rel;
+            }
+        }
+
+        c.True(seen.Count > 0, "found chat command registrations to scan");
+        c.SeqEq(Array.Empty<string>(), duplicates,
+            $"all {seen.Count} chat command names are registered exactly once");
+    }
+
+    /// <summary>
+    /// Our shaders may not declare an integer vector uniform, because the client cannot
+    /// set one. Its only pair-of-integers setter is
+    /// <c>ShaderProgramBase.Uniform(string, Vec2i)</c>, which reaches
+    /// <c>GL.Uniform2(location, float, float)</c>; against an <c>ivec</c> uniform the
+    /// driver answers GL_INVALID_OPERATION and the uniform keeps its previous value.
+    /// Nothing throws, the shader compiles, the check tier's own re-implementation of the
+    /// arithmetic still agrees - and the value never arrives. That shipped: the ownership
+    /// mask addressed chunk (0,0) for every section in the world while its error was
+    /// buried in a per-frame log line. Scalar int uniforms are set correctly, so split the
+    /// vector.
+    /// </summary>
+    static void NoIntegerVectorUniforms(Check c)
+    {
+        string shaders = Path.Combine(
+            GameAssemblies.RepoRoot, "VintageHorizons", "assets", "vintagehorizons", "shaders");
+        var offenders = new List<string>();
+        int scanned = 0;
+
+        foreach (string path in Directory.EnumerateFiles(shaders, "*.*sh"))
+        {
+            scanned++;
+            foreach (Match m in Regex.Matches(File.ReadAllText(path),
+                @"^\s*uniform\s+(?<type>[iu]vec[234])\s+(?<name>\w+)", RegexOptions.Multiline))
+            {
+                offenders.Add($"{Path.GetFileName(path)}: {m.Groups["type"].Value} {m.Groups["name"].Value}");
+            }
+        }
+
+        c.True(scanned > 0, "found shader files to scan for integer vector uniforms");
+        c.SeqEq(Array.Empty<string>(), offenders,
+            "no shader declares an integer vector uniform the client cannot set");
+    }
+
+    /// <summary>
+    /// No source file may contain a control character. Shader assets are already covered by
+    /// the ASCII rule, but C#, PowerShell and Markdown were not, and an editing pipeline
+    /// that re-parses backslash escapes turns a regex `` into a literal backspace. The
+    /// result is invisible in a terminal, compiles without complaint, and silently changes
+    /// what a pattern matches. It has happened twice in this repository.
+    /// </summary>
+    static void SourceHasNoControlCharacters(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        var offenders = new List<string>();
+        int scanned = 0;
+
+        foreach (string dir in new[] { "VintageHorizons", "tests", "scripts", "dev", "bench" })
+        {
+            string path = Path.Combine(root, dir);
+            if (!Directory.Exists(path)) continue;
+
+            foreach (string file in Directory.EnumerateFiles(path, "*", SearchOption.AllDirectories))
+            {
+                if (file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                    || file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")) continue;
+                if (Path.GetExtension(file) is not (".cs" or ".ps1" or ".sh" or ".md" or ".json" or ".txt" or ".py")) continue;
+
+                scanned++;
+                string text = File.ReadAllText(file);
+                for (int i = 0; i < text.Length; i++)
+                {
+                    char ch = text[i];
+                    // Tab, CR and LF by code point: writing them as escapes is how the
+                    // stray characters this check exists to catch got here in the first place.
+                    if (ch >= ' ' || ch == (char)9 || ch == (char)13 || ch == (char)10) continue;
+                    offenders.Add($"{Path.GetRelativePath(root, file)} offset {i} = 0x{(int)ch:X2}");
+                    break;
+                }
+            }
+        }
+
+        c.True(scanned > 0, "found source files to scan for control characters");
+        c.SeqEq(Array.Empty<string>(), offenders, $"none of {scanned} source files contain a control character");
     }
 }

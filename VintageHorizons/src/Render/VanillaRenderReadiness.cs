@@ -13,6 +13,20 @@ internal sealed class VanillaRenderReadiness
     const byte PublicationPendingFlag = 2;
     const byte ObservationQueuedFlag = 4;
 
+    /// <summary>
+    /// This cell owns its ground for every CPU aggregate but must never own a mask texel.
+    /// Air is the only producer today: a column counts as owned only when all of its chunks
+    /// do and every column has sky, so refusing air ownership outright collapsed 0.3.3 - but
+    /// cached terrain overshoots the real surface into those air chunks, and vanilla draws
+    /// nothing there, so a suppressing texel removes the only draw (G40).
+    ///
+    /// It lives here rather than in the renderer's publication call because the mask is also
+    /// rebuilt wholesale - at creation and on every window change - and a rebuild has no
+    /// chunk lookup to consult. Storing the bit is what lets <see cref="WriteMask"/> honour
+    /// the same exclusion the incremental path applies.
+    /// </summary>
+    const byte MaskExcludedFlag = 8;
+
     readonly int capacity;
     readonly int capacityMask;
     readonly int verticalChunks;
@@ -41,6 +55,13 @@ internal sealed class VanillaRenderReadiness
     public int PendingObservations => observationCount;
     public int HorizontalCapacity => capacity;
     public int VerticalChunks => verticalChunks;
+
+    /// <summary>
+    /// Raised with a column's world chunk coordinates immediately before its ring slot is
+    /// wiped, so a mirror of this ring can drop the same column. Every wipe funnels through
+    /// <see cref="ClearSlot"/>, which is what makes one hook sufficient.
+    /// </summary>
+    public Action<int, int>? ColumnEvicted { get; set; }
     public int ActiveMinChunkX => minChunkX;
     public int ActiveMinChunkZ => minChunkZ;
     public int ActiveWidth => width;
@@ -445,6 +466,26 @@ internal sealed class VanillaRenderReadiness
             : VanillaReadinessState.Unknown;
     }
 
+    /// <summary>
+    /// Records whether this cell is excluded from the GPU mask while keeping every CPU
+    /// aggregate it already contributes to. Returns whether the stored bit changed, so a
+    /// resync can count how often the incremental path and the authoritative chunk lookup
+    /// disagreed. A cell outside the active window stores nothing.
+    /// </summary>
+    public bool SetMaskExcluded(VanillaChunkCell cell, bool excluded)
+    {
+        if (!TryGetCellIndex(cell, prepareColumn: false, out int index)) return false;
+        bool was = (flags[index] & MaskExcludedFlag) != 0;
+        if (was == excluded) return false;
+        if (excluded) flags[index] |= MaskExcludedFlag;
+        else flags[index] &= unchecked((byte)~MaskExcludedFlag);
+        return true;
+    }
+
+    public bool IsMaskExcluded(VanillaChunkCell cell) =>
+        TryGetCellIndex(cell, prepareColumn: false, out int index)
+        && (flags[index] & MaskExcludedFlag) != 0;
+
     public int ReadyCount(long sectionKey)
     {
         int level = LodWorld.KeyLevel(sectionKey);
@@ -615,6 +656,14 @@ internal sealed class VanillaRenderReadiness
     /// inside this class, and a ring slot reused by different world coordinates would
     /// otherwise leave another place's ownership in the texture, so the mask is rebuilt
     /// wholesale whenever the window moves rather than patched from outside.
+    ///
+    /// <para>
+    /// A rebuild has to apply the same exclusion the incremental path applies, or it
+    /// re-poisons the atlas with the air ownership that path deliberately withholds - and it
+    /// runs on every 32-block crossing, so the poison would return for up to a full resync
+    /// interval every chunk of travel. It cannot call back into the world to ask, so it
+    /// reads the exclusion bit recorded at publication instead.
+    /// </para>
     /// </summary>
     public void WriteMask(VanillaReadinessMask mask)
     {
@@ -635,6 +684,7 @@ internal sealed class VanillaRenderReadiness
             {
                 if ((VanillaReadinessState)states[baseIndex + y] != VanillaReadinessState.VanillaReady)
                     continue;
+                if ((flags[baseIndex + y] & MaskExcludedFlag) != 0) continue;
                 mask.Set(new VanillaChunkCell(chunkX, y, chunkZ), ready: true);
             }
         }
@@ -671,6 +721,64 @@ internal sealed class VanillaRenderReadiness
 
 
     /// <summary>Shortest horizontal distance from a point to a chunk column's own volume.</summary>
+    public static double ColumnDistanceBlocksFrom(int chunkX, int chunkZ, double x, double z)
+        => ColumnDistanceBlocks(chunkX, chunkZ, x, z);
+
+    /// <summary>
+    /// Whether the engine might already have stopped drawing this column, because it is far
+    /// enough from the camera that its range test can reject it.
+    ///
+    /// <para>
+    /// Loaded, meshed, unhidden and cull-visible is still not drawn. Every terrain pool
+    /// location is range-tested per frame in `FrustumCulling.InFrustumAndRange`, and each
+    /// terrain LOD level's bound is at most `ViewDistanceSq` - so ground the player walked
+    /// away from keeps every "vanilla is drawing here" signal latched while the engine has
+    /// quietly stopped submitting it. Ownership that ignores this holds the trailing annulus
+    /// between the view-distance circle and the tracked window edge committed forever, and
+    /// the mask discards cached terrain there against nothing.
+    /// </para>
+    /// <para>
+    /// The threshold has to clear the whole chunk, not just reach it. The engine measures
+    /// range from the mesh's bounding-sphere centre, and that centre is the geometry extents
+    /// midpoint - `TesselatedChunk` builds it as `positionX + (xMax + xMin) / 2f` - so it
+    /// sits wherever the actual blocks in that chunk happen to be, anywhere across the
+    /// 32-block span. Comparing the column's nearest face against the plain view distance
+    /// therefore leaves a residual stale ring up to <see cref="SphereCentreSlackBlocks"/>
+    /// wide: a chunk whose near face is just inside the view distance can have its sphere
+    /// centre well outside it, so the engine range-culls it while every latched chunk signal
+    /// still says "drawing" - a thinner copy of the exact band this clause exists to remove.
+    /// </para>
+    /// <para>
+    /// So the comparison is made against `viewDistance - 46`. Both the sphere centre and the
+    /// nearest-face point lie inside one chunk column, so they are at most the in-chunk
+    /// horizontal diagonal `32 * sqrt(2)` = 45.26 blocks apart, and 46 rounds that up. The
+    /// engine culls no earlier than `sqrt(viewDistance^2 + 400) >= viewDistance`, so
+    /// engine-culled implies face distance `>= viewDistance - 45.26 > viewDistance - 46`,
+    /// which this denies. No placement of the geometry midpoint inside the chunk can produce
+    /// a hole from this clause.
+    /// </para>
+    /// <para>
+    /// The price is paid in the safe direction: cached terrain may be drawn over the
+    /// outermost chunk and a half of live vanilla terrain, which reads as a seam rather than
+    /// a gap. Overlap outranks holes. It is pure arithmetic on purpose - the probe loop is
+    /// hot, and a chunk lookup here would take the client's chunk lock once per probe, which
+    /// is exactly what made an earlier diagnostic slow the world join down.
+    /// </para>
+    /// </summary>
+    public static bool BeyondVanillaDrawRange(int chunkX, int chunkZ,
+        double cameraX, double cameraZ, float viewDistance) =>
+        ColumnDistanceBlocks(chunkX, chunkZ, cameraX, cameraZ)
+        > Math.Max(0f, viewDistance - SphereCentreSlackBlocks);
+
+    /// <summary>
+    /// How far the engine's range measurement can sit beyond this column's nearest face:
+    /// the in-chunk horizontal diagonal `32 * sqrt(2)` = 45.26, rounded up. Both the mesh
+    /// bounding-sphere centre the engine measures from and the nearest-face point this class
+    /// measures to lie inside the same 32-block column, so their separation cannot exceed
+    /// it. The rounding leaves sub-block slack for geometry that overhangs the chunk edge.
+    /// </summary>
+    internal const float SphereCentreSlackBlocks = 46;
+
     static double ColumnDistanceBlocks(int chunkX, int chunkZ, double x, double z)
     {
         double dx = Math.Max(0, Math.Max(chunkX * (double)ChunkBlocks - x,
@@ -867,6 +975,13 @@ internal sealed class VanillaRenderReadiness
         if (tag != -1L)
         {
             UnpackColumn(tag, out int chunkX, out int chunkZ);
+
+            // Anything mirroring this ring has to forget the column too. The slot is about
+            // to be reused by different world coordinates, and a mirror that keeps the old
+            // value answers for the new column with the old column's ownership. On the GPU
+            // side that means suppressing cached terrain in cells nothing owns, which no
+            // amount of re-probing repairs because the tracker itself is already correct.
+            ColumnEvicted?.Invoke(chunkX, chunkZ);
             for (int y = 0; y < verticalChunks; y++)
             {
                 int index = baseIndex + y;

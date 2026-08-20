@@ -2,29 +2,78 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## Top priority — the hole that per-chunk ownership leaves behind
+## Top priority — cached terrain is slow to appear after joining
 
-Flying backwards at high speed leaves a gap in the world that survives standing still.
-`.vhmask off` fills it, which proves cached terrain is resident and drawable and that
-ownership is suppressing it. This is the one thing blocking per-chunk ownership from
-becoming the default.
+Reported 2026-08-19 on 0.3.7: no cached terrain at all for a while after loading in, and it
+only appeared after flying around. Never seen before.
 
-Four fixes have not closed it, so do not write a fifth from reasoning alone. Reproduce it
-and read the periodic log first:
+The user's log for that session says the mask was **off** and `handoff 0 blocks`, so
+ownership was suppressing nothing and this is not the mask. It is residency or meshing:
+`Fill-in: 100 meshes after 36.4s`, against `6.1s` on 0.3.4 with the same 3,012-section
+cache and the same 3,016-key manifest.
 
-- `stale committed found` should be zero once settled. A non-zero figure means committed
-  ownership is surviving after vanilla stopped drawing, and the one-second re-confirmation
-  is not reaching those cells.
-- `count repairs` should always be zero. Any figure at all means the per-section counts the
-  whole-mesh skip trusts are drifting, which would hide a section permanently.
-- `drawn-but-empty chunks` measures the leading theory: the engine counts an empty chunk as
-  drawn, so cached terrain standing taller than the real world sits in cells that report
-  drawn while nothing is drawn there. A high figure makes that theory the likely cause and
-  the next task is finding a reliable way to identify those chunks - `IWorldChunk.Empty` is
-  not one, see G40.
+One suspect, unproven, and it is ours: the drawn-without-geometry diagnostic added in 0.3.5
+called `BlockAccessor.GetChunk` for every probe. That takes `ClientWorldMap.chunksLock`,
+the same lock `IsChunkRendered` has just taken and the same one the chunk loader wants,
+and the probe queue is at its longest while a world is coming up. 0.3.8 restricts the
+lookup to observations that can change ownership. Whether that is the cause is unmeasured.
 
-`.vhwhy` is not a useful route and should not be extended; a hole is a screen-space thing
-and a ray through it mostly passes through legitimately empty air.
+Measure it from an ordinary join rather than a benchmark: `Fill-in: 100 meshes after Xs`
+in the client log is the number, and 0.3.4 is the baseline at 6.1 s. If 0.3.8 does not
+recover it, bisect residency against 0.3.4 rather than assuming the diagnostic.
+
+## Top priority - decide the future of the per-cell mask
+
+**The band is closed** (0.3.16, human-confirmed 2026-08-19). It was the engine's per-frame
+range cull, which no per-chunk signal reflects; see G43 and session 29. The mask now works
+as designed for the first time, which turns the open question from "why is it broken" into
+"should it ship".
+
+What the decision needs:
+
+- A benchmark. Nothing has been measured since 0.3.9, so the culler rule, the atlas resync,
+  the air exclusion, the draw-range clause and the stored exclusion bit are all unmeasured.
+  The only performance evidence for the mask remains one controlled stationary pair at
+  +7.3%, taken before most of those existed.
+- A human verdict on the accepted seam. Cached terrain may now draw over the outermost chunk
+  and a half of live vanilla terrain. The band's closure was confirmed; the seam's
+  appearance at the horizon was not separately judged.
+- The visual matrix re-run. Nothing in it has been exercised since the mask began working
+  correctly.
+
+Only then: whether `.vhmask` becomes the default, stays opt-in, or is shelved. The radial
+handoff has no holes and remains the shipped path, so shelving is still a legitimate
+outcome.
+
+### Standing constraints
+
+- Keep air owned in the tracker. The column aggregate feeds the radial handoff and 0.3.3
+  proved what happens when it collapses. Exclude air from the mask texel only, and keep the
+  exclusion stored per cell so the wholesale rebuild honours it without a chunk lookup (G45).
+- Any new ownership rule stays gated on `ChunkMaskEnabled` until it is visually confirmed.
+- Do not trust a CPU-side diagnostic to prove a rendering subsystem healthy. Through two
+  sessions every one of them reported health while a band of world was missing, because they
+  all consumed the same incomplete signal. Make the picture answer.
+- Before adding an ownership rule from reasoning, read the engine's IL. Every confirmed
+  finding across sessions 28 and 29 came from the decompiled game or from the owner's
+  screen; none came from reasoning about the mod.
+
+### Reading the periodic log
+
+- `stale committed found` non-zero once settled means committed ownership is surviving after
+  vanilla stopped drawing and the one-second re-confirmation is not reaching those cells.
+- `count repairs` should always be zero; any figure is a bug in the ownership aggregate.
+- `mask resyncs` should settle near zero. A steady non-zero figure means an incremental
+  update path into the atlas is still missing and the once-per-second rebuild is hiding it.
+- `denied beyond view distance` counts cells refused ownership because the engine
+  range-culls them. A steady non-zero figure while moving is normal and is the trailing
+  annulus being released; zero while travelling means the draw-range clause is not running,
+  which is how the band returns.
+- `drawn-but-empty chunks` is expected to be large and means nothing is wrong: it counts
+  sky. Read the corrected G40 first.
+- `drawn-without-geometry` and `owned without geometry ... per Y` are dominated by buried
+  chunks with no exposed faces, which hold no mesh and are invisible. A blanket rule denying
+  those cells ownership would strip it from everything underground and repeat 0.3.3.
 
 ## Top priority — main-thread stutter and renderer scaling
 
@@ -33,72 +82,52 @@ The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.
 ### Chunk-aware cached-to-vanilla handoff
 
 The approved rendering design is
-`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`.
+`dev/plans/PLAN_CHUNK_AWARE_VANILLA_HANDOFF.md`. Its phases are now built: GPU mask
+publication, shader sampling and the CPU whole-mesh skip all exist and, since 0.3.6,
+actually run, and since 0.3.16 they do so without the band. What remains is evidence and the
+ship/shelve decision recorded at the top of this file.
 
-- Implement atomic GPU mask publication, shader sampling for mixed meshes, and CPU skip
-  for fully replaced meshes behind the radial fallback. Start with the plan's
-  public-wrapper-compatible 2D Y-slice atlas. Phase 1's runtime gate is met, so this is
-  no longer blocked; whole-column ownership is reachable, with 232 of 441 columns complete
-  and a flat per-Y histogram.
-- Measure the readiness-driven handoff's convergence window at join and after a teleport.
-  The derived radius starts small, which shows more cached terrain near the camera than the
-  old constant did until the tracker converges. Duration and visibility are unknown.
-- Reproduce the single-unowned-pocket case deliberately: one column near the camera that
-  never becomes ready collapses the global radius and restores overlap everywhere. How
-  often this happens in play is the evidence for whether the per-cell mask earns its cost.
-- Cover teleport and live view-distance change at runtime; both are harness-only today.
-- Establish whether state-agnostic maintenance and the derived handoff cost measurable
-  frame time. Repeated alternating runs are required; the current pair is one run per side
-  inside the lap spread.
-- Preserve independent residency so suppressed fallback remains warm without triggering
-  unload/reload/remesh churn.
-- Benchmark cache-only, vanilla-settled, moving-frontier, large-cache, teleport, and
-  view-distance-change scenarios before claiming neutral or improved performance.
-- Human-reported 2026-08-19, per-cell mask enabled, all at far above normal flight speed
-  and none judged likely in ordinary play:
-  - Approaching terrain fast, cached and vanilla briefly fight where vanilla has just
-    loaded. This is ownership gain latency and resolves within a moment. It fails in the
-    safe direction, so it is accepted for now; if it becomes objectionable, confirm cells
-    near the camera on a shorter path rather than widening the budget again.
-  - Flying backwards produced a band of missing terrain, and a hole made that way could be
-    left standing still and would persist indefinitely. `.vhmask off` filled it, proving the
-    mask was suppressing cached terrain that was resident and drawable. Committed ownership
-    is now re-confirmed wholesale every second, which bounds staleness by construction; the
-    three cursor sweeps that preceded it could not. A hole still persisted after that, which
-    pointed at a different cause: an empty vanilla chunk reports as drawn, so cached terrain
-    standing taller than the real world sits in cells the engine has "drawn" as air. Empty
-    chunks cannot be identified this way: `IWorldChunk.Empty` is a stale cached flag on the
-    client, and acting on it in 0.3.3 removed ownership everywhere and left every cached
-    section overlapping vanilla. Reverted in 0.3.4, which instead counts `drawn-but-empty
-    chunks` in the periodic log. A high count says the mechanism is real and needs a
-    reliable test for it; a zero count says look elsewhere. If holes survive this too, read
-    `stale committed found` and `count repairs` from the periodic log: both should be zero,
-    and a non-zero count repair is a bug in the ownership aggregate itself.
-  - Historical, same symptom: flying backwards produced a clear band of missing terrain
-    where vanilla had unloaded and cached coverage had not returned. This is the serious one - a hole outranks an
-    overlap - and the loss-detection shell now sweeps completely whenever the camera
-    crosses a chunk. If gaps survive that, the next step is expiring committed ownership
-    that has not been reconfirmed within a bounded time, which caps hole duration by
-    construction at the cost of some churn.
-  - Cached water shows the boundary of every chunk, and colouring differs across those
-    boundaries. Deliberately not addressed yet. Two candidates, and one cheap experiment
-    separates them: if the seams disappear with `.vhmask off`, the mask is drawing cached
-    water only in unowned cells and the 32-block ownership edges are visible on a flat
-    surface that hides nothing; if they persist, it is the existing per-section water tint
-    and predates this work.
-- Cached terrain was also observed becoming coarser than expected during fast flight. The
-  renderer now reports why: a parent keeps covering ground when a visible child with data
-  has no mesh, and each interval logs whether those children were waiting on storage, on a
-  mesh worker, on a scheduling slot, or on nothing at all, beside the three backlog depths.
-  Read `coarse cover waits` from a fast-flight run before changing any budget; the per-frame
-  schedule cap only binds below roughly 60 FPS, so it is probably not the cause.
-  Level selection happens in traversal, before any ownership decision, and skipping a draw
-  touches neither residency nor mesh scheduling. Confirm whether it also happens with the
-  mask off.
-- Re-run the visual matrix against the readiness-driven handoff and after any hybrid
-  implementation. The 2026-08-18 playtest was reported acceptable overall, but seams,
-  boundary flicker, and approach popping were not separately confirmed, and no cliff, water,
-  cave, or structure case was reported individually.
+Measurement still owed:
+
+- Convergence of the readiness-driven handoff at join and after a teleport. The derived
+  radius starts small, showing more cached terrain near the camera than the old constant
+  did until the tracker converges; duration and visibility are unknown.
+- The single-unowned-pocket case: one column near the camera that never becomes ready
+  collapses the global radius and restores overlap everywhere. How often that happens in
+  play is the evidence for whether the per-cell mask earns its cost at all.
+- Teleport and live view-distance change at runtime; both are harness-only today.
+- Whether state-agnostic maintenance and the derived handoff cost measurable frame time.
+  Repeated alternating runs are required; the existing pair is one run per side inside the
+  lap spread.
+- Cache-only, vanilla-settled, moving-frontier, large-cache, teleport and
+  view-distance-change scenarios, before claiming neutral or improved performance. Nothing
+  has been benchmarked since 0.3.9, so the culler-based ownership rule, the once-per-second
+  atlas resync and the air exclusion are all unmeasured.
+- Independent residency must stay preserved: suppressed fallback should remain warm without
+  triggering unload, reload or remesh churn.
+
+Human-reported and still open:
+
+- Approaching terrain fast, cached and vanilla briefly fight where vanilla has just loaded.
+  This is ownership gain latency, resolves within a moment, and fails in the safe direction,
+  so it is accepted. If it becomes objectionable, confirm cells near the camera on a shorter
+  path rather than widening the budget again.
+- Cached water shows the boundary of every chunk, with colour differing across those
+  boundaries. One cheap experiment separates the two candidates: if the seams disappear with
+  `.vhmask off`, the mask is drawing cached water only in unowned cells and the 32-block
+  ownership edges are visible on a flat surface that hides nothing; if they persist, it is
+  the existing per-section water tint and predates this work.
+- Cached terrain becoming coarser than expected during fast flight. `.vhcoarse` reports why:
+  a parent keeps covering ground when a visible child with data has no mesh, and each
+  interval logs whether those children were waiting on storage, a mesh worker, a scheduling
+  slot, or nothing, beside the three backlog depths. Read `coarse cover waits` from a
+  fast-flight run before changing any budget; the per-frame schedule cap only binds below
+  roughly 60 FPS. Level selection happens in traversal, before any ownership decision, so
+  confirm whether it also happens with the mask off.
+- Re-run the visual matrix. The 2026-08-18 playtest was reported acceptable overall, but
+  seams, boundary flicker and approach popping were not separately confirmed, and no cliff,
+  water, cave or structure case was reported individually. Nothing in the matrix has been
+  re-run since the mask began working.
 
 ### Documentation and baseline
 

@@ -39,9 +39,17 @@ uniform int maskDepth;
 uniform int maskCapacity;
 uniform int maskVerticalChunks;
 
+// 1 paints hidden pixels red instead of hiding them. Diagnostic only.
+uniform int maskDebug;
+
 // This section's origin in whole vanilla chunks. Section origins are multiples of the
 // chunk size, so this is exact, and adding a small local offset to it cannot round.
-uniform ivec2 maskSectionOrigin;
+//
+// Two scalars rather than one ivec2 on purpose. The client's only vector setter for a
+// pair of integers is Uniform(name, Vec2i), which calls glUniform2f; against an integer
+// uniform that is GL_INVALID_OPERATION and the value never arrives at all. See G42.
+uniform int maskSectionOriginX;
+uniform int maskSectionOriginZ;
 
 // Live tint table. The alpha byte carries a tint SLOT plus a blend band:
 //   0..63    opaque,     slot = alpha
@@ -98,16 +106,30 @@ void main()
     // ground away from the cache where vanilla has proven it draws there.
     if (maskEnabled == 1)
     {
-        int cellX = maskSectionOrigin.x + int(floor(sectionLocal.x / 32.0));
+        int cellX = maskSectionOriginX + int(floor(sectionLocal.x / 32.0));
         int cellY = int(floor(sectionLocal.y / 32.0));
-        int cellZ = maskSectionOrigin.y + int(floor(sectionLocal.z / 32.0));
+        int cellZ = maskSectionOriginZ + int(floor(sectionLocal.z / 32.0));
         if (cellY >= 0 && cellY < maskVerticalChunks
             && cellX >= maskMinX && cellX < maskMinX + maskWidth
             && cellZ >= maskMinZ && cellZ < maskMinZ + maskDepth)
         {
             int wrap = maskCapacity - 1;
             ivec2 maskTexel = ivec2(cellX & wrap, (cellZ & wrap) + cellY * maskCapacity);
-            if (texelFetch(readinessMask, maskTexel, 0).r > 0.5) discard;
+            if (texelFetch(readinessMask, maskTexel, 0).r > 0.5)
+            {
+                // Debug mode paints instead of discarding, which turns an ambiguous gap
+                // into a yes/no question: red means the mask hid this pixel, and a gap
+                // that stays empty in this mode was never the mask's doing.
+                if (maskDebug == 1)
+                {
+                    outColor = vec4(1.0, 0.0, 0.0, 1.0);
+                    outGlow = vec4(0.0);
+                    outGNormal = vec4(0.0);
+                    outGPosition = vec4(0.0);
+                    return;
+                }
+                discard;
+            }
         }
     }
 

@@ -527,33 +527,258 @@ Keep the cursors for discovery, where being late costs coverage rather than corr
 
 **Found:** chunk ownership mask, Session 27.
 
-### G40 — "The engine drew this chunk" does not mean the engine drew anything, and the obvious way to check makes it worse
+### G40 — "The engine drew this chunk" means the counter moved, not that anything was drawn
 
 **Trigger:** using `IsChunkRendered`, or any counter the tessellator advances, to decide
 that vanilla terrain now covers an area.
 
-**Trap:** `ChunkTesselatorManager.TesselateChunk` increments `quantityDrawn` for an empty
-chunk and returns before producing any geometry, so a chunk full of air reports exactly
-like a chunk full of mountain. Cached terrain is an approximation, so wherever it stands
-taller than the real world its geometry sits in cells the engine has "drawn" as air.
-Suppressing cached terrain there leaves nothing at all - a hole that is stable, survives
-standing still, and cannot be corrected by re-probing, because both sides are reporting
-their state correctly.
+**Trap:** `ICoreClientAPI.IsChunkRendered` compiles to nothing more than
+`ClientChunk.quantityDrawn > 0`, and `ChunkTesselatorManager.TesselateChunk` advances that
+counter and returns before meshing whenever the chunk reports empty. A chunk full of air
+answers exactly like a chunk full of mountain. Both facts are read from the installed
+game's IL, not inferred.
 
-**Do not** reach for `IWorldChunk.Empty` to answer it. That flag is refreshed only by
-`UpdateEmptyFlag`, which runs when a chunk was modified, and the client frees block data
-for packed chunks, so on the client it does not mean "this chunk has no blocks". Acting on
-it removed ownership everywhere at once and left every cached section overlapping vanilla
-terrain, which is a far worse failure than the holes it was meant to fix.
+**Do not** conclude from that that an empty chunk should be refused ownership *in the
+tracker*. 0.3.3 did exactly that and removed ownership from the entire world in one step. The reason is the
+column rule, not the flag: a column counts as owned only when all of its vertical chunks
+do, every column has sky above it, and sky is legitimately empty. Roughly two of every five
+probed cells that report drawn also report empty, so excluding them leaves no complete
+column anywhere, `NearestIncompleteColumnBlocks` collapses to about zero, and cached
+terrain draws over everything.
 
-**Do:** count the condition before depending on it, and keep any such query inside its own
-handler. The probe loop treats a thrown query as "vanilla is not drawing here", so a
-diagnostic that throws does not merely fail - it silently hands the whole world back to the
-cache. A measurement that cannot change ownership can be added safely; a rule that can must
-be established first.
+**Correcting the original entry:** this gotcha first recorded that `IWorldChunk.Empty` is a
+stale client-side flag that "does not mean this chunk has no blocks". That is wrong.
+`ClientWorldMap.LoadChunkFromPacket` assigns `chunk.Empty = packet.Empty`, so the value is
+the server's own answer delivered with the chunk, and the block-set accessors maintain it
+afterwards. The client tessellator trusts it to decide whether to mesh at all. The flag was
+never the problem; the rule built on it was.
+
+**Do:** ask whether the engine holds any geometry, which is a different question from
+whether the chunk is empty. `ClientChunk.centerModelPoolLocations` and
+`edgeModelPoolLocations` are the mesh's index and vertex ranges in the shared pool; a chunk
+with neither has nothing in the world's buffers. `VanillaChunkGeometry` binds them by
+reflection and reports unavailable rather than guessing if a game update moves them, and
+the check tier asserts the binding against the installed assembly.
+
+**Do** also keep any such query inside its own handler and let it change nothing. The probe
+loop treats a thrown query as "vanilla is not drawing here", so a diagnostic that throws
+does not merely fail - it silently hands the whole world back to the cache. A measurement
+that cannot change ownership can be added safely; a rule that can must be established first.
+
+**But do refuse it in the mask.** An air cell must never suppress a fragment. Cached terrain
+is an approximation and overshoots the real surface, so its geometry lies inside air chunks;
+vanilla draws nothing there, so the discard removes the only draw and shears the top off the
+cached horizon. The two rules coexist: air owns its cell for the column aggregate, which is
+what 0.3.3 needed, and never reaches the atlas texel, which is what the picture needs.
+
+0.3.15 established this from `.vhpaint`, after this entry had claimed in 0.3.5 that
+suppressing cached geometry above the real surface was correct because the real ground below
+is drawn by vanilla. That reasoning fails for geometry standing *above* the real surface:
+there is no lower cell drawing anything at that height, so nothing replaces what is
+discarded. Three ownership rules were written against this wrong conclusion.
 
 **Found:** chunk ownership mask, Session 27, from play reporting holes that would not close,
-and then from breaking ownership outright while trying to fix them.
+and then from breaking ownership outright while trying to fix them. Corrected in 0.3.5 by
+reading the game's IL instead of reasoning about the flag, and again in 0.3.15 by painting
+the discarded fragments instead of reasoning about them at all.
+
+### G41 — A duplicate chat command name switches off the rest of the mod's startup, quietly
+
+**Trigger:** adding a chat command, especially one that replaces an older command's job
+while the older registration is left in place.
+
+**Trap:** `ChatCommandApi.Create` throws on a name that already exists, and the throw
+propagates out of `StartClientSide`. The game logs "Failed to start system" and carries on:
+everything registered before the collision works, everything after it silently does not
+exist, and the mod keeps drawing, so a playtest looks normal. 0.3.4 shipped with `.vhwhy`
+registered twice, which cost `.vhdetail` entirely and left the coarse-draw report
+unreachable. The names are strings, so the compiler sees nothing.
+
+**Do:** keep one name per command, and let
+`StaticAssetChecks.ChatCommandNamesAreUnique` fail the check tier if that ever stops being
+true. When a new command supersedes an old one, rename the old one rather than reusing the
+name, or delete it deliberately.
+
+**Found:** 0.3.5, by reading the client log of the 0.3.4 playtest rather than the game.
+
+### G42 — An integer uniform set through the Vec2i overload never arrives, and only the log says so
+
+**Trigger:** passing a pair of integers to a shader, or reaching for
+`prog.Uniform(name, new Vec2i(...))`.
+
+**Trap:** the client's only pair-of-integers setter calls `GL.Uniform2(location, float,
+float)`. Against a `uniform ivec2` the driver answers `GL_INVALID_OPERATION` and leaves the
+uniform at its previous value - zero. Nothing throws, the shader compiles and links, the
+draw succeeds, and the check tier's own re-implementation of the address arithmetic still
+agrees with the shader, because the arithmetic was never the thing that broke. The only
+symptom is `after final compo - OpenGL threw an error: InvalidOperation` once per frame,
+which is easy to read as somebody else's problem in a log with ten mods in it.
+
+This shipped in 0.3.0 through 0.3.5. `maskSectionOrigin` stayed at (0,0), so every
+fragment tested its ownership against chunk (0,0) instead of its own section's origin, the
+window bounds test then rejected nearly everything, and the per-cell mask discarded almost
+no fragments at all. Four attempts to explain the reported holes with ownership latency,
+sweeps and staleness were all looking at CPU state that was working.
+
+**Do:** split it into scalar `uniform int`s. `Uniform(name, int)` reaches `glUniform1i` and
+is correct. `StaticAssetChecks.NoIntegerVectorUniforms` now fails the check tier on any
+`ivec`/`uvec` uniform in our shaders, and the mask checks assert the two scalars are set.
+
+**Do** treat a per-frame GL error as a defect with an address, not as noise. Two isolated
+sandbox runs on the same scene separated it in about two minutes: 19,126 errors with
+`-ChunkMask`, zero without.
+
+**Trap while diagnosing it:** setting `glDebugMode` in the sandbox `clientsettings.json`
+makes the client crash rather than annotate, because the debug callback throws
+"No detailed debug message due to a non-debug context" when the GL context was not created
+as a debug context. That crash is still the fastest answer available - its stack names the
+exact `Uniform` call - but expect to clean up afterwards: the client leaves
+`VSCrashReporter.exe` holding `launch.log`, which blocks the next run's log rotation, and
+the sandbox server stays up for `scripts/test-stop.ps1`.
+
+**Found:** 0.3.6, from a controlled pair of sandbox runs after noticing tens of thousands
+of GL errors in an ordinary playtest log.
+
+### G43 — "Is the engine drawing this chunk" is decided at draw time, and distance is half the answer
+
+**Trigger:** deciding that vanilla covers an area, from any per-chunk signal - including
+`ClientChunk.CullVisible`.
+
+**Trap:** four signals look like they answer it and none of them do on their own.
+`ICoreClientAPI.IsChunkRendered` is `quantityDrawn > 0`, a counter that only ever goes up,
+so it means "tesselated at some point" (G40). Mesh pool locations are closer, but the engine
+keeps a chunk's mesh while choosing not to submit it, so their presence is not submission.
+`IWorldChunk.Empty` is accurate but answers a different question. And `CullVisible` is the
+culler's occlusion verdict, which is necessary but not sufficient.
+
+The real per-frame test lives on the pool location, not on the chunk.
+`ModelDataPoolLocation.IsVisible` in `CullNormal` mode is
+`!Hide && CullVisible[VisibleBufIndex] && culler.InFrustumAndRange(sphere, ..., LodLevel)`,
+and `FrustumCulling.InFrustumAndRange` ends with `playerPos.HorDistanceSqTo(sphere.x,
+sphere.z)` - the mesh's bounding-sphere centre, which is the geometry extents midpoint and
+not the chunk centre - against a per-LOD bound that is at most `ViewDistanceSq` - itself
+`viewDistance * viewDistance + 400` (`UpdateViewDistance`). **So the engine range-culls every
+terrain mesh against the current camera, every frame, after all four chunk signals have said
+yes.** A chunk that is loaded, meshed, unhidden and cull-visible but further away than the
+view distance is silently never drawn.
+
+Nothing about the chunk changes when that happens, which is what makes it invisible to a
+tracker. Worse, `ChunkCuller.CullInvisibleChunks` early-returns when the camera has not
+changed chunk (and the regen-traversal queue has not moved by 10), so `CullVisible` is not
+merely stale out there - it is frozen for as long as the player stands still. That is the
+exact condition under which the band was reported: committed cells in the annulus between the
+view-distance circle and the tracked window edge stayed committed forever, the mask discarded
+cached terrain there, and nothing drew that ground. Only on the trailing side, because the
+leading side never had chunks loaded beyond the view distance to latch in the first place.
+
+The culler also carries an `isAboveHeightLimit` branch: fly high enough and vanilla stops
+drawing the ground directly below, in an unmodded client, while every other signal still
+claims it.
+
+**Do:** read `CullVisible[bufIndex]` **and** apply the distance clause. All the culler members
+are public API - no reflection - and `VanillaReadinessChecks.ChunkGeometryBinding` pins them
+against the installed assembly. The distance clause needs no engine access at all: it is
+column distance against the approved view distance, done in pure arithmetic, which matters
+because the probe loop is hot and a chunk lookup there takes the client's chunk lock.
+
+**Do** clear the whole chunk when picking the threshold, and check which direction the slop
+falls in. The engine measures range from the mesh's bounding-sphere centre, and `TesselatedChunk`
+builds that centre as the geometry extents midpoint (`positionX + (xMax + xMin) / 2f`) - so it
+sits wherever the blocks in that chunk happen to be, anywhere across the 32-block span, not at
+the chunk centre. Comparing the column's *nearest face* against the plain view distance sounds
+conservative and is conservative in the overlap direction only: a chunk whose near face is just
+inside the view distance can have its sphere centre well outside it, so the engine culls it
+while every latched signal still says "drawing". That leaves a residual permanently-stale ring
+up to `32 * sqrt(2)` wide - a thinner copy of the same band.
+
+Subtract the full in-chunk horizontal diagonal instead: deny when the nearest face exceeds
+`viewDistance - 46`. Since the engine culls no earlier than `sqrt(viewDistance^2 + 400) >=
+viewDistance`, and centre and face lie inside one column so differ by at most 45.26, culled
+implies denied for every possible midpoint placement. The cost is cached terrain drawn over the
+outermost chunk and a half of live vanilla terrain - a seam, not a gap.
+`VanillaReadinessChecks.OwnershipStopsAtTheEnginesDrawRange` asserts the no-hole direction
+directly, sweeping every cell whose farthest admissible sphere centre reaches the engine's
+bound; it fails on the nearest-face-versus-plain-view-distance threshold.
+
+**Do** treat empty and unknown as drawn, so a wrong answer costs the correction rather than
+uncovering live terrain.
+
+**Do** expect the culler verdict to be camera-dependent. It is occlusion: a chunk behind a
+mountain is not drawn, so its cell is released and cached terrain draws there, hidden behind
+the same mountain. Correct, and not free - the cost is unmeasured.
+
+**Found:** the culler half in 0.3.10, from a player testing the altitude case in vanilla with
+no mods after three ownership rules built on the wrong signal failed to close the holes. The
+distance half in 0.3.16, by reading `ModelDataPoolLocation.IsVisible` and `InFrustumAndRange`
+in the game's IL after this entry had claimed for six releases that the culler's verdict was
+the *only* thing that decided.
+
+### G44 — A mirror of a wrapped ring must be told when a slot changes hands
+
+**Trigger:** keeping a second copy of ring-addressed state - a GPU texture, a cache, any
+mirror - alongside `VanillaRenderReadiness`.
+
+**Trap:** the ring is fixed size and scrolls with the camera. A column leaving the window
+surrenders its slot to whichever column wraps onto the same address. `ClearSlot` wiped the
+tracker and nothing wiped the mirror, so the arriving column read the departed column's
+value. On the ownership atlas that meant `ReadyTexel` for cells nothing owned, and the
+shader discarded cached fragments over ground vanilla was not drawing.
+
+The failure has a shape worth recognising: a band rather than scattered holes, at the
+trailing edge of movement, stable while standing still, unrepaired by any amount of
+re-probing. Every CPU-side diagnostic said the system was healthy, because it was - the
+tracker, the column aggregate, the section counts and the ownership audit were all correct,
+and only the mirror was stale. Three ownership rules were written and discarded chasing it.
+
+**Do:** funnel every wipe through one method and raise from there.
+`VanillaRenderReadiness.ClearSlot` raises `ColumnEvicted`; the renderer clears the atlas
+column. Test it by proving the arriving column reuses the departed column's exact texel
+index and does not inherit its value - a test that only asserts "the mask was cleared"
+passes against an addressing scheme where the two never collided.
+
+**Do not** trust "the routine exists" as evidence it runs.
+`VanillaReadinessMask.ClearColumn` was written with a correct summary explaining exactly why
+it was required, and had no callers from the feature's first version through 0.3.12.
+
+**Found:** 0.3.13, after a player's on/off comparisons ruled out ownership selection and
+then whole-mesh skipping, leaving only the GPU mirror.
+
+### G45 — A chunk lookup inside the readiness work takes the lock the loader threads want
+
+**Trigger:** calling `IBlockAccessor.GetChunk` (or anything else reaching the client's chunk
+store) from the readiness probe loop, from a diagnostic inside it, or from the wholesale
+atlas rebuild.
+
+**Trap:** the lookup takes `ClientWorldMap.chunksLock` — the same lock `IsChunkRendered` has
+just taken, and the same one the chunk loader threads want. The probe queue is at its
+longest exactly while a world is coming up, so the cost lands where it hurts most. A
+drawn-without-geometry diagnostic added in 0.3.5 called it once per probe and is the
+standing suspect for cached terrain taking 36.4 s to appear after joining against 6.1 s on
+the release before it.
+
+The rebuild path is the same trap wearing different clothes. `WriteMask` runs at mask
+creation and on **every** window change — every 32 blocks of travel — over the whole
+window, so a per-cell chunk lookup there is thousands of lock acquisitions per crossing.
+
+**Do:** restrict any such lookup to the observations that can actually change a decision.
+0.3.8 narrowed the diagnostic to the second of the two true observations a commit needs, or
+a re-confirmation of an already-committed cell; every other probe at join is a first
+sighting that decides nothing.
+
+**Do:** store the answer in the tracker when a lockless path needs it later. 0.3.16 records
+the air exclusion as a per-cell flag at publication time, so `WriteMask` consumes a bit
+instead of asking the chunk store, and the once-per-second resync — which already holds a
+budget for the lookup — keeps the bit authoritative.
+
+**Do:** prefer pure arithmetic in the probe loop outright where the question allows it. The
+draw-range clause in G43 needs no engine access at all.
+
+**Do:** treat a join-time slowdown as a suspect for any diagnostic added since the last
+known-good join, before bisecting residency.
+
+**Found:** 0.3.5 through 0.3.8, from a reported join-time regression; recorded here in
+0.3.16 after the same shape recurred in the atlas rebuild and was designed out rather than
+measured again.
 
 ## Reversals and disproved claims
 
