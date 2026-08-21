@@ -42,7 +42,8 @@ in advance.
 | Command | Purpose |
 | --- | --- |
 | `.vhinfo` | Status: cached/resident sections, meshes, current far edge, settings |
-| `.vhdetail [blocks]` | Distance before detail starts to halve (default 512). A higher value gives sharper far terrain and costs more VRAM and CPU. Try 1024. Without an argument, the command reports the current value. |
+| `.vhconfig` | Open the settings window. One logarithmic scale holds labeled, individually adjustable L1-L6 transition markers up to 32,768 blocks, constrained by their neighbours; a separate slider controls cached-terrain draw distance up to 32,768 in 512-block increments. `Defaults` restores the accepted 512-to-16,384 sequence and a 32,768-block draw distance. |
+| `.vhdetail [blocks]` | Without an argument, report all six transition distances. With a value, reset them to a doubling sequence beginning there; `.vhconfig` edits them individually. |
 | `.vhfar <blocks>` | Cap the LOD render distance. `0` means unlimited, which is the default. |
 | `.vhmask [on\|off]` | Hand each loaded vanilla chunk its own ground instead of using one distance, and skip cached terrain that is entirely replaced. On by default since 0.3.17; the setting is saved. Turn it off to fall back to a single measured distance. |
 | `.vhpaint [on\|off]` | Diagnostic. Paints the terrain the mask is hiding bright red instead of hiding it. A gap that turns red is the mask's doing; a gap that stays empty is not. |
@@ -83,7 +84,7 @@ privilege, which every singleplayer host has:
 | `/vhserver` | Server assist status: settings in force, cache size, transfer counters |
 | `/vhgen start [radius] [x z]` | Build the LOD cache around you (or around `x z`). It generates terrain that nobody visited yet. Also `stop` and `status`. See below. |
 
-Both settings persist in `VintagestoryData/ModConfig/vintagehorizons.json`.
+The client settings persist in `VintagestoryData/ModConfig/vintagehorizons.json`.
 The per-world cache lives in `VintagestoryData/ModData/vintagehorizons/<savegame-id>.db`.
 When an update changes what the stored data means, the mod discards that cache. A stale
 cache can therefore never degrade a newer version.

@@ -235,9 +235,11 @@ Human-reported and still open:
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
 - Measure whether regional buffers or multi-draw are warranted after the accepted delayed-occlusion work.
-- Select a practical default far cap only from benchmark and playtest evidence. The mask's
-  benefit scales with vanilla render distance (above), so the two interact: a larger cap
-  makes the mask worth more, not less.
+- Decide whether startup configuration should change from unlimited cached drawing. The
+  `.vhconfig` scale and its `Defaults` button now use 32,768 blocks, but that player-facing
+  choice is not a controlled far-cap benchmark. The mask's benefit scales with vanilla
+  render distance (above), so the two interact: a larger cap makes the mask worth more,
+  not less.
 
 ### Low-priority coverage and verification debt
 
@@ -251,7 +253,8 @@ Human-reported and still open:
 
 ## Flagged decisions awaiting human evidence
 
-- What default far-distance cap, if any, gives the best product experience after the renderer fixes?
+- Should new/startup configuration remain unlimited, or adopt the `.vhconfig` Defaults
+  value of 32,768 blocks after a controlled benchmark and playtest?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
 - Is the hybrid's one-time chunk handoff pop preferable to any residual overlap? The
   "cliff/water seams" half of this question is closed: the seams were the mesher's frontier
@@ -280,7 +283,7 @@ Human-reported and still open:
   successful recovery of one persisted obligation, and a third fresh process reporting
   zero obligations. Both dedicated client/server and integrated-singleplayer durability
   are established for the guarded routes.
-- The complete game-backed Release tier passes 1,503 assertions, including the Session 24
+- The complete game-backed Release tier passes 1,533 assertions, including the Session 24
   handoff/shader coverage, readiness and water-frontier suites, delayed-occlusion state/view/
   seam/edge coverage, and static renderer/query/default wiring. A real game process still
   supplies the only end-to-end proof of callback ordering, renderer cost, and GPU behavior.

@@ -160,8 +160,8 @@ public static class TraversalChecks
             const double cameraX = 5000;
             const double cameraZ = 0;
 
-            long twoLevelsFine = LodWorld.SectionKey(1, 0, 0);
-            long oneLevelFine = LodWorld.SectionKey(2, 0, 0);
+            long twoLevelsFine = LodWorld.SectionKey(2, 0, 0);
+            long oneLevelFine = LodWorld.SectionKey(3, 0, 0);
 
             c.False(LodTraversalPolicy.WithinResidencyBand(twoLevelsFine, cameraX, cameraZ),
                 "a mesh two detail levels finer than wanted may age out");

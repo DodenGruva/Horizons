@@ -3,9 +3,9 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-20
-**Mod version:** `0.3.37` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Mod version:** `0.3.40` (in development; `0.2.1` is the released version, and test builds increment the patch number)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `43` C# files under `VintageHorizons/src`
+**Source files:** `45` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -15,6 +15,13 @@
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/gpu-overdraw-culling`, branched from `origin/master` at `4496948`, and is intended to track the same-named origin branch.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
+
+LOD selection now uses explicit L1-L6 transition thresholds, defaulting to 512, 1,024,
+2,048, 4,096, 8,192 and 16,384 blocks. `.vhconfig` exposes them as ordered markers on
+one logarithmic scale plus a separate cached-terrain draw-distance slider. Existing
+one-distance configs migrate to the equivalent doubling sequence; cache and network
+formats are unchanged. The 0.3.38 distance correction was human-tested and accepted;
+the revised 0.3.40 window layout still awaits in-game review.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
 geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
@@ -608,8 +615,9 @@ are not normally achievable. `.vhcoarse` remains ready if the symptom becomes pr
 5. Keep the recovered join fill-in regression under observation: one 0.3.23 join reached
 100 meshes in 6.6 s against the old 6.1 s baseline, reversing the 36.4 s regression, but it
 is still one sample.
-6. Select a practical far-distance cap and decide whether regional buffers/multi-draw are
-warranted after delayed-occlusion evidence and cross-driver testing.
+6. Decide whether startup configuration should remain unlimited or adopt the `.vhconfig`
+   Defaults value of 32,768 blocks, and whether regional buffers/multi-draw are warranted
+   after delayed-occlusion evidence and cross-driver testing.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -665,7 +673,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,503 assertions, including delayed-occlusion
+- The full game-backed Release tier passes 1,533 assertions, including delayed-occlusion
   state transitions, stale-epoch rejection, camera/profile thresholds, exact turn detection,
   mixed-seam invalidation, horizontal edge guards and static GL/query/default wiring; the water-seam
   frontier coverage added in 0.3.23 (four wall states plus the opposite-side pairing the
@@ -886,7 +894,9 @@ measures, and one admitted job/result remains atomic even after crossing a ceili
 - The longer mip route began with 405 cached sections and added new capture work; it is
   sustained warm-cache convergence evidence, not a controlled cold-cache performance
   comparison or proof of crash recovery.
-- A practical default far-distance cap remains a product decision requiring benchmark and playtest evidence.
+- The `.vhconfig` scale and Defaults button use a 32,768-block far cap, but whether startup
+  configuration should change from backward-compatible unlimited drawing remains a product
+  decision requiring benchmark and playtest evidence.
 - The saturated assist runs deliberately raised the serving rate to 64/s. Their queue and
 throughput numbers are stress evidence, not default-rate expectations. The old 68.755 ms
 read was a direct owning-thread observation; later runs prove reads are now off-thread and

@@ -11,8 +11,14 @@ public class VintageHorizonsConfig
     /// <summary>0 = unlimited.</summary>
     public int FarViewDistanceCap = 0;
 
-    /// <summary>Distance at which detail starts halving; see LodWorld.DetailDistance.</summary>
+    /// <summary>Legacy first threshold used to migrate configs without LodThresholds.</summary>
     public int DetailDistance = 512;
+
+    /// <summary>
+    /// L1-L6 transition distances. Null migrates an older config by doubling
+    /// DetailDistance; saved configs always contain the explicit thresholds.
+    /// </summary>
+    public int[]? LodThresholds;
 
     /// <summary>
     /// Give each vanilla chunk its own ground instead of using one measured distance.
@@ -62,6 +68,7 @@ public class VintageHorizonsModSystem : ModSystem
 
     /// <summary>Everything the config file holds, so a partial save cannot drop a setting.</summary>
     VintageHorizonsConfig config = new();
+    VintageHorizonsConfigDialog? configDialog;
 
     /// <summary>Set when another LOD mod is drawing; we then stay out of its way.</summary>
     string? deferringTo;
@@ -120,8 +127,8 @@ public class VintageHorizonsModSystem : ModSystem
             return;
         }
 
-        LodWorld.DetailDistance = GameMath.Clamp(config.DetailDistance,
-            (int)LodWorld.MinDetailDistance, (int)LodWorld.MaxDetailDistance);
+        LodWorld.SetLevelThresholds(LodWorld.NormalizeLevelThresholds(
+            config.LodThresholds, config.DetailDistance));
 
         pipeline = new LodPipeline(capi, Mod.Logger, DescribePalette,
             block => (byte)TintSlotOf(block),
@@ -1357,6 +1364,7 @@ public class VintageHorizonsModSystem : ModSystem
 
     void OnLeaveWorld()
     {
+        configDialog?.TryClose();
         assist?.Reset();
         // Belongs to the world being left: the next one is a different savegame with a
         // different sibling cache, and holding this open would keep a file handle on a
@@ -1397,7 +1405,7 @@ public class VintageHorizonsModSystem : ModSystem
                 $"unsaved: {pipeline.World.SaveDirty.Count}, persistence: {(pipeline.Persisting ? "on" : "off")}, " +
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +
-                $"detail distance: {(int)LodWorld.DetailDistance} (.vhdetail to change), " +
+                $"LOD thresholds: {string.Join('/', LodWorld.GetLevelThresholds())} (.vhconfig to change), " +
                 $"occlusion order: {renderer.DescribeOcclusionCulling()}, " +
                 $"delayed occlusion: {renderer.DescribeTemporalOcclusion()}, " +
                 $"readiness: {renderer.DescribeReadiness()}, " +
@@ -1435,6 +1443,30 @@ public class VintageHorizonsModSystem : ModSystem
                       + "draw over the same ground."
                     : "[VintageHorizons] will stay idle when another LOD mod is drawing (saved). "
                       + "Restart the game to apply.");
+            });
+
+        // Available even while deferring, because these are persisted player settings;
+        // they will apply normally after the competing renderer is switched off.
+        capi.ChatCommands.Create("vhconfig")
+            .WithDescription("Open the Vintage Horizons detail and draw-distance settings")
+            .HandleWith(_ =>
+            {
+                if (configDialog?.IsOpened() == true)
+                {
+                    configDialog.Focus();
+                    return TextCommandResult.Success("[VintageHorizons] configuration window focused.");
+                }
+
+                configDialog?.Dispose();
+                int[] thresholds = deferringTo == null
+                    ? LodWorld.GetLevelThresholds()
+                    : LodWorld.NormalizeLevelThresholds(config.LodThresholds, config.DetailDistance);
+                int farCap = deferringTo == null ? renderer.FarViewDistanceCap : config.FarViewDistanceCap;
+                configDialog = new VintageHorizonsConfigDialog(capi, thresholds, farCap, ApplyGuiConfig);
+
+                return configDialog.TryOpen()
+                    ? TextCommandResult.Success("[VintageHorizons] configuration window opened.")
+                    : TextCommandResult.Success("[VintageHorizons] configuration window could not open right now.");
             });
 
         // The remaining commands drive the renderer, which does not exist when we are
@@ -1694,15 +1726,15 @@ public class VintageHorizonsModSystem : ModSystem
             });
 
         capi.ChatCommands.Create("vhdetail")
-            .WithDescription("Distance in blocks before LOD detail starts to halve. Default 512. A higher value gives sharper far terrain and costs more VRAM and CPU.")
+            .WithDescription("Reset all LOD thresholds to a doubling sequence beginning at this distance")
             .WithArgs(capi.ChatCommands.Parsers.OptionalInt("blocks"))
             .HandleWith(args =>
             {
                 if (args.Parsers[0].IsMissing)
                 {
                     return TextCommandResult.Success(
-                        $"[VintageHorizons] detail distance {(int)LodWorld.DetailDistance} " +
-                        $"(full 1-block detail out to {(int)LodWorld.DetailDistance * 2} blocks). " +
+                        $"[VintageHorizons] LOD thresholds {string.Join(", ", LodWorld.GetLevelThresholds())}. " +
+                        $".vhdetail resets them to a doubling sequence; .vhconfig edits them individually. " +
                         $"Set between {(int)LodWorld.MinDetailDistance} and {(int)LodWorld.MaxDetailDistance}.");
                 }
 
@@ -1710,9 +1742,26 @@ public class VintageHorizonsModSystem : ModSystem
                     (int)LodWorld.MinDetailDistance, (int)LodWorld.MaxDetailDistance);
                 SaveConfig();
                 return TextCommandResult.Success(
-                    $"[VintageHorizons] detail distance {(int)LodWorld.DetailDistance} - full detail out to " +
-                    $"{(int)LodWorld.DetailDistance * 2} blocks (saved). Terrain re-selects over the next few seconds.");
+                    $"[VintageHorizons] LOD thresholds reset to " +
+                    $"{string.Join(", ", LodWorld.GetLevelThresholds())} (saved). " +
+                    "Terrain re-selects over the next few seconds.");
             });
+    }
+
+    void ApplyGuiConfig(int[] thresholds, int farViewDistanceCap)
+    {
+        int[] normalized = LodWorld.NormalizeLevelThresholds(thresholds, config.DetailDistance);
+        config.LodThresholds = normalized;
+        config.DetailDistance = normalized[0];
+        config.FarViewDistanceCap = farViewDistanceCap;
+
+        if (deferringTo == null)
+        {
+            LodWorld.SetLevelThresholds(normalized);
+            renderer.FarViewDistanceCap = farViewDistanceCap;
+        }
+
+        SaveConfig();
     }
 
     /// <summary>Writes every setting: a partial write would silently reset the others.</summary>
@@ -1724,6 +1773,7 @@ public class VintageHorizonsModSystem : ModSystem
         {
             config.FarViewDistanceCap = renderer.FarViewDistanceCap;
             config.DetailDistance = (int)LodWorld.DetailDistance;
+            config.LodThresholds = LodWorld.GetLevelThresholds();
             // The request, never the effective state: a mask that failed this session
             // reports itself disabled, and writing that would turn it off permanently.
             config.ChunkMask = renderer.ChunkMaskRequested;
@@ -1765,6 +1815,7 @@ public class VintageHorizonsModSystem : ModSystem
         // Stops the storage writer before the connection it writes through.
         Quietly(() => pipeline?.Dispose());
         Quietly(() => renderer?.Dispose());
+        Quietly(() => configDialog?.Dispose());
     }
 
     /// <summary>

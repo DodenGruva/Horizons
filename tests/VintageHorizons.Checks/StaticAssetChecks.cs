@@ -22,6 +22,7 @@ public static class StaticAssetChecks
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
         ChatCommandNamesAreUnique(c);
+        ConfigDialogWiring(c);
         NoIntegerVectorUniforms(c);
         SourceHasNoControlCharacters(c);
     }
@@ -442,6 +443,34 @@ public static class StaticAssetChecks
         c.True(seen.Count > 0, "found chat command registrations to scan");
         c.SeqEq(Array.Empty<string>(), duplicates,
             $"all {seen.Count} chat command names are registered exactly once");
+    }
+
+    static void ConfigDialogWiring(Check c)
+    {
+        string src = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src");
+        string mod = File.ReadAllText(Path.Combine(src, "VintageHorizonsModSystem.cs"));
+        string dialog = File.ReadAllText(Path.Combine(src, "Gui", "VintageHorizonsConfigDialog.cs"));
+        string scale = File.ReadAllText(Path.Combine(src, "Gui", "LodThresholdScaleElement.cs"));
+
+        c.True(mod.Contains("ChatCommands.Create(\"vhconfig\")", StringComparison.Ordinal),
+            "the player-facing config command remains registered");
+        c.True(dialog.Contains("new LodThresholdScaleElement", StringComparison.Ordinal),
+            "the config window uses one shared multi-marker LOD scale");
+        c.True(dialog.Contains("AddButton(\"Defaults\"", StringComparison.Ordinal)
+            && dialog.Contains("AddButton(\"Save\"", StringComparison.Ordinal)
+            && dialog.Contains("AddButton(\"Cancel\"", StringComparison.Ordinal),
+            "the config window retains Defaults, Save and Cancel actions");
+        c.True(scale.Contains("values[dragging - 1] + LodWorld.ThresholdStepBlocks", StringComparison.Ordinal)
+            && scale.Contains("values[dragging + 1] - LodWorld.ThresholdStepBlocks", StringComparison.Ordinal),
+            "each LOD marker remains constrained by both neighbours");
+        c.True(scale.Contains("$\"L{i + 1}\"", StringComparison.Ordinal)
+            && scale.Contains("Render2DLoadedTexture(markerLabels[i]", StringComparison.Ordinal),
+            "the moving LOD handles render their L1-L6 names inside the boxes");
+        c.True(dialog.Contains("const int MaxDrawDistance = 32768", StringComparison.Ordinal)
+            && dialog.Contains("const int DrawDistanceStep = 512", StringComparison.Ordinal),
+            "the cached draw-distance slider stops at 32,768 in 512-block increments");
+        c.True(dialog.Contains("ToString(\"N0\", CultureInfo.InvariantCulture)", StringComparison.Ordinal),
+            "the config window displays full block values instead of abbreviated thousands");
     }
 
     /// <summary>

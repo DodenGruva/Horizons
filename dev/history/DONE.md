@@ -529,3 +529,23 @@ by the owner.**
   invalidation and horizontal frustum-edge coverage. The Release fast tier passes 1,503
   assertions; the packaged and installed archive hash is
   `BF69FB931BCAAFFD5395FA67EDCFD8198F78ABA64903596F98E6A72826C88473`.
+
+## 2026-08-20 — configurable cached-terrain LOD distances
+
+- Corrected the setting semantics so the accepted default transitions begin L1-L6 at 512,
+  1,024, 2,048, 4,096, 8,192 and 16,384 blocks instead of twice those distances. Retained
+  nearest-edge square-section distance and coarser-parent fallback.
+- The owner tested 0.3.38 and reported an enormous performance increase with very little
+  visual-fidelity loss, accepting the corrected defaults.
+- Replaced the single derived distance with six ordered thresholds and a monotonic policy
+  revision. Existing `DetailDistance` configurations migrate to their equivalent doubling
+  sequence, and `.vhdetail` remains a quick compatibility control.
+- Added `.vhconfig`: six individually draggable constrained handles on one logarithmic LOD
+  scale, a separate cached draw-distance slider, and Defaults/Cancel/Save behavior.
+- Refined 0.3.40 after the first in-game UI review: larger and more distant handles labelled
+  L1-L6, full comma-separated values, 32,768-block ceilings on both scales and 512-block
+  cached draw increments. The revised layout remains pending human visual acceptance.
+- Added transition, policy-refresh, constraint and static GUI regressions. The complete
+  Release tier passes 1,533 assertions and the Release build has zero warnings or errors.
+- Packaged and installed `vintagehorizons_0.3.40.zip`; the two copies had SHA-256
+  `52B89A30B95187F335DFB6043318B7652C63844E6BD91F27750CE10DCFA2662A`.

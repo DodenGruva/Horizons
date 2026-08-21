@@ -902,7 +902,7 @@ public class LodTerrainRenderer : IRenderer
     void PruneRenderDirty()
     {
         dirtyScheduler.Refresh(world.RenderDirty, camPos.X, camPos.Z,
-            LodWorld.DetailDistance, keepRenderDirty);
+            LodWorld.DetailPolicyRevision, keepRenderDirty);
     }
 
     bool KeepRenderDirty(long key) => HasAnyMesh(key)

@@ -12,18 +12,98 @@ public class LodWorld
 {
     public const int MaxLevel = 6; // L6 sections span 4096 blocks (64-block columns at the horizon)
 
-    /// <summary>
-    /// Level 0 is selected out to twice this distance; each level doubles the band.
-    /// Raising it pushes every detail level outward - the single biggest lever on
-    /// perceived quality, and also on cost: the level-0 band grows with the square of
-    /// this value, so doubling it asks for roughly four times as many leaf meshes.
-    /// Tunable live via .vhdetail; the selection walk simply picks different levels on
-    /// the next frame and demand-meshes whatever it newly wants.
-    /// </summary>
-    public static double DetailDistance = 512;
+    /// <summary>Default distance at which each level L1-L6 begins.</summary>
+    public static readonly int[] DefaultLevelThresholds = { 512, 1024, 2048, 4096, 8192, 16384 };
 
-    public const double MinDetailDistance = 256;
-    public const double MaxDetailDistance = 4096;
+    /// <summary>Smallest configurable transition and drag increment in blocks.</summary>
+    public const int MinDetailDistance = 256;
+    public const int ThresholdStepBlocks = 64;
+
+    /// <summary>Largest transition exposed by the shared configuration scale.</summary>
+    public const int MaxLevelThreshold = 32768;
+
+    /// <summary>Legacy/base-distance command range; L2-L6 double from this value.</summary>
+    public const int MaxDetailDistance = 1024;
+
+    static readonly double[] levelThresholds = DefaultLevelThresholds.Select(value => (double)value).ToArray();
+
+    /// <summary>
+    /// Compatibility shorthand for the first transition. Setting it rebuilds the
+    /// traditional doubling sequence, which keeps .vhdetail and older configuration
+    /// files meaningful while .vhconfig can edit every threshold independently.
+    /// </summary>
+    public static double DetailDistance
+    {
+        get => levelThresholds[0];
+        set => SetDoublingThresholds(value);
+    }
+
+    /// <summary>
+    /// Changes whenever any threshold changes. Distance-sensitive indexes use this
+    /// identity rather than only L1, because moving L4 must refresh them too.
+    /// </summary>
+    public static int DetailPolicyRevision { get; private set; }
+
+    public static int[] GetLevelThresholds() =>
+        levelThresholds.Select(value => (int)Math.Round(value)).ToArray();
+
+    public static double ThresholdForLevel(int level)
+    {
+        if (level < 1 || level > MaxLevel) throw new ArgumentOutOfRangeException(nameof(level));
+        return levelThresholds[level - 1];
+    }
+
+    public static void SetLevelThresholds(IReadOnlyList<int> thresholds)
+    {
+        int[] normalized = NormalizeLevelThresholds(thresholds, DefaultLevelThresholds[0]);
+        bool changed = false;
+        for (int i = 0; i < MaxLevel; i++)
+        {
+            if (levelThresholds[i] == normalized[i]) continue;
+            levelThresholds[i] = normalized[i];
+            changed = true;
+        }
+        if (changed) DetailPolicyRevision++;
+    }
+
+    public static int[] NormalizeLevelThresholds(IReadOnlyList<int>? thresholds, int legacyDetailDistance)
+    {
+        int[] values;
+        if (thresholds == null || thresholds.Count != MaxLevel)
+        {
+            int first = Math.Clamp(legacyDetailDistance, MinDetailDistance, MaxDetailDistance);
+            values = Enumerable.Range(0, MaxLevel).Select(i => first * (1 << i)).ToArray();
+        }
+        else
+        {
+            values = thresholds.ToArray();
+        }
+
+        // Preserve room for every later marker, then walk left-to-right. This makes a
+        // malformed hand-edited config deterministic without letting markers overlap.
+        for (int i = 0; i < MaxLevel; i++)
+        {
+            int min = MinDetailDistance + i * ThresholdStepBlocks;
+            if (i > 0) min = Math.Max(min, values[i - 1] + ThresholdStepBlocks);
+            int max = MaxLevelThreshold - (MaxLevel - 1 - i) * ThresholdStepBlocks;
+            values[i] = Math.Clamp(values[i], min, max);
+        }
+        return values;
+    }
+
+    static void SetDoublingThresholds(double first)
+    {
+        first = Math.Clamp(first, MinDetailDistance, MaxDetailDistance);
+        bool changed = false;
+        for (int i = 0; i < MaxLevel; i++)
+        {
+            double value = first * (1 << i);
+            if (levelThresholds[i] == value) continue;
+            levelThresholds[i] = value;
+            changed = true;
+        }
+        if (changed) DetailPolicyRevision++;
+    }
 
     public readonly Dictionary<long, LodSection> Sections = new();
 
@@ -256,27 +336,35 @@ public class LodWorld
         }
     }
 
-    public static int WantedLevelFor(double distance) =>
-        (int)Math.Clamp(Math.Log2(Math.Max(1.0, distance / DetailDistance)), 0, MaxLevel);
+    public static int WantedLevelFor(double distance)
+    {
+        // DetailDistance names the first actual transition: L0 below it, L1 at it.
+        // Each later level begins twice as far away as the previous one.
+        for (int level = MaxLevel; level > 0; level--)
+        {
+            if (distance >= levelThresholds[level - 1]) return level;
+        }
+        return 0;
+    }
 
     /// <summary>
     /// The same answer as <see cref="WantedLevelFor"/>, from the SQUARED distance.
     ///
     /// The quadtree walk asks this once per visited node, and every caller had to take a
-    /// square root to ask, after which this took a logarithm to answer. Both are
-    /// avoidable: level L is wanted from DetailDistance * 2^L outward, so the question is
-    /// a comparison against a fixed radius per level, and comparisons survive squaring.
+    /// square root to ask. That is avoidable: level L (for L &gt; 0) is wanted from
+    /// its configured threshold outward, so the question is a comparison against a fixed
+    /// radius per level, and comparisons survive squaring.
     ///
     /// Measured at 951 resident sections, the walk cost 387us a frame and the prune pass
     /// runs the same test over the whole dirty set on top of that.
     ///
-    /// The table is rebuilt when DetailDistance changes, which .vhdetail can do live.
+    /// The table is rebuilt when any threshold changes, which .vhconfig can do live.
     /// Callers are the render frame and the eviction sweep, both on the main thread, so
     /// no lock is needed; a worker must not call this.
     /// </summary>
     public static int WantedLevelForSq(double distanceSq)
     {
-        if (wantedTableFor != DetailDistance) RebuildWantedTable();
+        if (wantedTableRevision != DetailPolicyRevision) RebuildWantedTable();
 
         for (int level = MaxLevel; level > 0; level--)
         {
@@ -285,17 +373,18 @@ public class LodWorld
         return 0;
     }
 
-    static double wantedTableFor = double.NaN;
+    static int wantedTableRevision = -1;
     static readonly double[] wantedThresholdSq = new double[MaxLevel + 1];
 
     static void RebuildWantedTable()
     {
-        for (int level = 0; level <= MaxLevel; level++)
+        wantedThresholdSq[0] = 0;
+        for (int level = 1; level <= MaxLevel; level++)
         {
-            double radius = DetailDistance * (1 << level);
+            double radius = levelThresholds[level - 1];
             wantedThresholdSq[level] = radius * radius;
         }
-        wantedTableFor = DetailDistance;
+        wantedTableRevision = DetailPolicyRevision;
     }
 
     void RegisterInTree(long key)

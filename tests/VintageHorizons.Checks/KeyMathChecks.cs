@@ -14,6 +14,7 @@ public static class KeyMathChecks
         Footprint(c);
         Distance(c);
         WantedLevelFromSquaredDistance(c);
+        IndividualLevelThresholds(c);
         CaptureSamplePositionIsTheBlockItself(c);
     }
 
@@ -51,8 +52,8 @@ public static class KeyMathChecks
     /// <summary>
     /// WantedLevelForSq must be the same function as WantedLevelFor, which it replaces on
     /// the two hot paths: the quadtree walk asks it once per visited node, and the prune
-    /// pass once per dirty key per frame. The old form cost the caller a square root and
-    /// then took a logarithm; the new one compares squared distances against a table.
+    /// pass once per dirty key per frame. The direct form needs an ordinary distance;
+    /// the hot form compares squared distances against a table.
     ///
     /// Squaring changes rounding, so if the two ever disagree it is at a boundary. This
     /// lands exactly on every boundary and sweeps finely either side, at several
@@ -69,14 +70,14 @@ public static class KeyMathChecks
 
         try
         {
-            foreach (double detail in new[] { 256.0, 512.0, 1024.0, 4096.0, 333.7 })
+            foreach (double detail in new[] { 256.0, 512.0, 768.0, 1024.0, 333.7 })
             {
                 LodWorld.DetailDistance = detail;
 
                 var probes = new List<double>();
-                for (int level = 0; level <= LodWorld.MaxLevel + 1; level++)
+                for (int level = 1; level <= LodWorld.MaxLevel + 1; level++)
                 {
-                    double boundary = detail * (1 << level);
+                    double boundary = detail * (1 << (level - 1));
                     foreach (double nudge in new[] { -1.0, -1e-3, -1e-9, 0.0, 1e-9, 1e-3, 1.0 })
                     {
                         probes.Add(Math.Max(0.0, boundary + nudge));
@@ -103,7 +104,20 @@ public static class KeyMathChecks
         }
 
         c.True(compared > 2000, "the sweep actually covered a wide range of distances");
-        c.Eq(0, mismatches, "the squared form agrees with the logarithm at every distance");
+        c.Eq(0, mismatches, "the squared form agrees with the direct form at every distance");
+
+        LodWorld.DetailDistance = 512;
+        c.Eq(0, LodWorld.WantedLevelForSq(511.999 * 511.999),
+            "L0 remains selected immediately before the configured detail distance");
+        foreach ((double distance, int level) in new[]
+        {
+            (512.0, 1), (1024.0, 2), (2048.0, 3), (4096.0, 4),
+            (8192.0, 5), (16384.0, 6), (32768.0, 6)
+        })
+        {
+            c.Eq(level, LodWorld.WantedLevelForSq(distance * distance),
+                $"the default detail policy selects L{level} at {distance:0} blocks");
+        }
 
         // And that the table follows DetailDistance rather than caching the first one it
         // saw. Without a rebuild this is the failure that would not show up above,
@@ -116,6 +130,46 @@ public static class KeyMathChecks
 
         c.True(atFiveTwelve != atTwoThousand,
             "changing the detail distance changes the answer, so the table is rebuilt");
+    }
+
+    static void IndividualLevelThresholds(Check c)
+    {
+        int[] original = LodWorld.GetLevelThresholds();
+        try
+        {
+            int revision = LodWorld.DetailPolicyRevision;
+            LodWorld.SetLevelThresholds(new[] { 512, 900, 1800, 3600, 7200, 14400 });
+
+            c.True(LodWorld.DetailPolicyRevision > revision,
+                "changing an individual threshold advances the whole detail policy identity");
+            c.Eq(1, LodWorld.WantedLevelFor(512), "L1 begins at its independent threshold");
+            c.Eq(1, LodWorld.WantedLevelFor(899), "L1 remains selected before the independent L2 threshold");
+            c.Eq(2, LodWorld.WantedLevelFor(900), "L2 begins at its independent threshold");
+            c.Eq(5, LodWorld.WantedLevelFor(14399), "L5 remains selected before the independent L6 threshold");
+            c.Eq(6, LodWorld.WantedLevelFor(14400), "L6 begins at its independent threshold");
+            c.Eq(2, LodWorld.WantedLevelForSq(900.0 * 900.0),
+                "the hot squared lookup rebuilds after an individual threshold changes");
+
+            c.SeqEq(LodWorld.DefaultLevelThresholds,
+                LodWorld.NormalizeLevelThresholds(null, 512),
+                "an older config migrates from its one doubling distance");
+
+            int[] repaired = LodWorld.NormalizeLevelThresholds(
+                new[] { 100, 100, 100, int.MaxValue, 10, 10 }, 512);
+            c.Eq(LodWorld.MinDetailDistance, repaired[0],
+                "a hand-edited first marker clamps to the shared scale minimum");
+            for (int i = 1; i < repaired.Length; i++)
+            {
+                c.True(repaired[i] >= repaired[i - 1] + LodWorld.ThresholdStepBlocks,
+                    $"repaired L{i + 1} stays beyond its L{i} neighbour");
+            }
+            c.True(repaired[^1] <= LodWorld.MaxLevelThreshold,
+                "a hand-edited final marker clamps to the shared scale maximum");
+        }
+        finally
+        {
+            LodWorld.SetLevelThresholds(original);
+        }
     }
 
     static void Packing(Check c)

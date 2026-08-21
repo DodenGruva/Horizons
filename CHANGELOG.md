@@ -8,6 +8,44 @@ first.
 
 ## [Unreleased]
 
+## [0.3.40]
+
+In development. Automated and source verification are complete; revised in-game layout
+acceptance is pending.
+
+**The `.vhconfig` scales are now tighter and more precise after the first in-game review.**
+The LOD markers are larger, sit farther from the shared track, and carry their L1-L6 names
+inside the handles. Both scales stop at 32,768 blocks, every displayed value uses the full
+block number rather than abbreviated `k` notation, and cached draw distance moves in
+512-block increments. `Defaults` now restores a 32,768-block draw distance.
+
+## [0.3.39]
+
+Human-tested. The window opened and its first layout received concrete revision requests.
+
+**`.vhconfig` now opens a player-facing LOD settings window.** L1-L6 appear as independently
+draggable markers on one logarithmic distance scale. Each marker stops before its immediate
+neighbours, keeping the terrain policy ordered, while a separate slider sets the maximum
+cached-terrain draw distance. `Defaults` restores the accepted 512 / 1,024 / 2,048 / 4,096 /
+8,192 / 16,384 thresholds; `Cancel` discards edits and `Save` applies them live and persists
+them.
+
+Older one-distance configuration files migrate to the equivalent doubling sequence.
+`.vhdetail` remains as a quick command for resetting that sequence, and no cache, database,
+blob, or assist-protocol migration is involved.
+
+## [0.3.38]
+
+Human-tested and accepted. The owner reported an enormous performance increase with very
+little visual-fidelity loss.
+
+**The configured detail distance is now the first real LOD transition.** With the default
+`.vhdetail 512`, full one-block horizontal detail ends and L1 begins at 512 blocks; L2-L6
+then begin at 1,024, 2,048, 4,096, 8,192, and 16,384 blocks. Previously every transition
+occurred twice as far away as the command and configuration described. Distance remains
+measured to each square section's nearest edge, so a section crossing the nominal circular
+boundary stays finer instead of bringing coarse terrain prematurely toward the player.
+
 ## [0.3.37]
 
 In development. The delayed occlusion default and its aggressive visual tradeoff were
