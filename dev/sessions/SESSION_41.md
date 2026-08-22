@@ -113,6 +113,34 @@ now reports the bootstrap state if nothing has been built after ten seconds.
 
 **This investigation was out of scope and should not have been started without asking.**
 
+### 5. Phase 3b, from a question the owner asked
+
+Asked how blocked terrain could be eliminated most cheaply, the honest answer is that the
+per-pixel half is already free in hardware and the cost is shipping hidden geometry at all,
+so the cheapest rejection unit is the largest one - a quadtree node, not a section. Checking
+the code to answer properly turned up something more useful than the strategy question.
+
+`SetupSectionTransform` builds each section's cull box as `(relX, -camPos.Y, relZ)` to
+`(relX + footprint, worldHeight - camPos.Y, relZ + footprint)`: **every section is treated
+as a column from bedrock to sky**, because sections never recorded their vertical extent.
+The comment says so, and reasons correctly that the side planes do the useful work for
+frustum rejection. For depth rejection the same box is close to useless - a full-height
+column is hidden only when the occluder covers the whole column.
+
+An initial claim that the plan had overlooked this was wrong and was corrected: section 8's
+CPU section record already said "use actual mesh bounds when cheaply available, otherwise
+the full world height and accept weaker occlusion". But no phase was made responsible for
+producing them, no gate required them, and "weaker occlusion" understates a fallback that
+would have made Phase 4 measure a crippled version of itself. A negative Phase 4 result
+would have been indistinguishable from "HZB is not worth it here".
+
+It is now **Phase 3b**, ahead of Phase 4, with its own gate - including reporting the
+height distribution, because if an ordinary section really does occupy most of the world
+height then Phase 4's expected saving needs revisiting before it is built. `LodMesher`
+already computes every Y it emits, so the bounds are a running min/max over existing work
+and describe what is drawn rather than what is stored; they need no cache, protocol or
+schema change. Documentation only this session; nothing implemented.
+
 ---
 
 ## Delivered
@@ -133,6 +161,11 @@ recording fake backend; `StaticAssetChecks.IndirectShaderVariant` holding the wr
 attribute locations against the record's offsets, the flat varyings, one declaration per
 per-section uniform and one branch per stage; `PhaseCostChecks.FrameTimeline` over supplied
 timestamps. 1,969 assertions, 1,466 doc checks.
+
+**Plan (`5fe7f69`).** Phase 3b added between Phases 3 and 4, the CPU section record's
+vertical-bounds entry rewritten from optional to required with the fallback's real cost
+stated, the conservative-pyramid step told that a full-height box defeats it, Phase 4 given
+the prerequisite, and the reviewable-boundary list renumbered to carry it.
 
 **Documentation.** Plan status and Phase 3 rewritten with what was built and the two
 departures from the phase text; TODO sections for batched drawing, the micro-hitches and the
@@ -166,6 +199,11 @@ Phase 4 splits the gates anyway. Recorded as a flagged decision.
 
 **Phase 4 held** at the owner's direction. Phase 3 has no hardware evidence, and the depth
 work builds directly on its buffers and command list.
+
+**Phase 3b placed before Phase 4 rather than inside it.** Inside, its absence would only
+surface as a disappointing Phase 4 measurement. It is also the one step in the plan that
+improves the established renderer whether or not the fast path is ever adopted, which makes
+it testable on its own with batching off.
 
 ## Traps
 
@@ -213,3 +251,7 @@ Claims lacking the required evidence level:
   been read against a real client.
 - The join anomaly has one sample and a partly traced mechanism. The empty dirty set is
   described, not explained.
+- Phase 3b's premise is source-traced, not measured. That a full-height box defeats depth
+  rejection follows from the cull box in `SetupSectionTransform`; how much it costs in
+  practice depends on the height distribution the phase's own gate asks for, and nobody has
+  measured that.

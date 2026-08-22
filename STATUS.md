@@ -690,6 +690,16 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
+0. **Phase 3b: give sections a real vertical extent.** Approved 2026-08-22 and not
+started. Every section is culled with a box running from bedrock to sky, because sections
+never recorded how tall their terrain is - harmless for the frustum test, close to fatal for
+the depth test Phase 4 is built on, which would then reject almost nothing and read as a
+verdict on HZB rather than on its input. `LodMesher` already computes every Y it emits, so
+the bounds are a running min/max over existing work; no cache, protocol or schema change.
+Unlike everything else in the render plan it improves the established renderer on its own,
+so it is testable with batching off. The plan's Phase 3b holds the work list and gate,
+including reporting the height distribution before Phase 4 is argued from it.
+
 0a. **Compare `.vhindirect` off against on.** 0.3.57 can draw opaque cached terrain from the
 regional arenas as one multi-draw per page set instead of one call per section. It is off by
 default and has never drawn a frame on hardware, so all four of Phase 3's gates are open -

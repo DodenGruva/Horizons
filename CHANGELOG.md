@@ -8,6 +8,15 @@ first.
 
 ## [Unreleased]
 
+**The render plan gained a step that pays off whether or not the GPU work is ever adopted.**
+The mod culls each piece of distant terrain using a box that runs from bedrock to sky,
+because it never recorded how tall the terrain in that piece actually is. For deciding "is
+this off to the side of my view" that costs nothing. For deciding "is this hidden behind a
+mountain" - which is what the next stage of the plan is built on - it is close to useless,
+since a floor-to-ceiling column is only hidden when something covers the whole column.
+Recording the real top and bottom is nearly free, changes no cache file, and would sharpen
+the culling the mod already does today when you look up or down. Planned, not built.
+
 **A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
 The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
 gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
