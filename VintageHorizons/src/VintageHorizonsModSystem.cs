@@ -1245,6 +1245,24 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.LiveOpaqueVertices, renderer.LiveOpaqueIndices,
                 renderer.LiveWaterVertices, renderer.LiveWaterIndices);
 
+            string? arena = renderer.DescribeGpuArena();
+            if (arena != null)
+            {
+                Mod.Logger.Notification("  gpu arena shadow: {0}", arena);
+                // One command per legacy opaque draw call, so commands against batches is
+                // the draw-call reduction a regional multi-draw would deliver - but only
+                // over the terrain the arenas actually hold, which is why coverage is
+                // reported beside it and not inferred.
+                Mod.Logger.Notification(
+                    "  gpu indirect shadow: last frame {0} of {1} drawn sections would be {2} "
+                    + "multi-draw batches, coverage {3:P0}, {4} spans stale",
+                    renderer.ShadowIndirectCommands,
+                    renderer.ShadowIndirectCommands + renderer.ShadowIndirectMissing,
+                    renderer.ShadowIndirectBatches,
+                    renderer.ShadowIndirectCoverage,
+                    renderer.ShadowIndirectDropped);
+            }
+
             if (renderer.GpuTimingRequested)
             {
                 LodPhaseCost opaqueGpu = renderer.GpuOpaqueCost;
@@ -1611,6 +1629,34 @@ public class VintageHorizonsModSystem : ModSystem
                     $"[VintageHorizons] flat-top lighting {(renderer.FlatTopLight ? "on" : "off")}. " +
                     "The game never darkens flat ground as the sun drops; off shades it by sun angle " +
                     "as before. Worth comparing at dawn or dusk, not at midday.");
+            });
+
+        // Measurement only. The shadow copies cached geometry into the regional buffers a
+        // future renderer would draw from and reports how far draw calls would fall, while
+        // the established renderer keeps drawing every pixel exactly as before.
+        capi.ChatCommands.Create("vhgpu")
+            .WithDescription("Measure what a regional GPU renderer would submit. off | on | verify. Draws nothing; not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("mode"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] GPU measurement shadow " + renderer.DescribeGpuShadow());
+
+                string mode = (string)args[0];
+                if (!renderer.RequestGpuShadow(mode))
+                    return TextCommandResult.Error("[VintageHorizons] use: .vhgpu off | on | verify");
+
+                bool off = mode.Equals("off", StringComparison.OrdinalIgnoreCase);
+                return TextCommandResult.Success(off
+                    ? "[VintageHorizons] GPU measurement shadow switching off; buffers released next frame."
+                    : "[VintageHorizons] GPU measurement shadow switching on"
+                        + (mode.Equals("verify", StringComparison.OrdinalIgnoreCase)
+                            ? " with content verification" : "")
+                        + ". Live sections are re-meshed into it first, so wait a few seconds, "
+                        + "then run .vhgpu again for the numbers.");
             });
 
         capi.ChatCommands.Create("vhskip")

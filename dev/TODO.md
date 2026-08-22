@@ -2,6 +2,24 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
+## Cached sections are re-meshed about seven times each while the camera sits still
+
+Observed 2026-08-22 on 0.3.49 during the GPU arena measurement runs, in the sandbox on the
+frozen `bodanboys` profile: 752 live sections were published to the renderer 5,845 times in
+roughly six minutes, at six fixed viewpoints with no player movement. That is about seven
+re-meshes per section, and each one is a full mesh rebuild on a worker plus a full GPU
+upload in the established renderer, not only in the shadow.
+
+Nobody has established the cause. The seasonal/tint sampling is the obvious suspect, and
+`LodTerrainRenderer` also re-meshes for seam repair and for readiness-mask changes; the
+counters that would separate them are the mirror's `replaced` total against
+`SeamRepairsQueued` and the render-dirty scheduler's own accounting.
+
+This is not a GPU-renderer problem - it costs the same in the current renderer, and it is
+the sort of steady background work that shows up as intermittent hitching. Worth measuring
+before the next renderer phase, because a fast submission path built on top of seven
+redundant uploads per section per six minutes would still pay for the uploads.
+
 ## Validate the periodic-stutter changes in game
 
 Source audit found that ordinary dirty activity could admit six save snapshots every game

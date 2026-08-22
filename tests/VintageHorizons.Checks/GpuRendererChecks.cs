@@ -62,7 +62,11 @@ public static class GpuRendererChecks
             && runner.Contains("gpuRender = $gpuRenderRecord", StringComparison.Ordinal)
             && runner.Contains("Seed files require -SandboxProfile", StringComparison.Ordinal)
             && runner.Contains("seedFiles = $seedRecords", StringComparison.Ordinal)
-            && runner.Contains("[switch]$SeedOnly", StringComparison.Ordinal),
+            && runner.Contains("[switch]$SeedOnly", StringComparison.Ordinal)
+            && runner.Contains("VINTAGEHORIZONS_GPU_RENDERER = $GpuRenderer", StringComparison.Ordinal)
+            && runner.Contains("VINTAGEHORIZONS_GPU_ARENA = $GpuArena", StringComparison.Ordinal)
+            && runner.Contains("gpuRenderer = if ($GpuRenderer)", StringComparison.Ordinal)
+            && runner.Contains("gpuArena = if ($GpuArena)", StringComparison.Ordinal),
             "the Windows runner pins and records delayed GPU timing and renderer controls");
     }
 
@@ -203,6 +207,75 @@ public static class GpuRendererChecks
                 "a healthy shadow lifecycle does not emit a warning");
         }
 
+        // The in-game switch may turn mirroring on and off after selection, but it may not
+        // overrule capability validation, and turning it off must release what it held.
+        var switchable = new LodGpuShadowRenderPath();
+        legacy = new FakeRenderPath("legacy", ownsGlResources: true);
+        warnings.Clear();
+        using (var coordinator = new LodRenderPathCoordinator(
+            legacy, switchable, warnings.Add))
+        {
+            var refused = new LodRenderPathSelection(
+                LodRenderPathPreference.Shadow, false,
+                LodRenderPathSelection.LegacyPath, "driver did not validate");
+            var allowed = new LodRenderPathSelection(
+                LodRenderPathPreference.Shadow, true,
+                LodRenderPathSelection.LegacyPath, "validated");
+
+            coordinator.Configure(refused);
+            c.False(coordinator.ShadowEnabled, "an unvalidated driver starts with no shadow");
+            c.False(coordinator.SetShadowEnabled(true, refused),
+                "the in-game switch cannot enable a shadow the driver did not validate");
+            c.False(coordinator.ShadowEnabled,
+                "a refused switch leaves mirroring off rather than half on");
+
+            c.True(coordinator.SetShadowEnabled(true, allowed),
+                "a validated driver accepts the in-game switch");
+            coordinator.Publish(13, 77, null, null, 4, 6, 0, 0, 0);
+            c.Eq(1, switchable.Count, "mirroring resumes for publications after the switch");
+
+            c.True(coordinator.SetShadowEnabled(false, allowed),
+                "the in-game switch turns mirroring back off");
+            c.Eq(0, switchable.Count, "switching off clears everything the shadow held");
+            coordinator.Publish(13, 78, null, null, 4, 6, 0, 0, 0);
+            c.Eq(0, switchable.Count, "a disabled shadow receives no further publication");
+            c.Eq(2, legacy.Publications,
+                "the visible path published both sections regardless of the switch");
+            c.Eq(0, warnings.Count, "switching the shadow on and off warns about nothing");
+        }
+
+        // A shadow that owns real GL resources - the Phase 2 regional arenas - is admitted,
+        // and the coordinator still has no route to its draw methods. Only the visible path
+        // may be legacy, so a second legacy path cannot be smuggled in as the shadow.
+        var resourceShadow = new FakeRenderPath("gpu-shadow", ownsGlResources: true);
+        legacy = new FakeRenderPath("legacy", ownsGlResources: true);
+        using (var coordinator = new LodRenderPathCoordinator(
+            legacy, resourceShadow, warnings.Add))
+        {
+            coordinator.Configure(new LodRenderPathSelection(
+                LodRenderPathPreference.Shadow, true,
+                LodRenderPathSelection.LegacyPath, "test"));
+            coordinator.PrepareFrame(new LodRenderFrame(11, 1, 1, 500));
+            coordinator.DrawOpaque();
+            coordinator.DrawWater();
+            c.Eq(0, resourceShadow.DrawCalls,
+                "a shadow owning GL resources still receives no draw call");
+            c.Eq(2, legacy.DrawCalls, "every visible draw stays on legacy");
+        }
+
+        c.Throws<ArgumentException>(
+            () => new LodRenderPathCoordinator(
+                new FakeRenderPath("legacy", ownsGlResources: true),
+                new FakeRenderPath("legacy", ownsGlResources: false),
+                warnings.Add),
+            "a second path claiming the legacy name cannot be installed as the shadow");
+        c.Throws<ArgumentException>(
+            () => new LodRenderPathCoordinator(
+                new FakeRenderPath("gpu-shadow", ownsGlResources: true),
+                new FakeRenderPath("legacy", ownsGlResources: false),
+                warnings.Add),
+            "the visible path cannot be anything but legacy");
+
         var faultingShadow = new FakeRenderPath(
             "gpu-shadow", ownsGlResources: false) { ThrowOnPublish = true };
         legacy = new FakeRenderPath("legacy", ownsGlResources: true);
@@ -233,6 +306,7 @@ public static class GpuRendererChecks
             DrawFramebuffer = 17,
             ReadFramebuffer = 19,
             ActiveTexture = LodGlStateGuard.Texture0 + 3,
+            CopyWriteBuffer = 31,
         };
         api.Textures[LodGlStateGuard.Texture0] = 23;
         api.Textures[api.ActiveTexture] = 29;
@@ -241,7 +315,8 @@ public static class GpuRendererChecks
             LodGlStateMask.Program
             | LodGlStateMask.ShaderStorageBuffer
             | LodGlStateMask.Framebuffers
-            | LodGlStateMask.Texture2DUnit0);
+            | LodGlStateMask.Texture2DUnit0
+            | LodGlStateMask.CopyWriteBuffer);
 
         api.Program = 101;
         api.GenericSsbo = 103;
@@ -250,6 +325,7 @@ public static class GpuRendererChecks
         api.ReadFramebuffer = 113;
         api.ActiveTexture = LodGlStateGuard.Texture0 + 1;
         api.Textures[LodGlStateGuard.Texture0] = 127;
+        api.CopyWriteBuffer = 131;
         api.Operations.Clear();
 
         c.True(LodGlStateGuard.TryRestore(api, incoming, out string failure),
@@ -265,6 +341,8 @@ public static class GpuRendererChecks
             "the incoming active texture unit is restored");
         c.Eq(23, api.Textures[LodGlStateGuard.Texture0],
             "texture unit zero's 2D binding is restored independently");
+        c.Eq(31, api.CopyWriteBuffer,
+            "the copy-write binding the arenas transfer through is restored exactly");
         c.True(api.Operations.IndexOf("indexed-ssbo")
             < api.Operations.IndexOf("generic-ssbo"),
             "indexed SSBO restoration occurs before generic restoration");
@@ -419,6 +497,7 @@ public static class GpuRendererChecks
         public int DrawFramebuffer;
         public int ReadFramebuffer;
         public int ActiveTexture;
+        public int CopyWriteBuffer;
         public readonly Dictionary<int, int> Textures = new();
         public readonly List<string> Operations = new();
 
@@ -460,6 +539,12 @@ public static class GpuRendererChecks
         {
             Textures[ActiveTexture] = value;
             Operations.Add("texture-2d");
+        }
+        public int GetCopyWriteBuffer() => CopyWriteBuffer;
+        public void BindCopyWriteBuffer(int value)
+        {
+            CopyWriteBuffer = value;
+            Operations.Add("copy-write-buffer");
         }
     }
 }

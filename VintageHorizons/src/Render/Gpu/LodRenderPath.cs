@@ -137,6 +137,16 @@ internal sealed class LodRenderIdentityTracker
         current.TryGetValue(key, out identity);
 }
 
+/// <summary>
+/// The CPU arrays the legacy upload was handed, borrowed for the duration of one
+/// publication. A path that wants these bytes must copy them: the mesher's arrays are its
+/// own, they can be larger than the live counts, and nothing may outlive the call.
+/// </summary>
+internal readonly record struct LodRenderGeometry(
+    float[]? Xyz,
+    byte[]? Rgba,
+    int[]? Indices);
+
 internal readonly record struct LodRenderPublication(
     LodRenderResourceIdentity Identity,
     MeshRef? Opaque,
@@ -145,7 +155,8 @@ internal readonly record struct LodRenderPublication(
     int OpaqueIndices,
     int WaterVertices,
     int WaterIndices,
-    byte AssumedCoveredSides);
+    byte AssumedCoveredSides,
+    LodRenderGeometry OpaqueGeometry = default);
 
 internal readonly record struct LodRenderFrame(
     long WorldEpoch,
@@ -207,8 +218,10 @@ internal sealed class LodLegacyRenderPath : ILodRenderPath
 }
 
 /// <summary>
-/// CPU-only Phase 1 mirror. It owns identities and immutable counts, never MeshRefs or GL
-/// handles. Its draw methods exist to satisfy the common lifecycle and must not be called.
+/// The shadow mirror. It always owns identities and immutable counts, and never a MeshRef.
+/// From Phase 2 it may additionally own regional arena buffers, which are filled and
+/// retired but never drawn: its draw methods exist to satisfy the common lifecycle and the
+/// coordinator has no route to them.
 /// </summary>
 internal sealed class LodGpuShadowRenderPath : ILodRenderPath
 {
@@ -220,12 +233,31 @@ internal sealed class LodGpuShadowRenderPath : ILodRenderPath
         int WaterIndices);
 
     readonly Dictionary<long, ShadowSection> sections = new();
+    LodGpuGeometryMirror? mirror;
 
     public string Name => "gpu-shadow";
-    public bool OwnsGlResources => false;
+    public bool OwnsGlResources => mirror != null;
+    public LodGpuGeometryMirror? Mirror => mirror;
     public int Count => sections.Count;
     public long PreparedFrames { get; private set; }
     public long DrawCalls { get; private set; }
+
+    /// <summary>
+    /// Attaches the regional arenas. Deferred until path selection because the arenas are
+    /// real GL resources and must not exist before capability validation has passed.
+    /// </summary>
+    public void AttachMirror(LodGpuGeometryMirror value)
+    {
+        mirror?.Dispose();
+        mirror = value;
+    }
+
+    /// <summary>Releases the arenas and every buffer they hold.</summary>
+    public void DetachMirror()
+    {
+        mirror?.Dispose();
+        mirror = null;
+    }
 
     public void Publish(in LodRenderPublication publication)
     {
@@ -235,20 +267,45 @@ internal sealed class LodGpuShadowRenderPath : ILodRenderPath
             publication.OpaqueIndices,
             publication.WaterVertices,
             publication.WaterIndices);
+        mirror?.Mirror(publication);
     }
 
-    public void Remove(long worldEpoch, long sectionKey) => sections.Remove(sectionKey);
-    public void PrepareFrame(in LodRenderFrame frame) => PreparedFrames++;
+    public void Remove(long worldEpoch, long sectionKey)
+    {
+        sections.Remove(sectionKey);
+        mirror?.Remove(sectionKey);
+    }
+
+    public void PrepareFrame(in LodRenderFrame frame)
+    {
+        PreparedFrames++;
+        mirror?.Reclaim();
+    }
+
     public void DrawOpaque() => DrawCalls++;
     public void DrawWater() => DrawCalls++;
-    public void Clear(long worldEpoch) => sections.Clear();
+
+    public void Clear(long worldEpoch)
+    {
+        sections.Clear();
+        mirror?.Clear();
+    }
+
     public bool TryGet(long key, out ShadowSection section) => sections.TryGetValue(key, out section);
-    public void Dispose() => sections.Clear();
+
+    public void Dispose()
+    {
+        sections.Clear();
+        mirror?.Dispose();
+        mirror = null;
+    }
 }
 
 /// <summary>
-/// Phase 1 dual-path seam. Visible calls always go to legacy. Shadow failures are isolated
-/// and permanently disable mirroring for the world rather than affecting visible terrain.
+/// The dual-path seam. Visible calls always go to legacy: <see cref="DrawOpaque"/> and
+/// <see cref="DrawWater"/> name the visible path directly, so no configuration can route a
+/// frame to the shadow. Shadow failures are isolated and permanently disable mirroring for
+/// the world rather than affecting visible terrain.
 /// </summary>
 internal sealed class LodRenderPathCoordinator : IDisposable
 {
@@ -270,9 +327,9 @@ internal sealed class LodRenderPathCoordinator : IDisposable
         this.shadow = shadow;
         this.warn = warn;
         if (visible.Name != LodRenderPathSelection.LegacyPath)
-            throw new ArgumentException("Phase 1 visible path must be legacy", nameof(visible));
-        if (shadow.OwnsGlResources)
-            throw new ArgumentException("Phase 1 shadow may not own GL resources", nameof(shadow));
+            throw new ArgumentException("the visible path must be legacy", nameof(visible));
+        if (visible.Name == shadow.Name || ReferenceEquals(visible, shadow))
+            throw new ArgumentException("the shadow path must be distinct from legacy", nameof(shadow));
     }
 
     public void Configure(LodRenderPathSelection selection)
@@ -280,6 +337,32 @@ internal sealed class LodRenderPathCoordinator : IDisposable
         if (configured) return;
         configured = true;
         ShadowEnabled = selection.ShadowEnabled;
+    }
+
+    /// <summary>
+    /// Turns mirroring on or off after selection, for the in-game diagnostic switch. The
+    /// selection still has to say the shadow is allowed, so a context that failed capability
+    /// validation cannot be talked into mirroring by a chat command. Visible drawing is
+    /// unaffected either way: this only decides whether the shadow is fed.
+    /// </summary>
+    public bool SetShadowEnabled(bool enabled, LodRenderPathSelection selection)
+    {
+        if (enabled && !selection.ShadowEnabled) return false;
+        if (ShadowEnabled == enabled) return true;
+
+        ShadowEnabled = enabled;
+        if (!enabled) TryClearShadow();
+        return true;
+    }
+
+    void TryClearShadow()
+    {
+        try { shadow.Clear(identities.WorldEpoch); }
+        catch (Exception e)
+        {
+            warn("[VintageHorizons] GPU renderer shadow did not clear cleanly; visible legacy "
+                + "rendering is unchanged: " + e.Message);
+        }
     }
 
     public LodRenderResourceIdentity Publish(
@@ -291,7 +374,8 @@ internal sealed class LodRenderPathCoordinator : IDisposable
         int opaqueIndices,
         int waterVertices,
         int waterIndices,
-        byte assumedCoveredSides)
+        byte assumedCoveredSides,
+        LodRenderGeometry opaqueGeometry = default)
     {
         AdvanceWorld(worldEpoch);
         LodRenderResourceIdentity identity = identities.PreparePublication(
@@ -299,7 +383,7 @@ internal sealed class LodRenderPathCoordinator : IDisposable
         var publication = new LodRenderPublication(
             identity, opaque, water,
             opaqueVertices, opaqueIndices, waterVertices, waterIndices,
-            assumedCoveredSides);
+            assumedCoveredSides, opaqueGeometry);
 
         visible.Publish(publication);
         identities.Commit(identity);

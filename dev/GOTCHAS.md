@@ -1212,6 +1212,51 @@ measure temporal occlusion.
 
 **Found:** 2026-08-21, during the Phase 0 Bodanboys GPU feasibility routes.
 
+### G59 — A multi-draw batch is one buffer pair, so paired allocation is a correctness rule
+
+**Trigger:** designing regional GPU arenas, or any allocator whose spans will later be drawn
+by `glMultiDraw*Indirect`.
+
+**Trap:** grouping pages by world region alone looks sufficient and is not. One indirect
+batch binds exactly one vertex buffer and one index buffer, so a section whose vertices land
+in one page and whose indices land in another can never be submitted with its neighbours.
+The allocator passes every test that does not draw, and the defect only surfaces when the
+draw path is designed - by which time the allocator has a phase's worth of work on top of it.
+
+Splitting a shared memory ceiling between the two arenas by the byte ratio of the geometry
+fails for the same reason. Pages are created in pairs, so the arena that runs out of pages
+first caps both. A 70/30 byte split against 8 MiB and 4 MiB pages let the index arena refuse
+new page sets while still 40% empty, capping the mirror at 19 sets and silently limiting
+what could be measured.
+
+**Do:** allocate vertex and index pages as a set, require both halves of a section to fit
+the same set, and move to another set in the region when they do not. Split any shared
+ceiling by page size so both arenas afford the same page count. A half allocated while the
+other fails may be released immediately rather than fenced: nothing ever referenced it.
+
+**Found:** 2026-08-22, designing Phase 3 on top of the Phase 2 arenas.
+
+### G60 — A measurement that cannot see what it missed will report success
+
+**Trigger:** instrumenting a shadow or mirror that covers only part of what the real path
+does, then reporting a ratio over it.
+
+**Trap:** the natural implementation looks up each item and returns early when it is absent.
+That early return is invisible: the ratio is computed over whatever the mirror happened to
+hold, and the counter meant to catch it reports zero because it, too, only counts items the
+mirror already has. The first arena measurement reported "0 candidates not yet mirrored"
+while missing roughly half the drawn sections, and produced a flattering 6x-8x figure over
+about a third of the world. Nothing in the run looked wrong.
+
+The underlying condition was ordinary: a 256 MiB ceiling against 851 MiB of live geometry.
+The instrument's silence is what made it a trap rather than an obvious limit.
+
+**Do:** count the misses explicitly at the point of the early return, derive coverage from
+hits over hits-plus-misses, and print coverage beside every ratio the measurement produces.
+Treat a ratio without a coverage figure as unreported, not as an approximation.
+
+**Found:** 2026-08-22, on the first Bodanboys GPU arena measurement run.
+
 ## Reversals and disproved claims
 
 ### R1 â€” Compression and SQLite writes do not belong on the render/game thread

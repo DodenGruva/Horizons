@@ -126,6 +126,7 @@ public class LodTerrainRenderer : IRenderer
     readonly LodGpuTelemetry gpuTelemetry;
     readonly Func<long> currentWorldEpoch;
     readonly string? gpuRendererPreference;
+    readonly LodGpuShadowRenderPath gpuShadow;
     readonly LodRenderPathCoordinator renderPaths;
     bool renderPathConfigured;
     float renderCullDistanceSquared = float.MaxValue;
@@ -655,6 +656,7 @@ public class LodTerrainRenderer : IRenderer
             LodRenderPathPolicy.RequestsRuntimeValidation(gpuRendererPreference),
             message => capi.Logger.Notification("{0}", message),
             message => capi.Logger.Warning("{0}", message));
+        gpuShadow = new LodGpuShadowRenderPath();
         renderPaths = new LodRenderPathCoordinator(
             new LodLegacyRenderPath(
                 PublishLegacy,
@@ -663,7 +665,7 @@ public class LodTerrainRenderer : IRenderer
                 DrawLegacyOpaque,
                 DrawLegacyWater,
                 ClearMeshesLegacy),
-            new LodGpuShadowRenderPath(),
+            gpuShadow,
             message => capi.Logger.Warning("{0}", message));
         keepRenderDirty = KeepRenderDirty;
         renderDirtyBlocked = RenderDirtyBlocked;
@@ -1197,7 +1199,10 @@ public class LodTerrainRenderer : IRenderer
                 result.IndexCount,
                 result.WaterVertexCount,
                 result.WaterIndexCount,
-                result.AssumedCoveredSides);
+                result.AssumedCoveredSides,
+                // Borrowed for the call only. The shadow arenas copy what they need before
+                // this returns; nothing may retain the mesher's arrays.
+                new LodRenderGeometry(result.Xyz, result.Rgba, result.Indices));
         }
 
         MeshUploadItems += uploadBudget.Items;
@@ -2260,6 +2265,7 @@ public class LodTerrainRenderer : IRenderer
         frameCounter++;
         gpuTelemetry.BeginFrame();
         ConfigureRenderPaths();
+        ApplyGpuShadowRequest();
         float viewDistance = ApprovedViewDistance();
 
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
@@ -2434,6 +2440,154 @@ public class LodTerrainRenderer : IRenderer
             "[VintageHorizons] Renderer path: visible {0}; {1}.",
             selection.VisiblePath,
             selection.Reason);
+        if (selection.ShadowEnabled) AttachShadowArenas();
+    }
+
+    /// <summary>
+    /// Phase 2 regional arenas. They exist only beneath an already validated shadow, hold a
+    /// copy of opaque geometry that nothing draws, and are bounded by their own ceiling so
+    /// dual residency cannot double an unbounded cache.
+    /// </summary>
+    void AttachShadowArenas()
+    {
+        LodGpuArenaMode mode = LodGpuArenaPolicy.Parse(
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_ARENA"));
+        if (mode is LodGpuArenaMode.Off or LodGpuArenaMode.Invalid)
+        {
+            capi.Logger.Notification(
+                "[VintageHorizons] GPU arena shadow off; the renderer shadow stays metadata-only.");
+            return;
+        }
+
+        AttachShadowArenas(mode);
+    }
+
+    void AttachShadowArenas(LodGpuArenaMode mode)
+    {
+        LodGpuArenaPolicy.ConfigurePageBytes(
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_ARENA_PAGE_MB"));
+        long ceiling = LodGpuArenaPolicy.CeilingBytes(
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_ARENA_MB"));
+        try
+        {
+            var backend = new LodGpuOpenGlArenaBackend(
+                message => capi.Logger.Warning("{0}", message));
+            gpuShadow.AttachMirror(new LodGpuGeometryMirror(
+                backend, ceiling, verify: mode == LodGpuArenaMode.Verify));
+            shadowBuilder = new LodGpuIndirectBuilder();
+            capi.Logger.Notification(
+                "[VintageHorizons] GPU arena shadow on: {0} MiB ceiling, {1} MiB vertex pages, "
+                + "{2} page sets, content verification {3}. Indirect commands are built for "
+                + "measurement only; nothing is drawn from these buffers.",
+                ceiling / (1024 * 1024),
+                LodGpuArenaPolicy.VertexPageBytes / (1024 * 1024),
+                LodGpuArenaPolicy.PageSets(ceiling),
+                mode == LodGpuArenaMode.Verify ? "on" : "off");
+        }
+        catch (Exception e)
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] GPU arena shadow could not start; visible legacy rendering "
+                + "is unchanged: {0}", e.Message);
+        }
+    }
+
+    /// <summary>Arena occupancy for the periodic report, or null when no arena is attached.</summary>
+    public string? DescribeGpuArena() => gpuShadow.Mirror?.Describe();
+
+    // ---- In-game GPU shadow switch ----
+
+    LodGpuArenaMode? requestedShadowMode;
+
+    /// <summary>
+    /// Asks for the measurement shadow to be turned on or off. Called from a chat command,
+    /// so it only records the request: capability probing, GL resource creation and teardown
+    /// all belong to the render thread and happen at the start of the next frame.
+    /// </summary>
+    public bool RequestGpuShadow(string mode)
+    {
+        LodGpuArenaMode parsed = LodGpuArenaPolicy.Parse(mode);
+        if (parsed == LodGpuArenaMode.Invalid) return false;
+
+        requestedShadowMode = parsed;
+        if (parsed != LodGpuArenaMode.Off) gpuTelemetry.RequestRuntimeValidation();
+        return true;
+    }
+
+    void ApplyGpuShadowRequest()
+    {
+        if (requestedShadowMode is not LodGpuArenaMode mode) return;
+        if (!gpuTelemetry.ProbeAttempted) return;
+        requestedShadowMode = null;
+
+        LodRenderPathSelection selection = LodRenderPathPolicy.Evaluate(
+            mode == LodGpuArenaMode.Off ? "off" : "shadow", gpuTelemetry.Decision);
+
+        if (mode == LodGpuArenaMode.Off)
+        {
+            renderPaths.SetShadowEnabled(false, selection);
+            gpuShadow.DetachMirror();
+            shadowBuilder = null;
+            ShadowIndirectCommands = 0;
+            ShadowIndirectBatches = 0;
+            ShadowIndirectDropped = 0;
+            ShadowIndirectMissing = 0;
+            ShadowIndirectCoverage = 0;
+            capi.Logger.Notification(
+                "[VintageHorizons] GPU measurement shadow off; every arena buffer released.");
+            return;
+        }
+
+        if (!renderPaths.SetShadowEnabled(true, selection))
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] GPU measurement shadow refused: {0}", selection.Reason);
+            return;
+        }
+
+        AttachShadowArenas(mode);
+        RemeshForShadowBackfill();
+    }
+
+    /// <summary>
+    /// The arenas only ever see geometry as it is published, so a shadow switched on
+    /// mid-session would otherwise measure whatever happens to be remeshed afterwards.
+    /// Marking the live sections dirty replays them through the ordinary publication path,
+    /// at the ordinary budget, until the mirror matches what is actually on screen.
+    /// </summary>
+    void RemeshForShadowBackfill()
+    {
+        int queued = 0;
+        foreach (long key in sectionMeshes.Keys)
+        {
+            world.RenderDirty.Add(key);
+            queued++;
+        }
+        capi.Logger.Notification(
+            "[VintageHorizons] GPU measurement shadow on; {0} live sections queued for "
+            + "re-mesh so the arenas match what is drawn. Give it a moment before reading "
+            + "the numbers.", queued);
+    }
+
+    /// <summary>One line for the in-game switch, describing what is measured right now.</summary>
+    public string DescribeGpuShadow()
+    {
+        LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
+        if (mirror == null)
+        {
+            return gpuTelemetry.ProbeAttempted && !gpuTelemetry.Decision.Tier1RuntimeValidated
+                ? "off - this driver did not pass the GPU capability checks: "
+                    + gpuTelemetry.Decision.Reason
+                : "off";
+        }
+
+        return $"on{(mirror.Verifying ? " with content verification" : "")}. "
+            + $"{mirror.Count} sections mirrored, {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB live. "
+            + $"Last frame {ShadowIndirectCommands} of {ShadowIndirectCommands + ShadowIndirectMissing} "
+            + $"drawn sections would have been {ShadowIndirectBatches} multi-draw batches "
+            + $"({ShadowIndirectCoverage:P0} of drawn terrain covered"
+            + (ShadowIndirectDropped > 0 ? $", {ShadowIndirectDropped} spans stale" : "")
+            + "). Nothing is drawn from the arenas.";
     }
 
     void PrepareLegacyFrame(LodRenderFrame frame)
@@ -2444,6 +2598,7 @@ public class LodTerrainRenderer : IRenderer
     void DrawLegacyOpaque()
     {
         gpuTelemetry.BeginOpaque();
+        shadowBuilder?.Begin();
         try
         {
             if (OpaqueFrontToBack)
@@ -2470,8 +2625,44 @@ public class LodTerrainRenderer : IRenderer
                 }
             }
         }
-        finally { gpuTelemetry.EndOpaque(); }
+        finally
+        {
+            gpuTelemetry.EndOpaque();
+            EndShadowCommands();
+        }
     }
+
+    /// <summary>
+    /// Closes the shadow command list for this frame. It is only ever read as telemetry:
+    /// no buffer is uploaded and no draw is issued from it in this phase.
+    /// </summary>
+    void EndShadowCommands()
+    {
+        LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
+        if (shadowBuilder == null || mirror == null) return;
+        try
+        {
+            shadowBuilder.End(mirror.VertexArena, mirror.IndexArena);
+            ShadowIndirectCommands = shadowBuilder.CommandCount;
+            ShadowIndirectBatches = shadowBuilder.Batches.Count;
+            ShadowIndirectDropped = shadowBuilder.CandidatesDropped;
+            ShadowIndirectMissing = shadowBuilder.MissingSections;
+            ShadowIndirectCoverage = shadowBuilder.Coverage;
+        }
+        catch (Exception e)
+        {
+            shadowBuilder = null;
+            capi.Logger.Warning(
+                "[VintageHorizons] Shadow indirect command building disabled; visible legacy "
+                + "rendering is unchanged: {0}", e.Message);
+        }
+    }
+
+    public int ShadowIndirectCommands { get; private set; }
+    public int ShadowIndirectBatches { get; private set; }
+    public int ShadowIndirectDropped { get; private set; }
+    public int ShadowIndirectMissing { get; private set; }
+    public double ShadowIndirectCoverage { get; private set; }
 
     void DrawLegacyWater()
     {
@@ -2657,6 +2848,7 @@ public class LodTerrainRenderer : IRenderer
             OpaqueDrawVertices += stats.OpaqueVertices;
             OpaqueDrawIndices += stats.OpaqueIndices;
         }
+        RecordShadowCommand(key);
         capi.Render.RenderMesh(mesh);
     }
 
@@ -2908,12 +3100,61 @@ public class LodTerrainRenderer : IRenderer
         // Sides that border on never-captured area, so the shader can dissolve them
         // into the horizon instead of leaving a cliff at the edge of what we've seen.
         prog.Uniform("sectionSize", (float)footprint);
+        byte openEdges = (byte)(
+            (HasNeighbourData(key, -1, 0) ? 0 : LodGpuSectionFacts.OpenMinusX)
+            | (HasNeighbourData(key, 1, 0) ? 0 : LodGpuSectionFacts.OpenPlusX)
+            | (HasNeighbourData(key, 0, -1) ? 0 : LodGpuSectionFacts.OpenMinusZ)
+            | (HasNeighbourData(key, 0, 1) ? 0 : LodGpuSectionFacts.OpenPlusZ));
         prog.Uniform("openEdges",
-            HasNeighbourData(key, -1, 0) ? 0f : 1f,
-            HasNeighbourData(key, 1, 0) ? 0f : 1f,
-            HasNeighbourData(key, 0, -1) ? 0f : 1f,
-            HasNeighbourData(key, 0, 1) ? 0f : 1f);
+            (openEdges & LodGpuSectionFacts.OpenMinusX) != 0 ? 1f : 0f,
+            (openEdges & LodGpuSectionFacts.OpenPlusX) != 0 ? 1f : 0f,
+            (openEdges & LodGpuSectionFacts.OpenMinusZ) != 0 ? 1f : 0f,
+            (openEdges & LodGpuSectionFacts.OpenPlusZ) != 0 ? 1f : 0f);
+
+        // The same values a multi-draw would have to read from a buffer instead. Captured
+        // here so the shadow command list is built from the traversal's real decisions,
+        // not from a second, possibly disagreeing, walk of the draw list.
+        if (shadowBuilder != null)
+        {
+            lastSectionFacts = new LodGpuSectionFacts(
+                key,
+                (float)relX, (float)-camPos.Y, (float)relZ,
+                footprint,
+                (float)originX, (float)originZ,
+                LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)),
+                (int)(originX / VanillaReadinessMask.ChunkBlocks),
+                (int)(originZ / VanillaReadinessMask.ChunkBlocks),
+                openEdges);
+        }
         return true;
+    }
+
+    LodGpuIndirectBuilder? shadowBuilder;
+    LodGpuSectionFacts lastSectionFacts;
+
+    /// <summary>
+    /// Records what a regional multi-draw would have submitted for a section the legacy
+    /// path is drawing right now. It runs after every CPU decision the visible path makes -
+    /// ownership skip, distance cap, frustum, temporal occlusion - so the command list is
+    /// the one Phase 3 would actually issue, and the batch count it reports is the real
+    /// answer to how far draw calls would fall.
+    /// </summary>
+    void RecordShadowCommand(long key)
+    {
+        // Ordered so the visible path pays one null field read per drawn section when the
+        // shadow is off, which is the ordinary case.
+        if (shadowBuilder == null) return;
+        LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
+        if (mirror == null) return;
+        if (!mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section))
+        {
+            // Drawn, but the arenas never managed to hold it. Counted rather than ignored:
+            // batches over a partial mirror are not a draw-call reduction, and silence here
+            // is exactly what made the first measured run look better than it was.
+            shadowBuilder.AddMissing();
+            return;
+        }
+        shadowBuilder.Add(section, lastSectionFacts);
     }
 
     int culledThisFrame;

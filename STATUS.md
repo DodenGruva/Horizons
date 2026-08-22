@@ -2,11 +2,11 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-21
-**Mod version:** `0.3.47` source metadata (`0.2.1` is the released version; the next
-changed playable artifact must increment exactly once to `0.3.48`)
+**Status date:** 2026-08-22
+**Mod version:** `0.3.50` source metadata and installed artifact (`0.2.1` is the released
+version; the next changed playable artifact must increment exactly once to `0.3.51`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `52` C# files under `VintageHorizons/src`
+**Source files:** `56` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -17,8 +17,9 @@ changed playable artifact must increment exactly once to `0.3.48`)
 source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
 `d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
-tracking `origin/render-overhaul`. The current 0.3.47 work comprises the Phase 0
-telemetry/capability slice and Phase 1's legacy-only renderer boundary.
+tracking `origin/render-overhaul`. The current 0.3.50 work comprises the Phase 0
+telemetry/capability slice, Phase 1's legacy-only renderer boundary, Phase 2's regional
+arenas, and Phase 3's non-drawing half with its measured draw-call gate.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -666,8 +667,9 @@ the accepted delayed real-draw design. Visibility must remain fail-open and inde
 residency and persistence. The proposed follow-on architecture and its independent
 measurement gates are in `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`. Phase 0 capability
 feasibility is complete on the primary machine and the owner now owns FPS/noise-floor
-baselines. Phase 1 is approved and source/harness-complete; no visible fast-path phase has
-begun. The first source
+baselines. Phases 1 and 2 are approved and source/harness-complete, and Phase 3's
+non-drawing half is complete with its draw-call gate measured and met; no visible fast-path
+phase has begun. The first source
 slice adds delayed GPU-pass timers, draw/geometry counters and advertised-versus-validated
 capability/depth diagnostics without changing rendered pixels. Its isolated 0.3.41
 `ring-overlook` probe on the owner's Radeon RX 9070 XT reported GL 4.3, advertised regional
@@ -695,6 +697,42 @@ section-render generations and distinct opaque/water resource generations make s
 ownership explicit. The compute and depth probes now use one exact GL-state owner for
 program, generic/indexed SSBO, draw/read framebuffer, active texture and texture-unit-zero
 bindings. Owner runtime equivalence and FPS baselines remain external acceptance evidence.
+
+Phase 2 adds regional opaque arenas beneath that shadow. Vertex and index pages are
+allocated in matched sets - one of each, always together, because a multi-draw batch binds
+exactly one buffer of each and a section whose halves straddle two sets could never be drawn
+with its neighbours (G59). Each page carries a coalescing free list; replacement allocates
+and fills new spans, publishes the record, then retires the old pair behind a GPU fence;
+reclamation is bounded per frame and never waits. Releasing an already-free span throws
+rather than issuing the same bytes twice. The mirror copies the mesher's arrays during
+publication without retaining them, drops a section outright rather than keeping superseded
+geometry when an allocation is refused, and lives under an explicit ceiling because geometry
+necessarily exists twice while it is on. Transfers go through `GL_COPY_WRITE_BUFFER` under
+the shared state guard, so array and element-array bindings are never touched.
+`VINTAGEHORIZONS_GPU_ARENA=off|on|verify`, `VINTAGEHORIZONS_GPU_ARENA_MB` (256 default) and
+`VINTAGEHORIZONS_GPU_ARENA_PAGE_MB` (8 default) configure it, and `.vhgpu off|on|verify`
+switches it mid-session, re-meshing live sections into it. `verify` reads every stored span
+back and compares it byte for byte.
+
+Phase 3's non-drawing half adds the 64-byte section record carrying every per-section
+uniform the established shader receives, the 20-byte indirect command whose rejected slots
+are zeroed by instance count rather than removed, and the builder that turns the traversal's
+own ordered candidates into contiguous command runs per page set. It is fed from the real
+opaque submission point, so it measures exactly what the visible path draws.
+
+**The phase's draw-call gate is met, measured on 2026-08-22.** Three sandbox runs on the
+frozen `bodanboys` profile over `bench/routes/bodanboys-gpu-baseline.txt`, RX 9070 XT, GL
+4.3: at 32 MiB vertex pages with 100% of drawn sections mirrored, 87 -> 8, 92 -> 8,
+181 -> 17 and 182 -> 17 submissions to batches, i.e. 10.6x-11.5x fewer opaque submissions
+against a 90% requirement. Frame rates matched the shadow-off run in all six views. Page
+size is the lever, not region shape: the same route at 8 MiB pages gave only 3.7x-4.6x,
+because a batch is one page set and an 8 MiB page held about four drawn sections against
+about eleven at 32 MiB. Larger pages pack less densely (71% of committed bytes live at
+8 MiB against 49% at 32 MiB), so the ceiling must grow faster than the page size; 16 MiB is
+untested. **This counts submissions removed, not frame time saved**; G52 applies and the
+performance verdict remains owner-run. An earlier 6x-8x figure from the same route is
+withdrawn: it was taken over about a third of the world by an instrument that could not see
+its own misses (G60), and coverage is now reported beside every result.
 3. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).

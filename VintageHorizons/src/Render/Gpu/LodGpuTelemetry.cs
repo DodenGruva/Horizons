@@ -164,7 +164,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     bool timingFailureReported;
 
     public bool TimingRequested { get; }
-    public bool RuntimeValidationRequested { get; }
+    public bool RuntimeValidationRequested { get; private set; }
     public bool ProbeAttempted => probeAttempted;
     public bool TimingActive { get; private set; }
     public LodGpuCapabilityFacts Capabilities { get; private set; }
@@ -192,6 +192,18 @@ internal sealed class LodGpuTelemetry : IDisposable
         timerApi ??= new LodOpenGlTimerApi();
         opaqueTimer = new LodGpuTimerRing(timerApi);
         waterTimer = new LodGpuTimerRing(timerApi);
+    }
+
+    /// <summary>
+    /// Asks for the runtime resource probes on a context that started without them. The
+    /// probes themselves must run on the render thread, so this only records the request;
+    /// the next frame performs it. Nothing is re-probed once validation has succeeded.
+    /// </summary>
+    public void RequestRuntimeValidation()
+    {
+        if (RuntimeValidationRequested && probeAttempted && RuntimeValidation.Succeeded) return;
+        RuntimeValidationRequested = true;
+        probeAttempted = false;
     }
 
     public void BeginFrame()

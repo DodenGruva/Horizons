@@ -10,6 +10,7 @@ internal enum LodGlStateMask
     ShaderStorageBuffer = 1 << 1,
     Framebuffers = 1 << 2,
     Texture2DUnit0 = 1 << 3,
+    CopyWriteBuffer = 1 << 4,
 }
 
 internal interface ILodGlStateApi
@@ -28,10 +29,17 @@ internal interface ILodGlStateApi
     void SetActiveTexture(int value);
     int GetTexture2D();
     void BindTexture2D(int value);
+    int GetCopyWriteBuffer();
+    void BindCopyWriteBuffer(int value);
 }
 
 internal sealed class LodOpenGlStateApi : ILodGlStateApi
 {
+    // GL_COPY_WRITE_BUFFER and GL_COPY_WRITE_BUFFER_BINDING share one token value, and the
+    // game's OpenTK binding does not name the query form. Spelled out for the same reason
+    // as the shader-storage size token in LodGpuCapabilities.
+    const int CopyWriteBufferBindingToken = 0x8F37;
+
     public int GetProgram() => GL.GetInteger(GetPName.CurrentProgram);
     public void UseProgram(int value) => GL.UseProgram(value);
     public int GetGenericShaderStorageBuffer() =>
@@ -55,6 +63,9 @@ internal sealed class LodOpenGlStateApi : ILodGlStateApi
     public void SetActiveTexture(int value) => GL.ActiveTexture((TextureUnit)value);
     public int GetTexture2D() => GL.GetInteger(GetPName.TextureBinding2D);
     public void BindTexture2D(int value) => GL.BindTexture(TextureTarget.Texture2D, value);
+    public int GetCopyWriteBuffer() => GL.GetInteger((GetPName)CopyWriteBufferBindingToken);
+    public void BindCopyWriteBuffer(int value) =>
+        GL.BindBuffer(BufferTarget.CopyWriteBuffer, value);
 }
 
 internal readonly record struct LodGlStateSnapshot(
@@ -65,7 +76,8 @@ internal readonly record struct LodGlStateSnapshot(
     int DrawFramebuffer,
     int ReadFramebuffer,
     int ActiveTexture,
-    int Texture2DUnit0);
+    int Texture2DUnit0,
+    int CopyWriteBuffer = 0);
 
 /// <summary>Exact capture, ordered restore, and verification for GPU-owned GL state.</summary>
 internal static class LodGlStateGuard
@@ -81,6 +93,7 @@ internal static class LodGlStateGuard
         int readFramebuffer = 0;
         int activeTexture = 0;
         int texture2DUnit0 = 0;
+        int copyWriteBuffer = 0;
 
         if ((mask & LodGlStateMask.Program) != 0) program = api.GetProgram();
         if ((mask & LodGlStateMask.ShaderStorageBuffer) != 0)
@@ -103,9 +116,11 @@ internal static class LodGlStateGuard
             }
             finally { api.SetActiveTexture(activeTexture); }
         }
+        if ((mask & LodGlStateMask.CopyWriteBuffer) != 0)
+            copyWriteBuffer = api.GetCopyWriteBuffer();
 
         return new(mask, program, generalSsbo, indexedSsbo, drawFramebuffer,
-            readFramebuffer, activeTexture, texture2DUnit0);
+            readFramebuffer, activeTexture, texture2DUnit0, copyWriteBuffer);
     }
 
     public static bool TryRestore(
@@ -132,6 +147,8 @@ internal static class LodGlStateGuard
                 api.BindTexture2D(state.Texture2DUnit0);
                 api.SetActiveTexture(state.ActiveTexture);
             }
+            if ((state.Mask & LodGlStateMask.CopyWriteBuffer) != 0)
+                api.BindCopyWriteBuffer(state.CopyWriteBuffer);
 
             if ((state.Mask & LodGlStateMask.Program) != 0
                 && api.GetProgram() != state.Program)
@@ -161,6 +178,10 @@ internal static class LodGlStateGuard
                 if (api.GetActiveTexture() != state.ActiveTexture)
                     return Fail("active texture unit did not match its incoming value", out failure);
             }
+            if ((state.Mask & LodGlStateMask.CopyWriteBuffer) != 0
+                && api.GetCopyWriteBuffer() != state.CopyWriteBuffer)
+                return Fail("copy-write buffer binding did not match its incoming value",
+                    out failure);
 
             failure = "";
             return true;

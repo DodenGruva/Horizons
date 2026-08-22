@@ -19,6 +19,10 @@ param(
     [switch]$ServerMod,
     [switch]$DisableStats,
     [switch]$GpuStats,
+    [string]$GpuRenderer,
+    [string]$GpuArena,
+    [string]$GpuArenaMb,
+    [string]$GpuArenaPageMb,
     [string]$AutoCommand,
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$SandboxProfile,
@@ -1001,6 +1005,21 @@ $clientEnvironment = @{
 # variable unset would let the saved client setting decide, so a run without -ChunkMask
 # would measure whatever the sandbox happened to have saved rather than the radial path.
 $clientEnvironment.VINTAGEHORIZONS_CHUNK_MASK = if ($ChunkMask) { '1' } else { '0' }
+# Set before the client starts, so the measurement shadow exists from the renderer's first
+# frame and mirrors every section as it is published. The in-game switch has to backfill by
+# re-meshing instead, which a fixed-route run has no time to finish.
+if ($GpuRenderer) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_RENDERER = $GpuRenderer
+}
+if ($GpuArena) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_ARENA = $GpuArena
+}
+if ($GpuArenaMb) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_ARENA_MB = $GpuArenaMb
+}
+if ($GpuArenaPageMb) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_ARENA_PAGE_MB = $GpuArenaPageMb
+}
 if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
@@ -1153,6 +1172,10 @@ try {
         statsEnabled = -not [bool]$DisableStats
         gpuStatsEnabled = [bool]$GpuStats
         autoCommand = if ($AutoCommand) { $AutoCommand } else { $null }
+        gpuRenderer = if ($GpuRenderer) { $GpuRenderer } else { $null }
+        gpuArena = if ($GpuArena) { $GpuArena } else { $null }
+        gpuArenaMb = if ($GpuArenaMb) { $GpuArenaMb } else { $null }
+        gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
         gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')
     }

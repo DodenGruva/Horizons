@@ -2,8 +2,11 @@
 
 **Status:** Phase 0 capability feasibility is complete on the primary machine; controlled
 FPS baselines and noise-floor ownership moved to the owner on 2026-08-21. Phase 1 is
-approved and source/harness-complete. Legacy remains the only visible draw path; no regional
-arena, indirect, HZB, or other visible fast path is approved yet.
+approved and source/harness-complete. Phase 2 is approved and source/harness-complete: the
+shadow may now own regional GL arenas, and nothing draws from them. Phase 3's non-drawing
+half - record and command layouts, the batch builder, and live shadow measurement of how
+far draw calls would fall - is complete as of 2026-08-22. Legacy remains the only visible
+draw path; no visible indirect, HZB, or other fast path exists or is approved yet.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -662,6 +665,36 @@ Gate:
 
 ### Phase 2 - regional arenas with expanded geometry
 
+**Implementation status:** Source- and harness-complete on 2026-08-21; owner runtime
+observation remains open. Opaque vertex and index arenas hold fixed-size pages with a
+coalescing free list per page. Replacement allocates and fills the new spans, publishes the
+record, then retires the old pair behind a GPU fence; reclamation is bounded per frame and
+never waits. A released span that is already free throws rather than being handed out
+twice. The mirror covers all live opaque sections, copies the mesher's arrays without
+retaining them, and drops a section outright rather than keeping superseded geometry when
+an allocation is refused.
+
+**Correction, 2026-08-22.** Pages were first grouped only by world region, with a region
+free to spill into as many pages as it needed. Designing Phase 3 showed that cannot be
+drawn: one indirect batch binds exactly one vertex buffer and one index buffer, so a
+section whose halves land in different pages could never be submitted with its neighbours.
+Pages are now allocated in **page sets** - one vertex page paired with one index page - and
+a section's vertices and indices must both fit the same set or the mirror moves to another
+set in that region and creates one if none fits. A group is therefore exactly one page on
+each side, and exactly one multi-draw batch. A half allocated while the other fails is
+abandoned outright rather than fenced, because nothing ever referenced it. Regions still
+decide which sets a section may use, so a set stays spatially coherent.
+
+`VINTAGEHORIZONS_GPU_ARENA=off|on|verify` and `VINTAGEHORIZONS_GPU_ARENA_MB` (default 256,
+clamped) control the arenas beneath an already validated shadow; `verify` reads each stored
+span back and compares it byte for byte. Transfers use `GL_COPY_WRITE_BUFFER` so array and
+element-array bindings are never touched, and each call captures and restores that binding
+through the shared state guard. The coordinator now admits a shadow that owns GL resources
+and still has no route to its draw methods. Fast checks cover encoding, allocation,
+ceiling and oversize refusal, fenced retirement, bounded reclamation, coalescing, page
+convergence, region assignment at extreme coordinates, content equality, replacement,
+world-clear teardown, and a 3,000-step streaming stress with an overlap invariant.
+
 **Purpose:** Prove allocation, replacement, and lifetime without changing vertex semantics.
 
 Work:
@@ -684,6 +717,65 @@ Gate:
 - Dual-path shadow memory stays within its configured ceiling and converges after activity.
 
 ### Phase 3 - CPU-approved indirect opaque drawing
+
+**Implementation status, 2026-08-22:** the non-drawing half is source- and harness-complete;
+no visible fast path exists yet. Delivered so far:
+
+- `LodGpuSectionRecord`, a 64-byte four-`vec4` record holding every per-section value the
+  established shader currently receives as a uniform - camera-relative origin, section
+  size, stable noise origin, column blocks, integer mask origin, and the four open-edge
+  flags. Offsets and stride are spelled out and asserted rather than inherited from
+  structure packing.
+- `LodGpuIndirectCommand`, the 20-byte `DrawElementsIndirectCommand`. A rejected section is
+  zeroed through `instanceCount` and keeps its slot, so the front-to-back order never
+  shifts frame to frame. Base instance carries the record slot, per the instanced-attribute
+  mechanism in section 9; shader draw parameters remain unused.
+- `LodGpuIndirectBuilder`, which turns the traversal's own approved, ordered candidates
+  into contiguous command runs per page set, with the sets emitted in the order their
+  nearest section arrived. Strict global front-to-back is not preserved by batching; order
+  within a batch and order between batches both are.
+- Shadow measurement in the live renderer. The builder is fed from `SubmitOpaqueMesh`, so it
+  sees exactly the sections the visible path draws after ownership skip, distance cap,
+  frustum and temporal occlusion have all had their say. The periodic report states how
+  many multi-draw batches this frame's opaque submissions would have collapsed into. That
+  number is the pre-measurement for this phase's ninety-percent draw-call gate, taken
+  before any pixel changes.
+
+**Draw-call gate: met, 2026-08-22.** Three sandbox runs on the frozen `bodanboys` profile
+over `bench/routes/bodanboys-gpu-baseline.txt`, mod 0.3.49/0.3.50 Debug, RX 9070 XT,
+GL 4.3. At 32 MiB vertex pages and a 1,792 MiB ceiling, with 100% of drawn sections
+mirrored: 87 -> 8, 92 -> 8, 181 -> 17 and 182 -> 17 submissions to batches, i.e. **10.6x to
+11.5x fewer opaque submissions (91%)**, against the phase's 90% requirement. Frame rates
+matched the shadow-off run in all six views (363-430 FPS), so the measurement path itself
+costs nothing observable. This is a pre-measurement of what the fast path would submit, not
+a performance result: no pixel was drawn from an arena.
+
+**Page size is the lever, and it is not the region shape.** The same route at the original
+8 MiB pages gave only 3.7x-4.6x. A batch is one page set, so the drawn sections that can
+share a batch follow from how many sections fit a page: sections average ~780 KiB here and
+about a quarter of mirrored sections are on screen at once, so an 8 MiB page contributed
+~4 drawn sections and a 32 MiB page ~11. Region shape was not the constraint. Larger pages
+pack less densely - 71% of committed bytes were live at 8 MiB against 49% at 32 MiB - so
+the ceiling has to grow faster than the page size. `VINTAGEHORIZONS_GPU_ARENA_PAGE_MB`
+makes further tuning a run rather than a build; 16 MiB is untested and may be the better
+trade.
+
+**Two measurement defects were found and fixed before the number above was taken.** Drawn
+sections the arenas did not hold were skipped silently instead of counted, so a mirror
+covering half the drawn terrain still reported a small batch count and no warning; coverage
+is now reported beside every result and the first run's 6x-8x figure was taken over about a
+third of the world. Separately, the ceiling was split between the arenas by the byte ratio
+of the geometry while pages are allocated in pairs, so the index arena refused new page
+sets at 60% full and capped the mirror at 19 sets; the split now follows page size.
+
+**Observed in passing, not part of this phase:** 752 live sections were re-mirrored 5,845
+times in about six minutes with the camera at fixed viewpoints - roughly seven re-meshes per
+section - each of which is a full re-upload in the established renderer too. Cause not yet
+established. Recorded in `dev/TODO.md`.
+
+Still to do for the phase: the vertex array object and instanced record attribute, a fast
+variant of the terrain shader reading the record buffer, the visible draw behind a switch,
+the live legacy/indirect comparison path, and the visual and CPU-time gates.
 
 **Purpose:** Measure batching independently of HZB and compute visibility.
 

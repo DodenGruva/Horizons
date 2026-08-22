@@ -16,6 +16,53 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+## [0.3.50]
+
+In development. The measurement below is game-observed on the primary machine; nothing
+about how terrain is drawn has changed.
+
+**Measured: a regional GPU renderer would cut cached-terrain submissions by about 91%.**
+On the BodanBoys world at a fixed six-view route, 87-182 opaque submissions per frame
+collapse to 8-19 multi-draw batches - roughly eleven times fewer. That clears the 90% bar
+the renderer plan set for this stage, so the visible fast path is worth building. Frame
+rates were identical to a run with the measurement off, so the shadow itself costs nothing
+observable.
+
+**Buffer size is the lever, and it is now a setting.** A batch is one pair of buffers, so
+how many on-screen sections can share a batch follows from how many fit in a buffer. At the
+original 8 MiB the reduction was only about four times; at 32 MiB it is eleven.
+`VINTAGEHORIZONS_GPU_ARENA_PAGE_MB` sets it, so tuning costs a run rather than a build.
+Larger buffers pack less efficiently, so a larger ceiling is needed with them.
+
+**Fixes to the measurement itself.** Sections that were drawn but had not made it into the
+buffers were silently ignored rather than counted, so a partial mirror reported a
+flatteringly small batch count; coverage is now reported as a percentage beside every
+result. The memory budget was split between geometry and index buffers by their byte ratio,
+but buffers are allocated in pairs, so the index side capped the whole mirror while still
+40% empty; the split now follows buffer size. Searching a full page set for room is no
+longer counted as an allocation failure.
+
+## [0.3.49]
+
+In development. Source- and harness-tested; nothing here has been observed in game yet.
+
+**Cached terrain is now copied into the large shared GPU buffers a future renderer would
+draw from, purely to measure it.** Today every cached piece of terrain is handed to the
+graphics card as its own small parcel, so the cost of handing them over grows with how many
+there are. The mod can now also pack that same geometry into a few large shared buffers,
+grouped by area of the world, and report how few submissions would be needed to draw it.
+Nothing is drawn from those buffers and no pixel changes; the established renderer keeps
+full authority.
+
+`.vhgpu on` switches the measurement on, `.vhgpu` alone reports what it found, and
+`.vhgpu off` releases every buffer. `verify` additionally reads each stored piece back off
+the card and compares it byte for byte. It is off by default, is not saved, and is refused
+outright on a driver that has not passed the capability checks. Replaced geometry is held
+until the graphics card confirms it has finished with it, reclamation is capped per frame
+so it can never stall one, and the whole thing lives under a memory ceiling
+(`VINTAGEHORIZONS_GPU_ARENA_MB`, 256 MiB by default) because the geometry necessarily
+exists twice while it is on.
+
 ## [0.3.47]
 
 In development. Telemetry, runtime compute/SSBO validation, and private depth-copy/mip
