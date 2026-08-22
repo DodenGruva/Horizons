@@ -71,6 +71,36 @@ camera (the stable noise origin), a wrong ownership seam near loaded chunks (the
 chunk origin), or wrong dissolve at the edges of explored area (the open-edge flags). Those
 are the four values that moved from uniforms into the record, and each fails in its own way.
 
+## Sections have no vertical extent, and the depth work depends on it
+
+Added to the plan on 2026-08-22 as **Phase 3b**, before Phase 4, after the owner asked what
+the cheapest way to eliminate blocked terrain would be.
+
+The renderer culls each section with a box spanning the whole world vertically, because
+sections do not record how tall the terrain inside them is. For the frustum test that is
+harmless - the side planes do the work, and the code says so. For a depth test it is close
+to fatal: a bedrock-to-sky column is hidden only when the occluder covers the entire column,
+so Phase 4 would build a pyramid, run every step of the classification, reject almost
+nothing, and read as "HZB does not pay for itself" when the real fault was its input.
+
+The plan already contained the idea, in the CPU section record's field list: "use actual
+mesh bounds when cheaply available, otherwise the full world height and accept weaker
+occlusion". Nothing was made responsible for producing them, no gate required them, and
+"weaker occlusion" was doing a great deal of work in that sentence.
+
+**Cost is close to nothing.** `LodMesher` already computes every Y it emits, so the bounds
+are a running min/max over work it does anyway, and they describe what is drawn rather than
+what is stored. They ride with the mesh through publication into the section records. No
+cache blob, protocol or schema change; an old cache derives them on load like any other.
+
+**It pays before any of the GPU work does**, which is the unusual part: the established
+renderer would immediately stop keeping sections that a real box rejects when looking up or
+down. That makes it testable on its own, with the fast path off.
+
+Not started. See the plan's Phase 3b for the work list and its gate, including the reported
+height distribution - if an ordinary section really does occupy most of the world height,
+Phase 4's expected saving needs revisiting before it is built.
+
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
 The change-locality fix and the withdrawal of this section's old headline claim are recorded

@@ -10,6 +10,10 @@ instanced record attribute, the indirect variant of the terrain shader and the v
 multi-draw behind `.vhindirect` - landed the same day. **It has never drawn a frame on real
 hardware.** Legacy remains the default and the complete fallback; Phase 3's own gates are
 unmet until a person compares the two in game. No HZB or other fast path exists.
+**Phase 3b was added on 2026-08-22** after the owner asked how hidden terrain could be
+eliminated most cheaply: real section vertical bounds, without which Phase 4's depth test
+would reject almost nothing. It is the cheapest step in the plan and the only one that
+improves the established renderer regardless of the fast path's fate.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -245,8 +249,12 @@ One record per live renderable section should contain:
 
 - Packed section key and LOD level.
 - World-space horizontal origin and footprint.
-- Conservative vertical bounds; use actual mesh bounds when cheaply available, otherwise
-  the full world height and accept weaker occlusion.
+- Conservative vertical bounds, from the actual mesh. **Not optional, and not a nicety.**
+  This entry previously read "use actual mesh bounds when cheaply available, otherwise the
+  full world height and accept weaker occlusion", which understates the fallback badly: a
+  box spanning bedrock to sky is hidden only when the occluder covers the whole column, so
+  depth classification would reject almost nothing and Phase 4 would measure the cost of
+  the pyramid against a saving that mostly is not there. See Phase 3b.
 - Opaque allocation handle and generation.
 - Water allocation handle and generation, if later regionalized.
 - Mesh/content generation used to reject stale publication.
@@ -361,7 +369,9 @@ The reduction operation must be selected from detected depth convention, not har
 Each section test should:
 
 1. Transform the conservative AABB using the exact view/projection pair for the source
-   depth.
+   depth. The AABB's vertical extent must be the section's real mesh bounds; with a
+   full-world-height box every step below still executes and almost every section survives
+   it, which reads as "HZB does not pay for itself" rather than as a missing input.
 2. Treat near-plane crossings, invalid homogeneous coordinates, NaN/infinity, and
    degenerate projected bounds as visible.
 3. Clamp the projected rectangle to the viewport.
@@ -876,12 +886,62 @@ Gate:
   pre-agreed material frame-time threshold.
 - Open-horizon GPU time does not regress materially.
 
+### Phase 3b - real section bounds
+
+**Purpose:** Give every later occlusion test something it can actually reject.
+
+The renderer currently culls each section with a box that spans the whole world vertically:
+`SetupSectionTransform` builds it as `(relX, -camPos.Y, relZ)` to
+`(relX + footprint, worldHeight - camPos.Y, relZ + footprint)`, with the comment that Y
+spans the whole world because sections do not track their vertical extent and the side
+planes do the useful work anyway. For frustum rejection that reasoning holds. For depth
+rejection it does not: asking whether a bedrock-to-sky column is entirely behind a ridge
+almost always answers no, however low the terrain inside it actually sits.
+
+Nothing about this is expensive. `LodMesher` already computes every Y it emits, so the
+bounds are a running minimum and maximum over work it is doing regardless, and they
+describe what is drawn rather than what is stored - a section whose blocks produce no
+visible geometry contributes no bounds at all. They travel with the mesh through
+`LodRenderPublication` into the per-section record. **No cache blob, protocol, or schema
+change**: the bounds are derived in RAM whenever a mesh is built, so an old cache produces
+them on load like any other.
+
+Work:
+
+- Track minimum and maximum emitted Y in the mesher, per section and per pass (opaque and
+  water separately, since they are submitted separately).
+- Carry them through publication into the CPU section record and the GPU section record.
+- Use them for the existing frustum box, which is a win in the established renderer on its
+  own: looking up or down currently keeps sections a real box would reject.
+- Report the distribution once per interval, so the next phase can be argued from measured
+  section heights rather than assumed ones.
+
+Gate:
+
+- Bounds are never tighter than the geometry: a deterministic check over every face
+  direction, coordinate limit and LOD scale, plus the degenerate cases of an empty mesh and
+  a single flat quad.
+- No section is culled that the full-height box would have drawn, other than by the
+  intended vertical rejection; a human sees no terrain disappear when looking up or down.
+- The reported height distribution establishes how much of the world height an ordinary
+  section actually occupies. If that number is close to the whole world height, Phase 4's
+  expected saving needs revisiting before it is built rather than after.
+
+**Why before Phase 4 rather than inside it.** Phase 4's gate is that depth-copy and HZB
+build time stay below the saving opportunity. Run with full-height boxes, that gate is
+measuring a crippled version of the thing being judged, and a negative result would be
+indistinguishable from "HZB is not worth it here". This is also the cheapest step in the
+plan by some distance, and the only one that improves the established renderer whether or
+not the fast path is ever adopted.
+
 ### Phase 4 - HZB construction and shadow classification
 
 **Purpose:** Prove conservative depth logic before it can suppress terrain.
 
 Work:
 
+- Requires Phase 3b: with full-world-height section boxes this phase cannot succeed, and
+  its failure would look like a verdict on HZB rather than on its input.
 - Copy/resolve current vanilla depth into a private texture after vanilla terrain.
 - Build every HZB mip with delayed GPU timing.
 - Implement conservative section-AABB projection and sampling.
@@ -1187,12 +1247,13 @@ Keep the following as separate reviewable changes and separate measurements:
 2. Renderer interface/path selection with legacy-only behavior.
 3. Expanded regional arena shadow resources.
 4. Expanded regional indirect opaque draw.
-5. HZB copy/reduction and shadow classification.
-6. HZB-driven indirect suppression.
-7. Cached-on-cached near/far or temporal experiment.
-8. Packed opaque quad format and rendering.
-9. GPU LOD or cluster experiment, never both together.
-10. Hardening, accepted defaults, and documentation.
+5. Real section vertical bounds, through the mesher, publication and both records.
+6. HZB copy/reduction and shadow classification.
+7. HZB-driven indirect suppression.
+8. Cached-on-cached near/far or temporal experiment.
+9. Packed opaque quad format and rendering.
+10. GPU LOD or cluster experiment, never both together.
+11. Hardening, accepted defaults, and documentation.
 
 Do not combine a geometry-format change with the first direct-GL arena implementation. Do
 not combine HZB construction with the first visible indirect draw. Do not combine GPU LOD
