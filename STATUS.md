@@ -3,10 +3,11 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-22
-**Mod version:** `0.3.52` source metadata and installed artifact (`0.2.1` is the released
-version; the next changed playable artifact must increment exactly once to `0.3.53`)
+**Mod version:** `0.3.57` source metadata and packaged artifact; `0.3.51` is what is
+installed and human-tested (`0.2.1` is the released version; the next changed playable
+artifact must increment exactly once to `0.3.58`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `56` C# files under `VintageHorizons/src`
+**Source files:** `59` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -19,7 +20,8 @@ source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
 tracking `origin/render-overhaul`. The current 0.3.50 work comprises the Phase 0
 telemetry/capability slice, Phase 1's legacy-only renderer boundary, Phase 2's regional
-arenas, and Phase 3's non-drawing half with its measured draw-call gate.
+arenas, and Phase 3 complete in source: the measured draw-call gate, and since 0.3.53 the
+visible multi-draw behind `.vhindirect`, which has never run on hardware.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -688,6 +690,19 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
+0a. **Compare `.vhindirect` off against on.** 0.3.57 can draw opaque cached terrain from the
+regional arenas as one multi-draw per page set instead of one call per section. It is off by
+default and has never drawn a frame on hardware, so all four of Phase 3's gates are open -
+including whether its shader variant compiles. Same view, both ways: the picture must be
+identical. For the CPU-time gate, run the scripted pair over
+`bench/routes/bodanboys-gpu-baseline.txt` with `-GpuIndirect 0` and `1` and delayed
+occlusion off on both sides, because it is suspended while batching is on.
+
+0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
+that can see the reported micro-hitches at all, and `SlowFrames` against
+`SlowFramesWithSlowMod` says whether they are this mod's doing before another session is
+spent on our own phase costs.
+
 0. Look at the far dissolve band - the edge where cached terrain fades into sky - at dusk
 and at night, flipping `.vhlight sky`. It is the only part of the lighting work nobody has
 seen, and it is identical in full daylight so midday shows nothing. While in 0.3.52, also
@@ -861,6 +876,16 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
+- Phase 3's visible indirect path: the drawer issues every batch once against the page pair
+  it named and at its own command offset, restores captured GL state even after a refused
+  batch, disables itself for the session on a failure and warns once. The shader wrappers
+  are held to three and four code lines, the record attributes to the offsets the draw
+  backend binds them to, and each per-section uniform to a single declaration inside its
+  variant block. 1,969 assertions.
+- The frame timeline separates a slow frame from a slow mod, judged against a moving
+  average, over supplied timestamps: a steady 400 FPS client reports no spikes, a frame four
+  times its neighbours is one, 400 us of jitter at 60 FPS is not, and a two-second world
+  load neither counts nor moves the average.
 - Change locality: `MarkChanged` now refreshes only the neighbours across edges the change
   actually touched. Measured over three sandbox runs on the frozen `bodanboys` profile,
   2026-08-22: 38-40 content changes produced 77-80 stale-mesh claims, **2.00-2.03 per**
@@ -1024,6 +1049,20 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Not yet established
 
+- **Everything about Phase 3's visible path (0.3.57).** The drawer, the split shader body,
+  the indirect pass, `.vhindirect` and `VINTAGEHORIZONS_GPU_INDIRECT` are built, checked and
+  packaged, and have never drawn a pixel. The visual gate, the CPU-submission gate and the
+  open-horizon GPU check are all open, and so is whether the indirect shader variant
+  compiles: there is no GLSL validator on this machine, so the include splice and both
+  preprocessor branches were simulated offline rather than compiled. `LoadShader` names the
+  failure explicitly if the shader body is ever missing from the engine's include table.
+- The frame timeline and the join stall line are source- and harness-tested only. Neither
+  has been read against a real client.
+- The join anomaly has one sample. Five joins of 2,183-3,291 cached sections reach their
+  first hundred meshes in 2.3-9.1 s; one of 5,143 took 60.2 s with nothing built after 30
+  seconds and every queue empty. Both cache databases were decoded and both hold a complete
+  L0-L6 pyramid, so a missing coarse level is not the cause. Why the dirty set was empty is
+  described, not explained, and the owner holds that work.
 - 0.3.52 is built and harness-tested only. The corrected far sky band and the absence of
   stale sections or seams from change-locality narrowing are both unverified in game.
 - The change-locality measurement comes only from a frozen, warm profile, where every

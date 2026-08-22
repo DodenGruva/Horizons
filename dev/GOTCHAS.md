@@ -1342,6 +1342,38 @@ shape: the round trip preserves what it does not touch, so only newly typed text
 
 **Found:** 2026-08-22, session 40.
 
+### G65 — Cleanup must not run through the guard that protects the work
+
+**Trigger:** a component that disables itself after a failure and also has state to restore.
+
+**Trap:** `LodGpuIndirectDrawer.Try` returns immediately once the drawer has failed, and the
+`finally` that restored the captured GL state called it - so restoration was skipped exactly
+when a batch had been refused, and the engine's own renderer runs immediately afterwards.
+The happy path was perfect and the failure path silently did nothing.
+
+**Do:** run cleanup outside the failure guard, and assert in a check that it happened after a
+refusal, not only after a success. A fake backend that records the call order is enough.
+
+**Found:** 2026-08-22, session 41, by the check rather than by a run.
+
+### G66 — A switch that changes how the renderer decides must invalidate what it decided
+
+**Trigger:** adding a runtime toggle that changes the draw path, the render order, or how
+visibility is established.
+
+**Trap:** delayed occlusion caches per-section "hidden" answers across frames. Batched
+drawing cannot issue those queries at all, so flipping `.vhindirect` back off left the
+renderer acting on answers taken seconds earlier under a different path and a different
+camera. The symptom would have been terrain missing straight after switching off - read as
+the fast path losing terrain, in the exact comparison the switch exists for.
+
+**Do:** call `InvalidateTemporalOcclusionScene` whenever the path that produced the answers
+changes, and decide the path once per frame before anything resolves a query. The static
+check counting invalidation sites is deliberately exact: raise it with a reason rather than
+relaxing it.
+
+**Found:** 2026-08-22, session 41, by review before the build was run.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

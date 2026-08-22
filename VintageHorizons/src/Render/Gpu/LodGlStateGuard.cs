@@ -11,6 +11,8 @@ internal enum LodGlStateMask
     Framebuffers = 1 << 2,
     Texture2DUnit0 = 1 << 3,
     CopyWriteBuffer = 1 << 4,
+    VertexArray = 1 << 5,
+    DrawIndirectBuffer = 1 << 6,
 }
 
 internal interface ILodGlStateApi
@@ -31,6 +33,10 @@ internal interface ILodGlStateApi
     void BindTexture2D(int value);
     int GetCopyWriteBuffer();
     void BindCopyWriteBuffer(int value);
+    int GetVertexArray();
+    void BindVertexArray(int value);
+    int GetDrawIndirectBuffer();
+    void BindDrawIndirectBuffer(int value);
 }
 
 internal sealed class LodOpenGlStateApi : ILodGlStateApi
@@ -66,6 +72,11 @@ internal sealed class LodOpenGlStateApi : ILodGlStateApi
     public int GetCopyWriteBuffer() => GL.GetInteger((GetPName)CopyWriteBufferBindingToken);
     public void BindCopyWriteBuffer(int value) =>
         GL.BindBuffer(BufferTarget.CopyWriteBuffer, value);
+    public int GetVertexArray() => GL.GetInteger(GetPName.VertexArrayBinding);
+    public void BindVertexArray(int value) => GL.BindVertexArray(value);
+    public int GetDrawIndirectBuffer() => GL.GetInteger(GetPName.DrawIndirectBufferBinding);
+    public void BindDrawIndirectBuffer(int value) =>
+        GL.BindBuffer(BufferTarget.DrawIndirectBuffer, value);
 }
 
 internal readonly record struct LodGlStateSnapshot(
@@ -77,7 +88,9 @@ internal readonly record struct LodGlStateSnapshot(
     int ReadFramebuffer,
     int ActiveTexture,
     int Texture2DUnit0,
-    int CopyWriteBuffer = 0);
+    int CopyWriteBuffer = 0,
+    int VertexArray = 0,
+    int DrawIndirectBuffer = 0);
 
 /// <summary>Exact capture, ordered restore, and verification for GPU-owned GL state.</summary>
 internal static class LodGlStateGuard
@@ -94,6 +107,8 @@ internal static class LodGlStateGuard
         int activeTexture = 0;
         int texture2DUnit0 = 0;
         int copyWriteBuffer = 0;
+        int vertexArray = 0;
+        int drawIndirectBuffer = 0;
 
         if ((mask & LodGlStateMask.Program) != 0) program = api.GetProgram();
         if ((mask & LodGlStateMask.ShaderStorageBuffer) != 0)
@@ -118,9 +133,16 @@ internal static class LodGlStateGuard
         }
         if ((mask & LodGlStateMask.CopyWriteBuffer) != 0)
             copyWriteBuffer = api.GetCopyWriteBuffer();
+        // The vertex array is captured last and restored first: it carries the element
+        // binding with it, so putting the incoming array back also puts back an element
+        // buffer this code never has to name.
+        if ((mask & LodGlStateMask.VertexArray) != 0) vertexArray = api.GetVertexArray();
+        if ((mask & LodGlStateMask.DrawIndirectBuffer) != 0)
+            drawIndirectBuffer = api.GetDrawIndirectBuffer();
 
         return new(mask, program, generalSsbo, indexedSsbo, drawFramebuffer,
-            readFramebuffer, activeTexture, texture2DUnit0, copyWriteBuffer);
+            readFramebuffer, activeTexture, texture2DUnit0, copyWriteBuffer, vertexArray,
+            drawIndirectBuffer);
     }
 
     public static bool TryRestore(
@@ -149,6 +171,10 @@ internal static class LodGlStateGuard
             }
             if ((state.Mask & LodGlStateMask.CopyWriteBuffer) != 0)
                 api.BindCopyWriteBuffer(state.CopyWriteBuffer);
+            if ((state.Mask & LodGlStateMask.VertexArray) != 0)
+                api.BindVertexArray(state.VertexArray);
+            if ((state.Mask & LodGlStateMask.DrawIndirectBuffer) != 0)
+                api.BindDrawIndirectBuffer(state.DrawIndirectBuffer);
 
             if ((state.Mask & LodGlStateMask.Program) != 0
                 && api.GetProgram() != state.Program)
@@ -181,6 +207,14 @@ internal static class LodGlStateGuard
             if ((state.Mask & LodGlStateMask.CopyWriteBuffer) != 0
                 && api.GetCopyWriteBuffer() != state.CopyWriteBuffer)
                 return Fail("copy-write buffer binding did not match its incoming value",
+                    out failure);
+            if ((state.Mask & LodGlStateMask.VertexArray) != 0
+                && api.GetVertexArray() != state.VertexArray)
+                return Fail("vertex array binding did not match its incoming value",
+                    out failure);
+            if ((state.Mask & LodGlStateMask.DrawIndirectBuffer) != 0
+                && api.GetDrawIndirectBuffer() != state.DrawIndirectBuffer)
+                return Fail("draw indirect binding did not match its incoming value",
                     out failure);
 
             failure = "";

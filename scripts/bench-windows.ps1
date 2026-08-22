@@ -23,6 +23,11 @@ param(
     [string]$GpuArena,
     [string]$GpuArenaMb,
     [string]$GpuArenaPageMb,
+    # Draw opaque cached terrain from the regional arenas. Pinned for a whole run rather
+    # than typed in game, because the phase gate is a controlled A/B and a comparison whose
+    # switches were set by hand is how session 40 lost a run.
+    [ValidateSet('0', '1')]
+    [string]$GpuIndirect,
     [string]$AutoCommand,
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$SandboxProfile,
@@ -1020,6 +1025,9 @@ if ($GpuArenaMb) {
 if ($GpuArenaPageMb) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_ARENA_PAGE_MB = $GpuArenaPageMb
 }
+if ($GpuIndirect) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_INDIRECT = $GpuIndirect
+}
 if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
@@ -1176,6 +1184,7 @@ try {
         gpuArena = if ($GpuArena) { $GpuArena } else { $null }
         gpuArenaMb = if ($GpuArenaMb) { $GpuArenaMb } else { $null }
         gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
+        gpuIndirect = if ($GpuIndirect) { $GpuIndirect } else { $null }
         gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')
     }

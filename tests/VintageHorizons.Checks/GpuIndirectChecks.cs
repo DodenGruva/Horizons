@@ -15,6 +15,106 @@ public static class GpuIndirectChecks
         Batching(c);
         BatchOrdering(c);
         PagePairing(c);
+        DrawerIssuesEveryBatch(c);
+        DrawerStopsAfterAFailure(c);
+    }
+
+    /// <summary>
+    /// The drawer turns the built command list into GL calls. What matters is that every
+    /// batch is issued exactly once, against the page pair it named, at the byte offset of
+    /// its own first command - an offset in commands rather than bytes would silently draw
+    /// the wrong geometry - and that the state the pass disturbs is put back afterwards.
+    /// </summary>
+    static void DrawerIssuesEveryBatch(Check c)
+    {
+        var arenaBackend = new FakeIndirectBackend();
+        using var mirror = new LodGpuGeometryMirror(arenaBackend, 64L * 1024 * 1024);
+        var builder = new LodGpuIndirectBuilder();
+
+        long near = LodWorld.SectionKey(0, 0, 0);
+        long beside = LodWorld.SectionKey(0, 1, 0);
+        long far = LodWorld.SectionKey(0, 64, 64);
+        foreach (long key in new[] { near, beside, far }) mirror.Mirror(Publication(key));
+
+        builder.Begin();
+        foreach (long key in new[] { near, beside, far })
+        {
+            mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+            builder.Add(section, Facts(key));
+        }
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+
+        var drawBackend = new FakeDrawBackend();
+        var warnings = new List<string>();
+        using var drawer = new LodGpuIndirectDrawer(drawBackend, warnings.Add);
+
+        c.True(drawer.Draw(builder), "a complete command list draws");
+        c.SeqEq(new[] { "create", "upload", "begin", "draw", "draw", "end" }, drawBackend.Calls,
+            "the pass creates once, uploads this frame, then draws inside one begin/end");
+        c.Eq(2, drawBackend.Batches.Count, "both batches are issued");
+        c.Eq(builder.Batches[0].VertexPage, drawBackend.Batches[0].VertexPage,
+            "the first batch binds the page set it named");
+        c.Eq(builder.Batches[1].FirstCommand, drawBackend.Batches[1].FirstCommand,
+            "the second batch starts at its own first command, not at the buffer start");
+        c.Eq(builder.CommandCount * LodGpuIndirectCommand.StrideBytes,
+            drawBackend.UploadedCommandBytes,
+            "every command reaches the GPU, and no more than that");
+        c.Eq(builder.CommandCount * LodGpuSectionRecord.StrideBytes,
+            drawBackend.UploadedRecordBytes,
+            "the record buffer is uploaded in step with the commands");
+        c.Eq(2, drawer.LastBatches, "the frame reports what it issued");
+        c.Eq(3, drawer.LastCommands, "and how many sections that covered");
+        c.SeqEq(Array.Empty<string>(), warnings, "a clean pass says nothing");
+
+        // A second frame reuses the objects rather than recreating them.
+        drawBackend.Calls.Clear();
+        c.True(drawer.Draw(builder), "the next frame draws too");
+        c.False(drawBackend.Calls.Contains("create"),
+            "the vertex array and buffers are created once, not per frame");
+
+        // An empty list is not a failure: there is simply nothing to draw.
+        builder.Begin();
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+        drawBackend.Calls.Clear();
+        c.False(drawer.Draw(builder), "an empty command list draws nothing");
+        c.SeqEq(Array.Empty<string>(), drawBackend.Calls, "and issues no GL calls at all");
+        c.False(drawer.Failed, "which is not a failure");
+    }
+
+    /// <summary>
+    /// A driver that refuses a multi-draw must cost the fast path and nothing else. The
+    /// drawer gives up for the session rather than retrying every frame, says so once, and
+    /// still restores the state it captured - the engine's own renderer runs next.
+    /// </summary>
+    static void DrawerStopsAfterAFailure(Check c)
+    {
+        var arenaBackend = new FakeIndirectBackend();
+        using var mirror = new LodGpuGeometryMirror(arenaBackend, 64L * 1024 * 1024);
+        var builder = new LodGpuIndirectBuilder();
+        builder.Begin();
+        foreach (long key in new[] { LodWorld.SectionKey(0, 0, 0), LodWorld.SectionKey(0, 64, 64) })
+        {
+            mirror.Mirror(Publication(key));
+            mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+            builder.Add(section, Facts(key));
+        }
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+
+        var drawBackend = new FakeDrawBackend { FailOnBatch = 1 };
+        var warnings = new List<string>();
+        using var drawer = new LodGpuIndirectDrawer(drawBackend, warnings.Add);
+
+        c.False(drawer.Draw(builder), "a pass that could not issue every batch is not a draw");
+        c.True(drawer.Failed, "the drawer disables itself rather than retrying every frame");
+        c.False(drawer.Ready, "so the renderer stops choosing it");
+        c.True(drawBackend.Calls.Contains("end"),
+            "the captured state is restored even though a batch failed");
+        c.Eq(1, warnings.Count, "the failure is reported once");
+
+        drawBackend.Calls.Clear();
+        c.False(drawer.Draw(builder), "a failed drawer does not try again");
+        c.SeqEq(Array.Empty<string>(), drawBackend.Calls, "and issues nothing further");
+        c.Eq(1, warnings.Count, "and does not repeat itself every frame");
     }
 
     static void RecordLayout(Check c)
@@ -330,6 +430,58 @@ public static class GpuIndirectChecks
             (int)(originX / VanillaReadinessMask.ChunkBlocks),
             (int)(originZ / VanillaReadinessMask.ChunkBlocks),
             0);
+    }
+
+    /// <summary>
+    /// Records the calls a pass makes instead of issuing them. Everything the real backend
+    /// does is a GL call with no return value, so the only way to hold its behaviour is to
+    /// write down what it was asked to do and in what order.
+    /// </summary>
+    sealed class FakeDrawBackend : ILodGpuDrawBackend
+    {
+        public readonly List<string> Calls = new();
+        public readonly List<LodGpuDrawBatch> Batches = new();
+        public int UploadedCommandBytes;
+        public int UploadedRecordBytes;
+
+        /// <summary>Zero-based index of a batch to refuse, or -1 for none.</summary>
+        public int FailOnBatch { get; init; } = -1;
+
+        public bool Create()
+        {
+            Calls.Add("create");
+            return true;
+        }
+
+        public bool UploadFrame(ReadOnlySpan<byte> commands, ReadOnlySpan<byte> records)
+        {
+            Calls.Add("upload");
+            UploadedCommandBytes = commands.Length;
+            UploadedRecordBytes = records.Length;
+            return true;
+        }
+
+        public bool BeginDraw()
+        {
+            Calls.Add("begin");
+            return true;
+        }
+
+        public bool DrawBatch(int vertexPage, int indexPage, int firstCommand, int commandCount)
+        {
+            Calls.Add("draw");
+            if (Batches.Count == FailOnBatch) return false;
+            Batches.Add(new LodGpuDrawBatch(0, vertexPage, indexPage, firstCommand, commandCount));
+            return true;
+        }
+
+        public bool EndDraw()
+        {
+            Calls.Add("end");
+            return true;
+        }
+
+        public void Dispose() => Calls.Add("dispose");
     }
 
     /// <summary>Pages are byte arrays and fences signal on request; see GpuArenaChecks.</summary>

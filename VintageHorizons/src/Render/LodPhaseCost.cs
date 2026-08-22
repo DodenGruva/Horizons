@@ -96,6 +96,7 @@ public struct LodPhaseCost
     public int Calls => calls;
     public double AvgUs => calls == 0 ? 0 : ticks * 1_000_000.0 / Stopwatch.Frequency / calls;
     public double MaxUs => maxTicks * 1_000_000.0 / Stopwatch.Frequency;
+    public double P50Us => PercentileUs(0.50);
     public double P95Us => PercentileUs(0.95);
     public double P99Us => PercentileUs(0.99);
     public int Over25Ms => over25Ms;

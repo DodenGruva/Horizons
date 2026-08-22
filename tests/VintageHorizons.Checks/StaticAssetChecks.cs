@@ -28,7 +28,156 @@ public static class StaticAssetChecks
         ConfigDialogWiring(c);
         NoIntegerVectorUniforms(c);
         SourceHasNoControlCharacters(c);
+        IndirectShaderVariant(c);
     }
+
+    /// <summary>
+    /// The indirect path's acceptance gate is that it draws pixels identical to the
+    /// established path. That is only a real gate while the two cannot drift: they share
+    /// one body file, and the only difference between the programs is one define.
+    ///
+    /// This holds four things a silent edit could break. That the wrappers differ by the
+    /// define alone, so nobody can start "just tweaking" the fast variant. That the
+    /// per-section attributes sit at the locations the draw backend points them at, since
+    /// a mismatch there addresses the wrong value for every section at once and looks
+    /// like a geometry bug. That both stages agree about the two values the vertex stage
+    /// forwards. And that the vertex body no longer declares the per-section uniforms
+    /// outside their variant block, which would shadow the defines and fail to compile
+    /// only in the variant nobody builds by default.
+    /// </summary>
+    static void IndirectShaderVariant(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "LodTerrainRenderer.cs"));
+        string mod = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "VintageHorizonsModSystem.cs"));
+        string bench = File.ReadAllText(Path.Combine(root, "scripts", "bench-windows.ps1"));
+
+        // Default off, with an explicit on override, and reachable from a scripted run.
+        // The phase gate is a controlled A/B; a switch that can only be typed in game
+        // cannot be pinned for a route, and a comparison whose switches were set by hand
+        // is how session 40 lost a run.
+        c.True(renderer.Contains("Environment.GetEnvironmentVariable(\"VINTAGEHORIZONS_GPU_INDIRECT\") == \"1\"",
+                StringComparison.Ordinal),
+            "batched drawing is off unless the environment turns it on");
+        c.True(mod.Contains("ChatCommands.Create(\"vhindirect\")", StringComparison.Ordinal),
+            "and can still be flipped live for a side-by-side look");
+        c.True(bench.Contains("VINTAGEHORIZONS_GPU_INDIRECT", StringComparison.Ordinal)
+            && bench.Contains("$GpuIndirect", StringComparison.Ordinal),
+            "the benchmark runner can pin either side of the comparison for a whole run");
+
+        // Delayed occlusion cannot run under batching, so the pair must stay comparable
+        // only when it is off on both sides. The renderer enforces that itself.
+        c.True(renderer.Contains("&& !indirectDrawingThisFrame", StringComparison.Ordinal),
+            "delayed occlusion is suspended while batched drawing is on, in one place");
+
+        string shaders = Path.Combine(
+            GameAssemblies.RepoRoot, "VintageHorizons", "assets", "vintagehorizons", "shaders");
+
+        foreach (string stage in new[] { "vsh", "fsh" })
+        {
+            string plain = File.ReadAllText(Path.Combine(shaders, "lodterrain." + stage));
+            string indirect = File.ReadAllText(Path.Combine(shaders, "lodterrainindirect." + stage));
+
+            c.True(plain.Contains("#include lodterrainbody." + stage, StringComparison.Ordinal),
+                $"the established {stage} program includes the shared body");
+            c.True(indirect.Contains("#include lodterrainbody." + stage, StringComparison.Ordinal),
+                $"the indirect {stage} program includes the same shared body");
+            c.False(plain.Contains("VH_INDIRECT", StringComparison.Ordinal),
+                $"the established {stage} program does not define the indirect switch");
+            c.True(indirect.Contains("#define VH_INDIRECT 1", StringComparison.Ordinal),
+                $"the indirect {stage} program defines the indirect switch");
+
+            // A wrapper is a version line, an extension line, comments, and an include.
+            // Anything else in one is shader code that exists in only one variant.
+            c.Eq(3, CodeLines(plain),
+                $"the established {stage} wrapper is only a version, an extension and an include");
+            c.Eq(4, CodeLines(indirect),
+                $"the indirect {stage} wrapper adds only the define");
+        }
+
+        string vertex = ShaderBody("vsh");
+        string fragment = ShaderBody("fsh");
+
+        // Attribute locations, against the offsets the draw backend binds them to.
+        foreach ((int location, string name) in new[]
+        {
+            (2, "vhRecordOrigin"), (3, "vhRecordNoise"),
+            (4, "vhRecordMask"), (5, "vhRecordOpenEdges"),
+        })
+        {
+            c.True(vertex.Contains($"layout(location = {location}) in ", StringComparison.Ordinal)
+                && vertex.Contains(name + ";", StringComparison.Ordinal),
+                $"the indirect vertex body reads {name} from attribute {location}");
+        }
+
+        c.True(vertex.Contains("flat out float vhColumnBlocks;", StringComparison.Ordinal)
+            && fragment.Contains("flat in float vhColumnBlocks;", StringComparison.Ordinal),
+            "the column size is handed to the fragment stage as a flat varying");
+        c.True(vertex.Contains("flat out ivec2 vhMaskSectionOrigin;", StringComparison.Ordinal)
+            && fragment.Contains("flat in ivec2 vhMaskSectionOrigin;", StringComparison.Ordinal),
+            "the chunk origin is handed over as flat integers, never interpolated floats");
+
+        // Every per-section uniform must sit inside the variant block. A stray declaration
+        // outside it collides with the define and only breaks the indirect build.
+        foreach (string declaration in new[]
+        {
+            "uniform mat4 modelMatrix;", "uniform vec4 noiseOrigin;",
+            "uniform vec4 openEdges;", "uniform float sectionSize;",
+        })
+        {
+            c.Eq(1, Occurrences(vertex, declaration),
+                $"the vertex body declares {declaration} exactly once, inside the variant block");
+        }
+        foreach (string declaration in new[]
+        {
+            "uniform int maskSectionOriginX;", "uniform int maskSectionOriginZ;",
+            "uniform float columnBlocks;",
+        })
+        {
+            c.Eq(1, Occurrences(fragment, declaration),
+                $"the fragment body declares {declaration} exactly once, inside the variant block");
+        }
+
+        // The vertex body branches twice - once to choose uniforms or attributes, once at
+        // the end of main to fill the varyings - and the fragment body once. A body that
+        // branched in five places would be two shaders again, written in one file.
+        c.Eq(2, Occurrences(vertex, "#ifdef VH_INDIRECT"),
+            "the vertex body branches on the variant exactly twice");
+        c.Eq(1, Occurrences(fragment, "#ifdef VH_INDIRECT"),
+            "the fragment body branches on the variant exactly once");
+
+        // One #else per stage: the declaration block. The second vertex branch only fills
+        // the varyings and has no established-path half, and the SSAO branches the engine
+        // includes bring in are #if, not #ifdef, so they are not counted here.
+        c.Eq(1, Occurrences(vertex, "#else"), "only the declaration block has two halves");
+        c.Eq(1, Occurrences(fragment, "#else"), "and the same in the fragment body");
+    }
+
+    /// <summary>Non-blank, non-comment lines: what a wrapper actually compiles.</summary>
+    static int CodeLines(string source) => source
+        .Split('\n')
+        .Count(l => l.Trim().Length > 0 && !l.TrimStart().StartsWith("//", StringComparison.Ordinal));
+
+    static int Occurrences(string haystack, string needle)
+    {
+        int count = 0;
+        for (int i = haystack.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+             i = haystack.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
+    /// <summary>
+    /// The shader body, which is where every rule below actually lives. The two programs
+    /// under assets/.../shaders are three-line wrappers that include it: one plain, one
+    /// with VH_INDIRECT defined. Checks read the body rather than a wrapper, because a
+    /// rule that held in only one variant would be worse than no rule at all.
+    /// </summary>
+    static string ShaderBody(string stage) => File.ReadAllText(Path.Combine(
+        GameAssemblies.RepoRoot, "VintageHorizons", "assets", "vintagehorizons",
+        "shaderincludes", "lodterrainbody." + stage));
 
     static void PersistenceCadenceWiring(Check c)
     {
@@ -170,18 +319,18 @@ public static class StaticAssetChecks
     /// </summary>
     static void TintSlotAgreement(Check c)
     {
-        string shaders = Path.Combine(
-            GameAssemblies.RepoRoot, "VintageHorizons", "assets", "vintagehorizons", "shaders");
+        string assets = Path.Combine(
+            GameAssemblies.RepoRoot, "VintageHorizons", "assets", "vintagehorizons");
 
         var found = new Dictionary<string, int>();
-        foreach (string path in Directory.EnumerateFiles(shaders, "*.*sh"))
+        foreach (string path in Directory.EnumerateFiles(assets, "*.*sh", SearchOption.AllDirectories))
         {
             Match m = Regex.Match(File.ReadAllText(path), @"const\s+int\s+TINT_SLOTS\s*=\s*(\d+)\s*;");
             if (m.Success) found[Path.GetFileName(path)] = int.Parse(m.Groups[1].Value);
         }
 
-        c.True(found.ContainsKey("lodterrain.vsh"), "lodterrain.vsh declares TINT_SLOTS");
-        c.True(found.ContainsKey("lodterrain.fsh"), "lodterrain.fsh declares TINT_SLOTS");
+        c.True(found.ContainsKey("lodterrainbody.vsh"), "the vertex body declares TINT_SLOTS");
+        c.True(found.ContainsKey("lodterrainbody.fsh"), "the fragment body declares TINT_SLOTS");
 
         foreach ((string file, int value) in found)
         {
@@ -213,9 +362,8 @@ public static class StaticAssetChecks
     static void LodFallbackAndStableColour(Check c)
     {
         string root = GameAssemblies.RepoRoot;
-        string shaders = Path.Combine(root, "VintageHorizons", "assets", "vintagehorizons", "shaders");
-        string vertex = File.ReadAllText(Path.Combine(shaders, "lodterrain.vsh"));
-        string fragment = File.ReadAllText(Path.Combine(shaders, "lodterrain.fsh"));
+        string vertex = ShaderBody("vsh");
+        string fragment = ShaderBody("fsh");
         string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src", "Render",
             "LodTerrainRenderer.cs"));
 
@@ -252,8 +400,7 @@ public static class StaticAssetChecks
     static void VanillaLightingWiring(Check c)
     {
         string root = GameAssemblies.RepoRoot;
-        string fragment = File.ReadAllText(Path.Combine(root, "VintageHorizons", "assets",
-            "vintagehorizons", "shaders", "lodterrain.fsh"));
+        string fragment = ShaderBody("fsh");
         string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src", "Render",
             "LodTerrainRenderer.cs"));
 
@@ -390,8 +537,7 @@ public static class StaticAssetChecks
         string renderDir = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src", "Render");
         string renderer = File.ReadAllText(Path.Combine(renderDir, "LodTerrainRenderer.cs"));
         string maskSource = File.ReadAllText(Path.Combine(renderDir, "VanillaReadinessMask.cs"));
-        string fragment = File.ReadAllText(Path.Combine(GameAssemblies.RepoRoot,
-            "VintageHorizons", "assets", "vintagehorizons", "shaders", "lodterrain.fsh"));
+        string fragment = ShaderBody("fsh");
 
         // Row = wrapped Z plus a whole capacity-sized block per Y level; column = wrapped X.
         c.True(maskSource.Contains("int row = (chunkZ & mask) + chunkY * capacity;", StringComparison.Ordinal)
@@ -412,8 +558,11 @@ public static class StaticAssetChecks
             "ownership is never derived from a summed world coordinate");
         // Two scalars, and never the Vec2i overload: that one reaches glUniform2f, which an
         // integer uniform rejects outright, so the origin never leaves the CPU. G42.
-        c.True(renderer.Contains("prog.Uniform(\"maskSectionOriginX\", (int)", StringComparison.Ordinal)
-            && renderer.Contains("prog.Uniform(\"maskSectionOriginZ\", (int)", StringComparison.Ordinal),
+        // Matched against the source with its whitespace collapsed, so wrapping the call
+        // over two lines stays legal while dropping the cast still fails.
+        string flattened = Regex.Replace(renderer, @"\s+", " ");
+        c.True(flattened.Contains("prog.Uniform(\"maskSectionOriginX\", (int)", StringComparison.Ordinal)
+            && flattened.Contains("prog.Uniform(\"maskSectionOriginZ\", (int)", StringComparison.Ordinal),
             "the renderer supplies that integer origin per draw");
         c.False(renderer.Contains("new Vec2i(", StringComparison.Ordinal),
             "no uniform is set through the integer-vector overload the driver rejects");
@@ -716,8 +865,13 @@ public static class StaticAssetChecks
             && renderer.Contains("TemporalOcclusionProfileName { get; private set; } = \"aggressive\"", StringComparison.Ordinal)
             && renderer.Contains("float temporalOcclusionRotationMatrixLimit = float.PositiveInfinity;", StringComparison.Ordinal),
             "accepted aggressive temporal occlusion, including turn persistence, is default-on with an explicit off override");
-        c.Eq(3, CountOccurrences(renderer, "InvalidateTemporalOcclusionScene();"),
-            "only profile, render-order, and camera/projection changes globally invalidate temporal results");
+        // A fourth reason since 0.3.53: switching batched drawing on or off. Under batching
+        // no per-section queries are issued at all, so every stored answer is from the
+        // other path and from an older camera; carrying them across the switch would show
+        // as terrain missing after switching back.
+        c.Eq(4, CountOccurrences(renderer, "InvalidateTemporalOcclusionScene();"),
+            "only profile, render-order, camera/projection and draw-path changes globally "
+            + "invalidate temporal results");
         c.True(renderer.Contains("query.State.Invalidate(temporalOcclusionEpoch)", StringComparison.Ordinal),
             "a replaced cached mesh invalidates its own query rather than every hidden section");
     }

@@ -498,6 +498,8 @@ public static class GpuRendererChecks
         public int ReadFramebuffer;
         public int ActiveTexture;
         public int CopyWriteBuffer;
+        public int VertexArray;
+        public int DrawIndirectBuffer;
         public readonly Dictionary<int, int> Textures = new();
         public readonly List<string> Operations = new();
 
@@ -545,6 +547,18 @@ public static class GpuRendererChecks
         {
             CopyWriteBuffer = value;
             Operations.Add("copy-write-buffer");
+        }
+        public int GetVertexArray() => VertexArray;
+        public void BindVertexArray(int value)
+        {
+            VertexArray = value;
+            Operations.Add("vertex-array");
+        }
+        public int GetDrawIndirectBuffer() => DrawIndirectBuffer;
+        public void BindDrawIndirectBuffer(int value)
+        {
+            DrawIndirectBuffer = value;
+            Operations.Add("draw-indirect-buffer");
         }
     }
 }

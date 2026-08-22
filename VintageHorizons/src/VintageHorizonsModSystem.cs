@@ -953,17 +953,54 @@ public class VintageHorizonsModSystem : ModSystem
     }
 
     readonly System.Diagnostics.Stopwatch joinClock = new();
-    static readonly int[] FillInMilestones = { 100, 300, 600, 1200 };
+    static readonly int[] FillInMilestones = { 1, 100, 300, 600, 1200 };
     int nextMilestone;
+    bool joinStallReported;
+
+    /// <summary>
+    /// A join is only ever seen from the outside as "the horizon took a while". Six joins
+    /// on record land between 2.3 and 9.1 seconds to the first hundred meshes; one landed
+    /// at 60.2, with no meshes at all after thirty seconds and every queue in the mod
+    /// empty. Nothing in the log says which stage was not running, so the difference
+    /// between "slow" and "not started" cannot be told apart afterwards.
+    ///
+    /// This reports the bootstrap state once, if the first mesh has not appeared within
+    /// ten seconds. The renderer skips its selection walk entirely until a mesh exists,
+    /// and the walk is what asks for sections, so the first mesh has to come from the
+    /// dirty set instead - which makes "how many sections were dirty, how many loads were
+    /// asked for, how many frames were skipped" the three numbers that name the stall.
+    /// </summary>
+    const double JoinStallSeconds = 10;
 
     void ReportFillIn()
     {
         while (nextMilestone < FillInMilestones.Length && renderer.MeshCount >= FillInMilestones[nextMilestone])
         {
-            Mod.Logger.Notification("Fill-in: {0} meshes after {1:0.0}s",
+            Mod.Logger.Notification(
+                nextMilestone == 0 ? "Fill-in: first mesh after {1:0.0}s" : "Fill-in: {0} meshes after {1:0.0}s",
                 FillInMilestones[nextMilestone], joinClock.Elapsed.TotalSeconds);
             nextMilestone++;
         }
+
+        if (joinStallReported || renderer.MeshCount > 0) return;
+        if (joinClock.Elapsed.TotalSeconds < JoinStallSeconds) return;
+
+        joinStallReported = true;
+        Mod.Logger.Notification(
+            "Join: no cached terrain built after {0:0.0}s. {1} sections known, {2} resident, "
+            + "{3} render-dirty, {4} loads in flight, {5} columns captured ({6} pending), "
+            + "{7} mesh jobs queued, {8} render frames skipped for want of a mesh. "
+            + "The selection walk does not run until the first mesh exists, so if the "
+            + "dirty set is empty here, nothing is going to ask for one.",
+            joinClock.Elapsed.TotalSeconds,
+            pipeline.CachedSectionsLoaded,
+            pipeline.World.Sections.Count,
+            pipeline.World.RenderDirty.Count,
+            pipeline.World.LoadsInFlight.Count,
+            pipeline.ColumnsCaptured,
+            pipeline.PendingColumns,
+            pipeline.Worker.PendingMeshes,
+            renderer.FramesWithoutMeshes);
     }
 
     void OnLevelFinalize()
@@ -977,6 +1014,7 @@ public class VintageHorizonsModSystem : ModSystem
         renderer.ApplyZFar();
         pipeline.Open("ModData/vintagehorizons");
         joinClock.Restart();
+        joinStallReported = false;
         nextMilestone = 0;
 
         // A singleplayer world whose server side has swept the savegame leaves its results
@@ -1201,6 +1239,11 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.WalkCost.P95Us, renderer.WalkCost.P99Us, renderer.WalkCost.MaxUs,
                 renderer.DrawCost.P95Us, renderer.DrawCost.P99Us, renderer.DrawCost.MaxUs,
                 renderer.ReadinessCost.P95Us, renderer.ReadinessCost.P99Us, renderer.ReadinessCost.MaxUs);
+
+            // The one line that can see the reported micro-hitches at all. Everything
+            // above it measures our own phases; this measures the frame the player
+            // actually experiences, and how much of it was us.
+            Mod.Logger.Notification("  frame timeline: {0}", renderer.FrameTimeline.Describe());
 
             Mod.Logger.Notification("  vanilla readiness: {0}", renderer.DescribeReadiness());
 
@@ -1741,6 +1784,28 @@ public class VintageHorizonsModSystem : ModSystem
                             ? " with content verification" : "")
                         + ". Live sections are re-meshed into it first, so wait a few seconds, "
                         + "then run .vhgpu again for the numbers.");
+            });
+
+        // The first switch in the mod that changes where a cached-terrain pixel comes
+        // from: with it on, opaque terrain is drawn out of the regional arenas with a few
+        // multi-draws instead of one call per section. Off by default, session-only, and
+        // it needs .vhgpu on first, because the arenas are what it draws from.
+        capi.ChatCommands.Create("vhindirect")
+            .WithDescription("Draw distant terrain in a few big batches instead of one call each. Needs .vhgpu on. Off by default; not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw());
+
+                renderer.IndirectDrawEnabled = (bool)args[0];
+                return TextCommandResult.Success(
+                    "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw()
+                    + " Compare it against off in the same spot: the picture should be "
+                    + "identical, and anything that differs is a bug worth reporting.");
             });
 
         capi.ChatCommands.Create("vhskip")

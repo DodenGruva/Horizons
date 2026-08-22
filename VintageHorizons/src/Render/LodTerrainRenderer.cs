@@ -446,6 +446,7 @@ public class LodTerrainRenderer : IRenderer
         FarDistanceCost.Reset();
         ReadinessCost.Reset();
         WalkCost.Reset();
+        frameTimeline.Reset();
         DrawCost.Reset();
         ProjectionResetCount = 0;
         MeshUploadBytes = 0;
@@ -605,7 +606,39 @@ public class LodTerrainRenderer : IRenderer
     readonly List<long> drawList = new();
     readonly List<LodOpaqueDrawEntry> opaqueFrontToBack = new();
     IShaderProgram? prog;
+
+    /// <summary>
+    /// The same shader source compiled with VH_INDIRECT, so its per-section values come
+    /// from the record buffer instead of uniforms. Not a second shader: one body file,
+    /// two programs, which is what keeps "the fast path draws identical pixels" a claim
+    /// the two paths cannot quietly fall out of.
+    /// </summary>
+    IShaderProgram? indirectProg;
     bool shaderOk;
+    bool indirectShaderOk;
+
+    /// <summary>Owns the vertex array and the per-frame command and record buffers.</summary>
+    LodGpuIndirectDrawer? indirectDrawer;
+
+    /// <summary>
+    /// Sections the indirect pass could not batch: the arenas do not hold them, or a
+    /// multi-draw failed. They are drawn exactly as the established path draws them, in a
+    /// second sub-pass, so partial arena coverage costs submissions rather than terrain.
+    /// </summary>
+    readonly List<long> indirectLeftovers = new();
+
+    /// <summary>Keys written into this frame's command list, kept for the same reason.</summary>
+    readonly List<long> indirectRecorded = new();
+
+    /// <summary>True only inside the walk of an indirect opaque pass.</summary>
+    bool indirectPassActive;
+
+    /// <summary>
+    /// Decided once, before anything this frame reads it. A path chosen halfway through a
+    /// frame would draw some sections twice and others not at all, and occlusion queries
+    /// resolved under one path would be applied under the other.
+    /// </summary>
+    bool indirectDrawingThisFrame;
     float appliedZFar;
     Vec3d camPos = new();
 
@@ -635,6 +668,12 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Sections selected by the walk but skipped this frame as off-screen.</summary>
     public int LastCulledCount { get; private set; }
+
+    /// <summary>
+    /// Frames that returned before the selection walk because no mesh existed yet. On an
+    /// ordinary join this is a handful; a large number means the bootstrap never started.
+    /// </summary>
+    public long FramesWithoutMeshes { get; private set; }
 
     /// <summary>Whole quadtree subtrees rejected before descent this frame.</summary>
     public int LastTraversalCulledCount { get; private set; }
@@ -698,6 +737,7 @@ public class LodTerrainRenderer : IRenderer
 
     readonly LodTintRegistry tints;
     int uploadedTintVersion = -1;
+    int uploadedIndirectTintVersion = -1;
 
     public LodTerrainRenderer(
         ICoreClientAPI capi,
@@ -776,9 +816,52 @@ public class LodTerrainRenderer : IRenderer
         // The check that works reads the shader files, in the fast tier of check.sh.
 
         uploadedTintVersion = -1; // fresh program object: uniform state is gone
+        uploadedIndirectTintVersion = -1;
+        WarnIfIncludeMissing(prog, "lodterrain");
         shaderOk = prog.Compile();
         if (!shaderOk) capi.Logger.Error("[VintageHorizons] lodterrain shader failed to compile; LOD rendering disabled");
+
+        // The indirect variant. Its .vsh and .fsh are three lines each: a version, a
+        // define, and an include of the same body this program compiled. A driver that
+        // refuses it costs the fast path and nothing else, so this is a warning rather
+        // than an error and the established renderer never notices.
+        indirectProg = capi.Shader.NewShaderProgram();
+        indirectProg.AssetDomain = "vintagehorizons";
+        indirectProg.VertexShader = capi.Shader.NewShader(EnumShaderType.VertexShader);
+        indirectProg.FragmentShader = capi.Shader.NewShader(EnumShaderType.FragmentShader);
+        capi.Shader.RegisterFileShaderProgram("lodterrainindirect", indirectProg);
+        WarnIfIncludeMissing(indirectProg, "lodterrainindirect");
+        indirectShaderOk = indirectProg.Compile();
+        if (!indirectShaderOk)
+            capi.Logger.Warning(
+                "[VintageHorizons] the indirect lodterrain variant failed to compile; "
+                + "cached terrain keeps drawing through the established path");
+
         return shaderOk;
+    }
+
+    /// <summary>
+    /// Both programs are three-line files whose real content arrives through one #include,
+    /// and the engine resolves those against a table it fills once, at startup, from every
+    /// loaded asset. If our body were ever missing from that table the engine would log a
+    /// bare "Include file not found. Ignoring." and hand the compiler an empty shader -
+    /// which then fails for a reason that names nothing.
+    ///
+    /// Naming it here costs one substring search per shader load and turns that into a
+    /// sentence someone can act on.
+    /// </summary>
+    void WarnIfIncludeMissing(IShaderProgram program, string name)
+    {
+        string? vertex = program.VertexShader?.Code;
+        string? fragment = program.FragmentShader?.Code;
+        bool spliced = vertex != null && vertex.Contains("TINT_SLOTS", StringComparison.Ordinal)
+            && fragment != null && fragment.Contains("TINT_SLOTS", StringComparison.Ordinal);
+        if (spliced) return;
+
+        capi.Logger.Error(
+            "[VintageHorizons] the {0} shader body was not spliced in: the engine did not "
+            + "find lodterrainbody.vsh/.fsh among its shader includes. Cached terrain will "
+            + "not draw. This is ours, not your setup.", name);
     }
 
     public void ApplyZFar()
@@ -2318,7 +2401,30 @@ public class LodTerrainRenderer : IRenderer
             + $"mask {maskState}, {VanillaOwnedDrawsSkipped} owned draws skipped";
     }
 
+    /// <summary>
+    /// Times the whole frame around the real work. The body below has several early
+    /// returns, and every one of them still has to close the frame, or the mod's share
+    /// would be recorded only for the frames where it did the most.
+    /// </summary>
     public void OnRenderFrame(float deltaTime, EnumRenderStage stage)
+    {
+        long frameStart = frameTimeline.Begin();
+        try
+        {
+            RenderFrame(deltaTime, stage);
+        }
+        finally
+        {
+            frameTimeline.End(frameStart);
+        }
+    }
+
+    /// <summary>Per-frame measurement of the client's own frame interval against ours.</summary>
+    public LodFrameTimeline FrameTimeline => frameTimeline;
+
+    readonly LodFrameTimeline frameTimeline = new();
+
+    void RenderFrame(float deltaTime, EnumRenderStage stage)
     {
         if (AutoUnpause && capi.IsGamePaused) capi.PauseGame(false);
 
@@ -2331,6 +2437,21 @@ public class LodTerrainRenderer : IRenderer
         ConfigureRenderPaths();
         ApplyGpuShadowRequest();
         float viewDistance = ApprovedViewDistance();
+
+        // Fixed before anything reads it, and before the occlusion queries are resolved:
+        // the two paths disagree about whether per-section queries are issued at all, so
+        // the choice must not change between resolving a query and acting on it.
+        bool indirectWanted = IndirectDrawAvailable;
+        if (indirectWanted != indirectDrawingThisFrame)
+        {
+            // Every previous-frame occlusion answer was taken under the other path, and
+            // under batching no new ones are taken at all. Keeping them across the switch
+            // would let a section that was hidden several seconds and one camera move ago
+            // stay hidden after switching back - which would look like the fast path
+            // losing terrain, in the exact A/B this switch exists for.
+            InvalidateTemporalOcclusionScene();
+        }
+        indirectDrawingThisFrame = indirectWanted;
 
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UpdateReadinessShadow(viewDistance);
@@ -2360,7 +2481,17 @@ public class LodTerrainRenderer : IRenderer
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         RefreshSeasonalState();
         SeasonalCost.Add(phaseStart);
-        if (sectionMeshes.Count == 0 && waterMeshes.Count == 0) return;
+        if (sectionMeshes.Count == 0 && waterMeshes.Count == 0)
+        {
+            // Nothing to draw, so the traversal is skipped - and the traversal is what
+            // asks for sections. Until the first mesh exists the renderer therefore
+            // requests nothing at all, and residency has to be started by the dirty set
+            // above. Counted because a join that produces no meshes for a minute looks
+            // identical from the outside to one that is merely slow, and this is the
+            // number that tells the two apart.
+            FramesWithoutMeshes++;
+            return;
+        }
 
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UpdateEffectiveFarDistance(viewDistance);
@@ -2406,6 +2537,55 @@ public class LodTerrainRenderer : IRenderer
             rapi.GlDisableCullFace();
         }
 
+        ApplyFrameUniforms(prog, viewDistance, ref uploadedTintVersion);
+
+        float cullDistSq = float.MaxValue;
+        if (FarViewDistanceCap > 0)
+        {
+            float cull = FarViewDistanceCap + LodSection.SectionBlocks;
+            cullDistSq = cull * cull;
+        }
+
+        renderPaths.PrepareFrame(new LodRenderFrame(
+            currentWorldEpoch(), frameCounter, drawList.Count, cullDistSq));
+
+        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
+
+        skippedLastFrame.Clear();
+
+        // Pass 1: opaque terrain. The experimental order computes distance once per
+        // selected section and reuses list capacity; sorting is included in DrawCost so
+        // its CPU price stays visible beside any GPU-side gain. The GPU timer ends after
+        // command submission and is read only after a later frame reports it available.
+        renderPaths.DrawOpaque();
+
+        LastCulledCount = culledThisFrame; // opaque pass only: water covers a subset
+
+        // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
+        // and a plant mat has no opposite face to take over when the camera is underneath.
+        renderPaths.DrawWater();
+
+        // Submission only. RenderMesh queues work for the GPU and returns, so this
+        // measures the CPU cost of the draw loop -- the uniform uploads, the culling and
+        // the dictionary probes -- and not what the GPU then does with it.
+        DrawCost.Add(phaseStart);
+
+        rapi.GlEnableCullFace();
+        prog.Stop();
+    }
+
+    /// <summary>
+    /// Everything the shader needs that is the same for every section this frame.
+    ///
+    /// Taken as a parameter rather than read from the field because the indirect path
+    /// draws through a second program built from the same source, and both must be handed
+    /// identical values: any divergence here would show up as a pixel difference and be
+    /// read as a bug in the fast path rather than as a missing upload.
+    /// </summary>
+    void ApplyFrameUniforms(
+        IShaderProgram prog, float viewDistance, ref int uploadedTintVersion)
+    {
+        var rapi = capi.Render;
         prog.UniformMatrix("viewMatrix", rapi.CameraMatrixOriginf);
         prog.UniformMatrix("projectionMatrix", rapi.CurrentProjectionMatrix);
 
@@ -2467,40 +2647,6 @@ public class LodTerrainRenderer : IRenderer
             prog.Uniform("tintYHigh", tints.SampleYHigh);
         }
         prog.Uniform("snowLineY", snowLineY);
-
-        float cullDistSq = float.MaxValue;
-        if (FarViewDistanceCap > 0)
-        {
-            float cull = FarViewDistanceCap + LodSection.SectionBlocks;
-            cullDistSq = cull * cull;
-        }
-
-        renderPaths.PrepareFrame(new LodRenderFrame(
-            currentWorldEpoch(), frameCounter, drawList.Count, cullDistSq));
-
-        phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
-
-        skippedLastFrame.Clear();
-
-        // Pass 1: opaque terrain. The experimental order computes distance once per
-        // selected section and reuses list capacity; sorting is included in DrawCost so
-        // its CPU price stays visible beside any GPU-side gain. The GPU timer ends after
-        // command submission and is read only after a later frame reports it available.
-        renderPaths.DrawOpaque();
-
-        LastCulledCount = culledThisFrame; // opaque pass only: water covers a subset
-
-        // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
-        // and a plant mat has no opposite face to take over when the camera is underneath.
-        renderPaths.DrawWater();
-
-        // Submission only. RenderMesh queues work for the GPU and returns, so this
-        // measures the CPU cost of the draw loop -- the uniform uploads, the culling and
-        // the dictionary probes -- and not what the GPU then does with it.
-        DrawCost.Add(phaseStart);
-
-        rapi.GlEnableCullFace();
-        prog.Stop();
     }
 
     void ConfigureRenderPaths()
@@ -2549,6 +2695,12 @@ public class LodTerrainRenderer : IRenderer
             gpuShadow.AttachMirror(new LodGpuGeometryMirror(
                 backend, ceiling, verify: mode == LodGpuArenaMode.Verify));
             shadowBuilder = new LodGpuIndirectBuilder();
+            // .vhgpu can be run again while a drawer already exists - on to verify, for
+            // instance. The mirror disposes its own predecessor; this one has to be told.
+            indirectDrawer?.Dispose();
+            indirectDrawer = new LodGpuIndirectDrawer(
+                new LodGpuOpenGlDrawBackend(message => capi.Logger.Warning("{0}", message)),
+                message => capi.Logger.Warning("{0}", message));
             capi.Logger.Notification(
                 "[VintageHorizons] GPU arena shadow on: {0} MiB ceiling, {1} MiB vertex pages, "
                 + "{2} page sets, content verification {3}. Indirect commands are built for "
@@ -2602,6 +2754,13 @@ public class LodTerrainRenderer : IRenderer
             renderPaths.SetShadowEnabled(false, selection);
             gpuShadow.DetachMirror();
             shadowBuilder = null;
+            // The drawer's buffers reference nothing the arenas own, but its whole reason
+            // to exist goes away with them, and a stale vertex array would outlive the
+            // pages its batches name.
+            IndirectDrawEnabled = false;
+            indirectDrawingThisFrame = false;
+            indirectDrawer?.Dispose();
+            indirectDrawer = null;
             ShadowIndirectCommands = 0;
             ShadowIndirectBatches = 0;
             ShadowIndirectDropped = 0;
@@ -2673,6 +2832,9 @@ public class LodTerrainRenderer : IRenderer
     {
         gpuTelemetry.BeginOpaque();
         shadowBuilder?.Begin();
+        indirectPassActive = indirectDrawingThisFrame;
+        indirectLeftovers.Clear();
+        indirectRecorded.Clear();
         try
         {
             if (OpaqueFrontToBack)
@@ -2698,11 +2860,94 @@ public class LodTerrainRenderer : IRenderer
                     RenderOpaqueMesh(key, mesh);
                 }
             }
+
+            // The walk is over, so the command list is complete and the batches can be
+            // formed. Closing it here rather than in the finally is what lets the pass
+            // draw from it; a walk that threw simply leaves the builder to be reset by
+            // the next frame's Begin.
+            indirectPassActive = false;
+            EndShadowCommands();
+            if (indirectDrawingThisFrame) DrawIndirectOpaque();
         }
         finally
         {
+            indirectPassActive = false;
             gpuTelemetry.EndOpaque();
-            EndShadowCommands();
+        }
+    }
+
+    /// <summary>
+    /// Issues this frame's multi-draws, then draws whatever they could not cover.
+    ///
+    /// The established program keeps its own uniform state while it is not in use, so the
+    /// switch costs one Use/Stop pair plus this frame's frame-uniforms for the second
+    /// program - about thirty uploads against the eighty to one hundred and eighty
+    /// per-section draws the batches replace.
+    /// </summary>
+    void DrawIndirectOpaque()
+    {
+        LastIndirectBatches = 0;
+        LastIndirectCommands = 0;
+        LastIndirectLeftovers = indirectLeftovers.Count;
+        if (shadowBuilder == null || indirectDrawer == null || indirectProg == null
+            || prog == null)
+            return;
+
+        bool drew = false;
+        prog.Stop();
+        try
+        {
+            indirectProg.Use();
+            ApplyFrameUniforms(
+                indirectProg, ApprovedViewDistance(), ref uploadedIndirectTintVersion);
+            drew = indirectDrawer.Draw(shadowBuilder);
+        }
+        catch (Exception e)
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] the indirect opaque pass threw; this frame's cached "
+                + "terrain is drawn the established way: {0}", e.Message);
+        }
+        finally
+        {
+            indirectProg.Stop();
+            prog.Use();
+        }
+
+        if (drew)
+        {
+            LastIndirectBatches = indirectDrawer.LastBatches;
+            LastIndirectCommands = indirectDrawer.LastCommands;
+            // A multi-draw is a draw call; counting it keeps the periodic report's
+            // submission figure meaning the same thing on both paths.
+            OpaqueDrawCalls += LastIndirectBatches;
+        }
+        else
+        {
+            // Nothing was drawn from the arenas, so every section that was batched still
+            // has to reach the screen. Falling back within the same frame is what keeps a
+            // driver failure invisible rather than a frame of missing horizon.
+            indirectLeftovers.AddRange(indirectRecorded);
+            LastIndirectLeftovers = indirectLeftovers.Count;
+        }
+
+        DrawIndirectLeftovers();
+    }
+
+    /// <summary>
+    /// Draws the sections the batches did not cover, exactly as the established path
+    /// draws them. Their per-section uniforms were deliberately not uploaded during the
+    /// walk, so the transform is set up again here - for these sections only.
+    /// </summary>
+    void DrawIndirectLeftovers()
+    {
+        if (indirectLeftovers.Count == 0) return;
+        foreach (long key in indirectLeftovers)
+        {
+            if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+            if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
+            OpaqueDrawCalls++;
+            capi.Render.RenderMesh(mesh);
         }
     }
 
@@ -2801,7 +3046,50 @@ public class LodTerrainRenderer : IRenderer
     }
 
     bool TemporalOcclusionActive => TemporalOcclusionEnabled
-        && OcclusionCullingEnabled && !temporalOcclusionFailed;
+        && OcclusionCullingEnabled && !temporalOcclusionFailed
+        && !indirectDrawingThisFrame;
+
+    /// <summary>
+    /// Draw opaque cached terrain from the regional arenas instead of one call per
+    /// section. Session-only and off by default: this is the first thing in the mod that
+    /// puts a pixel on screen from a buffer the established renderer never touched.
+    /// </summary>
+    /// <remarks>
+    /// Default-off, and settable from the environment so the benchmark harness can pin one
+    /// side of the comparison for a whole run. Phase 3's gate is a controlled A/B, and
+    /// session 40 lost a run to a comparison whose switches were set by hand and did not
+    /// match; a chat command cannot be part of a scripted route.
+    /// </remarks>
+    public bool IndirectDrawEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_INDIRECT") == "1";
+
+    /// <summary>
+    /// Everything that has to hold before a frame may take the fast path. Read once per
+    /// frame into <see cref="indirectDrawingThisFrame"/>.
+    /// </summary>
+    bool IndirectDrawAvailable => IndirectDrawEnabled
+        && indirectShaderOk && indirectProg != null
+        && indirectDrawer is { Ready: true }
+        && shadowBuilder != null
+        && gpuShadow.Mirror != null;
+
+    public string DescribeIndirectDraw()
+    {
+        if (!indirectShaderOk) return "unavailable: the indirect shader variant did not compile";
+        if (indirectDrawer == null || gpuShadow.Mirror == null)
+            return "unavailable: the regional arenas are not attached. Turn them on with .vhgpu on";
+        if (indirectDrawer.Failed) return indirectDrawer.Describe();
+        if (!IndirectDrawEnabled)
+            return "off: every visible section is drawn on its own, as before";
+        return "on: " + indirectDrawer.Describe()
+            + $". Last frame {LastIndirectBatches} multi-draws covered {LastIndirectCommands} "
+            + $"sections, {LastIndirectLeftovers} drawn the established way. "
+            + "Delayed occlusion is suspended while this is on.";
+    }
+
+    public int LastIndirectBatches { get; private set; }
+    public int LastIndirectCommands { get; private set; }
+    public int LastIndirectLeftovers { get; private set; }
 
     void RenderOpaqueMesh(long key, MeshRef mesh)
     {
@@ -2916,13 +3204,25 @@ public class LodTerrainRenderer : IRenderer
 
     void SubmitOpaqueMesh(long key, MeshRef mesh)
     {
-        OpaqueDrawCalls++;
         if (liveMeshStats.TryGetValue(key, out LodLiveMeshStats stats))
         {
             OpaqueDrawVertices += stats.OpaqueVertices;
             OpaqueDrawIndices += stats.OpaqueIndices;
         }
-        RecordShadowCommand(key);
+
+        // In an indirect pass a section is submitted by writing its command; the draws
+        // happen once, after the walk. A section the arenas do not hold produces no
+        // command, so it falls through to the second sub-pass and is drawn the
+        // established way - which is why partial coverage costs submissions, not terrain.
+        bool recorded = RecordShadowCommand(key);
+        if (indirectPassActive)
+        {
+            if (recorded) indirectRecorded.Add(key);
+            else indirectLeftovers.Add(key);
+            return;
+        }
+
+        OpaqueDrawCalls++;
         capi.Render.RenderMesh(mesh);
     }
 
@@ -3147,47 +3447,57 @@ public class LodTerrainRenderer : IRenderer
             return false;
         }
 
-        modelMat.Identity().Translate(relX, -camPos.Y, relZ);
-        prog!.UniformMatrix("modelMatrix", modelMat.Values);
-        prog.Uniform("columnBlocks", (float)LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)));
-
-        // Projection/fog use camera-relative coordinates, but colour noise needs the
-        // section's stable world origin or a fixed patch changes colour while flying.
-        // This uniform does not affect geometry, so float precision at extreme world
-        // coordinates can only soften the cosmetic variation, never move terrain.
-        prog.Uniform("noiseOrigin", (float)originX, (float)originZ, 0f, 0f);
-
-        // Ownership addressing uses this integer origin plus the section-local position,
-        // never a summed world coordinate, so a fragment at a chunk edge cannot round onto
-        // its neighbour's ownership at large world coordinates.
-        //
-        // Set as two integer uniforms, never as one Vec2i: that overload reaches
-        // glUniform2f, which an integer uniform rejects with GL_INVALID_OPERATION, so the
-        // origin silently stayed at zero and the per-fragment mask addressed the wrong
-        // cells for every section in the world. See G42.
-        if (readinessMaskActive)
-        {
-            prog.Uniform("maskSectionOriginX", (int)(originX / VanillaReadinessMask.ChunkBlocks));
-            prog.Uniform("maskSectionOriginZ", (int)(originZ / VanillaReadinessMask.ChunkBlocks));
-        }
-
         // Sides that border on never-captured area, so the shader can dissolve them
         // into the horizon instead of leaving a cliff at the edge of what we've seen.
-        prog.Uniform("sectionSize", (float)footprint);
         byte openEdges = (byte)(
             (HasNeighbourData(key, -1, 0) ? 0 : LodGpuSectionFacts.OpenMinusX)
             | (HasNeighbourData(key, 1, 0) ? 0 : LodGpuSectionFacts.OpenPlusX)
             | (HasNeighbourData(key, 0, -1) ? 0 : LodGpuSectionFacts.OpenMinusZ)
             | (HasNeighbourData(key, 0, 1) ? 0 : LodGpuSectionFacts.OpenPlusZ));
-        prog.Uniform("openEdges",
-            (openEdges & LodGpuSectionFacts.OpenMinusX) != 0 ? 1f : 0f,
-            (openEdges & LodGpuSectionFacts.OpenPlusX) != 0 ? 1f : 0f,
-            (openEdges & LodGpuSectionFacts.OpenMinusZ) != 0 ? 1f : 0f,
-            (openEdges & LodGpuSectionFacts.OpenPlusZ) != 0 ? 1f : 0f);
 
-        // The same values a multi-draw would have to read from a buffer instead. Captured
-        // here so the shadow command list is built from the traversal's real decisions,
-        // not from a second, possibly disagreeing, walk of the draw list.
+        // Six uniform uploads per section, and they are most of what the indirect path
+        // exists to remove. During an indirect walk they are skipped: the same values go
+        // into the section record instead. A section that ends up in the leftover pass
+        // comes back through here with the flag clear and is set up normally.
+        if (!indirectPassActive)
+        {
+            modelMat.Identity().Translate(relX, -camPos.Y, relZ);
+            prog!.UniformMatrix("modelMatrix", modelMat.Values);
+            prog.Uniform("columnBlocks", (float)LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)));
+
+            // Projection/fog use camera-relative coordinates, but colour noise needs the
+            // section's stable world origin or a fixed patch changes colour while flying.
+            // This uniform does not affect geometry, so float precision at extreme world
+            // coordinates can only soften the cosmetic variation, never move terrain.
+            prog.Uniform("noiseOrigin", (float)originX, (float)originZ, 0f, 0f);
+
+            // Ownership addressing uses this integer origin plus the section-local
+            // position, never a summed world coordinate, so a fragment at a chunk edge
+            // cannot round onto its neighbour's ownership at large world coordinates.
+            //
+            // Set as two integer uniforms, never as one Vec2i: that overload reaches
+            // glUniform2f, which an integer uniform rejects with GL_INVALID_OPERATION, so
+            // the origin silently stayed at zero and the per-fragment mask addressed the
+            // wrong cells for every section in the world. See G42.
+            if (readinessMaskActive)
+            {
+                prog.Uniform("maskSectionOriginX",
+                    (int)(originX / VanillaReadinessMask.ChunkBlocks));
+                prog.Uniform("maskSectionOriginZ",
+                    (int)(originZ / VanillaReadinessMask.ChunkBlocks));
+            }
+
+            prog.Uniform("sectionSize", (float)footprint);
+            prog.Uniform("openEdges",
+                (openEdges & LodGpuSectionFacts.OpenMinusX) != 0 ? 1f : 0f,
+                (openEdges & LodGpuSectionFacts.OpenPlusX) != 0 ? 1f : 0f,
+                (openEdges & LodGpuSectionFacts.OpenMinusZ) != 0 ? 1f : 0f,
+                (openEdges & LodGpuSectionFacts.OpenPlusZ) != 0 ? 1f : 0f);
+        }
+
+        // The same values a multi-draw reads from the record buffer instead. Captured
+        // here so the command list is built from the traversal's real decisions, not from
+        // a second, possibly disagreeing, walk of the draw list.
         if (shadowBuilder != null)
         {
             lastSectionFacts = new LodGpuSectionFacts(
@@ -3213,22 +3523,23 @@ public class LodTerrainRenderer : IRenderer
     /// the one Phase 3 would actually issue, and the batch count it reports is the real
     /// answer to how far draw calls would fall.
     /// </summary>
-    void RecordShadowCommand(long key)
+    bool RecordShadowCommand(long key)
     {
         // Ordered so the visible path pays one null field read per drawn section when the
         // shadow is off, which is the ordinary case.
-        if (shadowBuilder == null) return;
+        if (shadowBuilder == null) return false;
         LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
-        if (mirror == null) return;
+        if (mirror == null) return false;
         if (!mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section))
         {
             // Drawn, but the arenas never managed to hold it. Counted rather than ignored:
             // batches over a partial mirror are not a draw-call reduction, and silence here
             // is exactly what made the first measured run look better than it was.
             shadowBuilder.AddMissing();
-            return;
+            return false;
         }
         shadowBuilder.Add(section, lastSectionFacts);
+        return true;
     }
 
     int culledThisFrame;
@@ -3290,6 +3601,8 @@ public class LodTerrainRenderer : IRenderer
         // the engine call first meant a crashing client freed none of its GPU meshes.
         ClearMeshes();
         renderPaths.Dispose();
+        indirectDrawer?.Dispose();
+        indirectDrawer = null;
         gpuTelemetry.Dispose();
         // Same reason as the meshes: the mask texture is ours, and a shutdown that never
         // reaches the engine call must still not leak it.

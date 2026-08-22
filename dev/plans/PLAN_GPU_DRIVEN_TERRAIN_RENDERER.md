@@ -3,10 +3,13 @@
 **Status:** Phase 0 capability feasibility is complete on the primary machine; controlled
 FPS baselines and noise-floor ownership moved to the owner on 2026-08-21. Phase 1 is
 approved and source/harness-complete. Phase 2 is approved and source/harness-complete: the
-shadow may now own regional GL arenas, and nothing draws from them. Phase 3's non-drawing
-half - record and command layouts, the batch builder, and live shadow measurement of how
-far draw calls would fall - is complete as of 2026-08-22. Legacy remains the only visible
-draw path; no visible indirect, HZB, or other fast path exists or is approved yet.
+shadow may now own regional GL arenas, and nothing draws from them. Phase 3 is now
+complete in source: the record and command layouts, the batch builder and
+the shadow measurement landed on 2026-08-22, and the drawing half - the vertex array, the
+instanced record attribute, the indirect variant of the terrain shader and the visible
+multi-draw behind `.vhindirect` - landed the same day. **It has never drawn a frame on real
+hardware.** Legacy remains the default and the complete fallback; Phase 3's own gates are
+unmet until a person compares the two in game. No HZB or other fast path exists.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -794,9 +797,62 @@ play; do not assume settled play exercises the retirement path enough to validat
 phase gate "turning does not trigger remesh/reload storms" is unaffected - that is a
 movement question, and movement was not measured here.
 
-Still to do for the phase: the vertex array object and instanced record attribute, a fast
-variant of the terrain shader reading the record buffer, the visible draw behind a switch,
-the live legacy/indirect comparison path, and the visual and CPU-time gates.
+**The drawing half, 2026-08-22.** All four remaining pieces are implemented and the fast
+tier passes 1,944 assertions. What was built:
+
+- `LodGpuIndirectDrawer` and `LodGpuOpenGlDrawBackend`. One vertex array, one command
+  buffer, one record buffer; geometry re-pointed per batch through
+  `glBindVertexBuffer`, records bound once for the pass with divisor one so each draw
+  reads element `baseInstance`. `MultiDrawElementsIndirect` per page set. The GL state
+  guard grew the vertex-array and draw-indirect bindings, and the element binding is
+  isolated inside our own array rather than restored.
+- **One shader body, two programs.** `capi.Shader.RegisterFileShaderProgram` loads by
+  program name, so a second program needs a second file pair - and a copied shader would
+  make the pixel-identity gate meaningless the first time someone edited one. The body
+  moved to `assets/vintagehorizons/shaderincludes/lodterrainbody.vsh|fsh`; the four files
+  under `shaders/` are three-line wrappers, and the indirect pair adds `#define
+  VH_INDIRECT 1`. Inside the body a single `#ifdef` chooses uniforms or instanced
+  attributes and `#define`s them to the names the rest of the file already uses, so every
+  line below that block is byte-identical in both variants. `StaticAssetChecks
+  .IndirectShaderVariant` holds the wrappers to three and four code lines, the attribute
+  locations to the record's offsets, and each per-section declaration to one occurrence.
+- **The pass.** The walk is unchanged - ownership skip, distance cap, frustum, front-to-
+  back - but in an indirect frame `SetupSectionTransform` writes no per-section uniforms
+  and `SubmitOpaqueMesh` writes a command instead of a draw. After the walk the pass
+  switches program, uploads this frame's frame-uniforms to it, and issues one multi-draw
+  per page set. Water and the legacy program are untouched.
+- **Two fallbacks inside the frame.** Sections the arenas do not hold, and every section
+  in a pass where any batch failed, are drawn through the established path in a second
+  sub-pass with their own uniforms. Partial coverage and driver failure therefore cost
+  submissions, never terrain. A drawer that failed once is not asked again this session.
+
+**Two deliberate departures from the phase text.**
+
+*Delayed occlusion is suspended while indirect drawing is on.* A per-section
+`AnySamplesPassed` query has to wrap that section's own draw, and a batched section has no
+draw of its own to wrap; deferring query issuance into the leftover pass would have made
+the first indirect path also a change to the occlusion mechanism. `TemporalOcclusionActive`
+now reads false for an indirect frame, and `.vhindirect` says so. **The consequence for the
+gate is that a fair A/B needs `.vhtemporal off` on both sides**, or the measurement compares
+batching plus occlusion against occlusion alone. Phases 4 and 5 remove per-section queries
+anyway.
+
+*The comparison is scriptable, not typed.* `VINTAGEHORIZONS_GPU_INDIRECT=1` and
+`bench-windows.ps1 -GpuIndirect 0|1` pin one side for a whole run, so the phase's A/B can be
+two runs of the same route with one variable between them rather than a chat command flipped
+by hand mid-session. `.vhindirect` remains for looking at the two side by side. Both sides
+must also pin `VINTAGEHORIZONS_TEMPORAL_OCCLUSION=0`, for the reason above.
+
+*The CPU-time gate has no pre-measurement.* The draw-call gate got one; `DrawCost` exists
+and is already timed per frame, but no absolute figure for it is recorded anywhere. Rather
+than take a separate baseline run, `.vhindirect off|on` produces both sides in one session,
+which is also the stronger comparison.
+
+**Unmet, and all of it needs hardware:** the visual gate, the CPU-time gate, the
+open-horizon GPU check, and whether the shader variant compiles at all. There is no GLSL
+validator on this machine; the include splice and both preprocessor branches were simulated
+offline and are coherent, and `LoadShader` names the failure explicitly if the engine's
+include table does not hold the body, but the first real evidence is a frame on screen.
 
 **Purpose:** Measure batching independently of HZB and compute visibility.
 

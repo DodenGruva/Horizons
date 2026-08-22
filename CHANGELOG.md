@@ -16,6 +16,73 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+## [0.3.57]
+
+In development, not yet human-tested. Nothing changes unless you turn it on.
+
+**The batched-drawing comparison can be run as a script rather than typed.** The benchmark
+runner takes `-GpuIndirect 0|1`, so the two sides of the comparison are two runs of the same
+route with exactly one thing different between them, instead of a chat command flipped by
+hand halfway through a session. `.vhindirect` still exists for looking at the two live.
+
+**Distant terrain can now be drawn in a handful of big batches instead of one draw per
+piece.** Turn it on with `.vhgpu on` and then `.vhindirect on`; it is off by default and
+not saved between sessions. Measurement on this machine said the same view that takes 87
+to 182 separate submissions would take 8 to 17 batches, so this is where that saving gets
+spent for real. The picture should be identical either way - if anything looks different
+with it on, that is a bug worth reporting, and turning it off restores the old path
+immediately.
+
+Two things to know while testing it. The delayed occlusion that skips hidden terrain is
+suspended while batching is on, because it needs one draw per piece to ask its question;
+so compare the two with `.vhtemporal off` on both sides if you want the batching alone.
+And pieces the GPU buffers do not hold are still drawn the old way in the same frame, so
+partial coverage costs speed rather than terrain.
+
+**Under the hood: one shader, two builds of it.** The shader that draws cached terrain now
+lives in a single body file that both paths include, differing only in where each piece's
+position and size come from - uniforms for the established path, a buffer for the batched
+one. That is what lets "the batched path must look identical" be a real test instead of a
+promise.
+
+**Two fixes found by reviewing the above before anyone ran it.** Switching batching on or
+off now throws away the hidden-terrain answers collected under the other path, which
+would otherwise have shown as missing terrain right after switching back - in exactly the
+comparison this switch exists for. And running `.vhgpu` a second time no longer strands
+the previous drawing buffers on the graphics card.
+
+**The log can now see the micro-hitches you have been describing.** Nothing in the mod
+could measure them: its hitch counters only trip at 25 milliseconds and up, and a whole
+frame at 400 FPS is 2.5 milliseconds, so a spike worth a sixth of a frame was counted by
+nothing at all. The periodic stats line now carries a `frame timeline:` entry that measures
+the gap between one frame and the next, how much of each frame was this mod, and how far
+each frame ran over its own recent baseline.
+
+The number to look for is how many frames stood out and how many of those had our own work
+elevated too. If the two are far apart, the hitches are not this mod's doing and the next
+session should look elsewhere - which is worth knowing before more time goes into our own
+code. It measures itself against the frames around it rather than a fixed threshold, so it
+means the same thing at 400 FPS as at 60, and a world load does not register as a hitch.
+
+Just play normally with it on; the numbers land in the client log every fifteen seconds.
+
+**Why one world takes a minute to show its horizon, measured rather than guessed.** Your
+logs hold six joins. Five of them show the first hundred pieces of distant terrain within
+two to nine seconds. One - the big 457 MB world - took sixty seconds, and thirty seconds in
+had built nothing at all, with every queue in the mod empty. That is not a slow version of
+the others; the mod was not working slowly, it was not asking for anything.
+
+Enough of the mechanism is now established to know where to look: the renderer skips the
+walk that asks for terrain until it has at least one piece built, so the very first piece
+has to come from somewhere else. In that world it never did. Why is still open, and one log
+cannot tell "nothing was ever queued" from "everything queued was still in flight" - which
+is exactly the difference that decides the fix.
+
+So this build measures it instead of guessing. If nothing has been built ten seconds after
+joining, the log now carries one `Join:` line naming which stage is idle, and there is a
+`first mesh after Xs` milestone before the old hundred-mesh one. Join the big world once,
+normally, and that line settles it.
+
 ## [0.3.52]
 
 In development, not yet human-tested.
@@ -48,43 +115,6 @@ warm-up measurement labelled as a steady-state one.
 
 So the saving above is real but small in absolute terms, and re-meshing is no longer a
 plausible explanation for the frame-time hitches - that hunt moves elsewhere.
-
-**A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
-The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
-gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
-cached-on-cached depth strategies and packed quads before any default decision. This is a
-planning and verification artifact only; it changes no runtime rendering behavior.
-
-Source- and harness-tested; in-game stutter improvement still needs human confirmation.
-
-## [0.3.52]
-
-In development, not yet human-tested.
-
-**The far edge of the cache now dissolves into the sky the game actually draws.** Every
-engine shader asks for sky colour with a daylight value that is not the plain daylight
-strength this mod was passing, so the band where cached terrain fades out did not match the
-sky behind it - about 20% too dim at dusk and about 60% too bright on a moonlit night,
-identical in full daylight. Behind `.vhlight sky`. Not yet human-tested.
-
-**Cached terrain is rebuilt less often when it changes.** When one stored section changed,
-the mod rebuilt that section's mesh and all four of its neighbours' meshes, whether or not
-the change was anywhere near them - and repeated that at every zoom level, so a single
-change could cost up to 35 rebuilds. It now checks which edges of the section actually
-moved and only rebuilds the neighbours across those edges. A change in the middle of a
-section costs one rebuild instead of five.
-
-How much this saves depends on what kind of change it is. Terrain streaming in for the
-first time always lands on two edges of a section, because a game chunk is exactly a
-quarter of one, so those cost three rebuilds instead of five - about 40% less. Changes in
-already-explored terrain are the ones that fall all the way to one. The stationary
-measurement that prompted this (5,057 mesh rebuilds for 64 real changes, ~90 MB of GPU
-upload every fifteen seconds while standing still) was mostly the first kind, so expect
-roughly 40% there.
-
-The stats log now prints how many mesh rebuilds each real change caused, so the
-amplification is counted rather than estimated. Built and harness-tested; the re-run of the
-stationary route that would confirm the saving has not happened yet.
 
 ## [0.3.51]
 

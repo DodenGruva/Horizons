@@ -18,9 +18,58 @@ through dusk and about 60% too bright on a moonlit night before the correction.
 persisted. If the owner keeps them on after testing, they can collapse into the shader
 unconditionally and the command can go. Nothing depends on that; it is cleanup.
 
-**Sequencing note that still applies.** The Phase 3 fast shader is a port of this fragment
-code, and its only acceptance gate is that it draws pixels identical to the established path.
-That gate is now usable: the lighting is settled, so any pixel difference is a porting bug.
+**Sequencing note, now spent.** The Phase 3 fast shader was gated on this lighting being
+settled, and it has been written (0.3.53). It is not a port: both paths compile from one
+body file and differ only in where the per-section values come from, so a pixel difference
+is a wiring bug rather than a transcription slip. The `sky` correction above is the one
+part of that body a human has not accepted yet - if it changes, both variants change with
+it, which is the point of the arrangement.
+
+## Batched terrain drawing exists and has never drawn a frame
+
+Phase 3 of `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` is complete in source as of
+0.3.53: opaque cached terrain can be drawn from the regional arenas with one multi-draw per
+page set instead of one call per section. It is off by default and needs `.vhgpu on` first.
+The plan carries the design, the two deliberate departures from it, and what was built.
+
+**Everything that matters about it is unverified**, because none of it can be checked
+without a GPU. In order of what a single session in game would settle:
+
+1. **Does the indirect shader variant compile at all?** There is no GLSL validator on this
+   machine. The include splice and both preprocessor branches were simulated offline and
+   are coherent, and `LoadShader` logs an explicit line if the engine's include table does
+   not hold the body. First evidence is the client log: an error naming `lodterrain` or
+   `lodterrainindirect` means it did not.
+2. **Is the picture identical?** `.vhindirect off` against `on` in the same settled view,
+   then again while moving. Geometry, colour, fog, the ownership seam with vanilla, the
+   open-edge dissolve, snow line and tint. This is the phase's visual gate and only a
+   person can close it.
+3. **Does CPU submission time actually fall?** `DrawCost` is timed per frame already but no
+   absolute figure was ever recorded, so the off side of the same session is the baseline.
+   Both sides must have delayed occlusion off, or the comparison carries two changes at
+   once. As a scripted pair over `bench/routes/bodanboys-gpu-baseline.txt`, with everything
+   else copied from the session-39 configuration:
+
+   ```
+   -GpuRenderer shadow -GpuArena on -GpuArenaMb 1792 -GpuArenaPageMb 32 -GpuIndirect 0
+   -GpuRenderer shadow -GpuArena on -GpuArenaMb 1792 -GpuArenaPageMb 32 -GpuIndirect 1
+   ```
+
+   plus `VINTAGEHORIZONS_TEMPORAL_OCCLUSION=0` on both. Read `draw` from the render
+   p95/p99/max line, and check the coverage figure before reading any batch count.
+4. **Does open-horizon GPU time regress?** Same route, `GpuOpaqueCost`.
+
+**Known and deliberate, not defects:** delayed occlusion is suspended while batching is on
+(a per-section query has to wrap that section's own draw, and a batched section has none);
+sections the arenas do not hold are drawn the established way in the same frame, so partial
+coverage costs submissions rather than terrain; and a pass where any batch failed redraws
+its whole list the established way, then never asks that drawer again this session.
+
+**If the picture differs, the useful report is which of these it is:** wrong position or
+size for whole sections (the record's origin), wrong colour variation that moves with the
+camera (the stable noise origin), a wrong ownership seam near loaded chunks (the integer
+chunk origin), or wrong dissolve at the edges of explored area (the open-edge flags). Those
+are the four values that moved from uniforms into the record, and each fails in its own way.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
@@ -79,12 +128,28 @@ Nothing yet attributes them. What is known:
   are the right order of magnitude for the reported symptom, unlike mesh upload, which is
   too rare.
 
-**Next step, revised.** The stationary case is now the interesting one, because mesh work
-has been eliminated there and the hitches are still reported. Add a frame-time histogram
-with sub-millisecond buckets - the existing 25/50/100 ms thresholds are useless at 400 FPS,
-where a whole frame is 2.5 ms - and attribute against the walk and readiness phases first.
-Then run `bench/routes/moving-rotation.txt` for the moving case, where mesh upload is still
-a live candidate.
+**The instrument now exists (0.3.55), and it has never been read.** `LodFrameTimeline`
+measures three things per frame and reports them on the periodic `frame timeline:` line:
+the interval between consecutive render frames, this mod's share of that frame, and how far
+the interval ran over its own moving average.
+
+Two design points that matter when reading it. The excess-over-baseline histogram exists
+because the shared per-phase histogram's fine 25 us buckets stop at 1 ms, so a 2.5 ms frame
+interval is quantised to 250 us and could not resolve a 400 us hitch at all; the excess is
+small by construction and lands in the fine buckets. And spikes are judged against a moving
+average rather than a fixed threshold, so the same rule means the same thing at 400 FPS and
+at 60, and a world load is excluded rather than counted.
+
+**What to read first:** `SlowFrames` against `SlowFramesWithSlowMod`. If frames stand out
+but our own callback was ordinary during them, the hitches are not ours and the next session
+belongs somewhere other than our phase costs. That is the question that has been unanswered
+since the symptom was first reported, and one ordinary session of play now answers it.
+
+If they ARE ours, the per-phase p95/p99/max lines beside it already point at the phase - the
+quadtree walk and the readiness shadow are the standing suspects, at 95 us average / 393 us
+max and 27.8 us average / 710 us max respectively. Then run
+`bench/routes/moving-rotation.txt` for the moving case, where mesh upload is still a live
+candidate.
 
 ## Validate the periodic-stutter changes in game
 
@@ -109,20 +174,51 @@ readiness tracker/mask still has owning-thread game queries and a once-per-secon
 resync; GPU uploads and live registry publication also must remain on their owning threads.
 Do not attribute an unmeasured residual to disk merely because its interval is regular.
 
-## Cached terrain slow to appear after joining — recovered, on one sample
+## Cached terrain slow to appear after joining - live again, on a bigger world
 
-Reported 2026-08-19 on 0.3.7: `Fill-in: 100 meshes after 36.4s` against `6.1s` on 0.3.4 with
-the same cache and manifest. The suspect was ours - the drawn-without-geometry diagnostic
-added in 0.3.5 called `BlockAccessor.GetChunk` per probe, taking `ClientWorldMap.chunksLock`
-while the world was coming up - and 0.3.8 restricted that lookup. Nobody checked afterwards.
+Six joins are on record in the client logs, five of them tightly clustered and one nothing
+like them:
 
-**The 2026-08-20 client log reads `Fill-in: 100 meshes after 6.6s` on 0.3.23**, against the
-same 3,016-key manifest (`3016 from cache`). That is the 0.3.4 baseline, so 0.3.8 appears to
-have fixed it and the regression is not live.
+| cached sections | first 100 meshes | resident at 30s | meshes at 30s | version |
+|---:|---:|---:|---:|---|
+| 2,183 | 2.3s | 619 | 609 | 0.3.40 |
+| 2,367 | 7.2s | 600 | 546 | 0.3.40 |
+| 2,388 | 6.9s | 638 | 613 | 0.3.50 |
+| 2,395 | 9.1s | 582 | 545 | 0.3.51 |
+| 3,291 | 6.6s | 617 | 608 | 0.3.40 |
+| **5,143** | **60.2s** | **116** | **0** | 0.3.51 |
 
-What is left is confidence, not investigation: one join, one machine, one world. If it ever
-comes back, the number is in the client log of any ordinary session and 6.1 s is the
-baseline - bisect residency against 0.3.4 rather than assuming the diagnostic again.
+The outlier is not a slower version of the others, it is a different shape. At thirty
+seconds that join had **zero** meshes, zero render-dirty sections, zero selected sections,
+zero subtrees traversal-culled, an empty mesh worker, an empty install queue, and the
+storage thread reporting `116 read, 0 async loads in flight`. Nothing was backed up
+anywhere. The mod was not working slowly; it was not asking for anything.
+
+**What is established about the mechanism.** `LodTerrainRenderer.OnRenderFrame` returns
+before the selection walk while no mesh exists, and the selection walk is what calls
+`TryGetForRender` and therefore what asks storage for sections. Until the first mesh is
+built, residency has to be started by the dirty set instead, through `ScheduleMeshJobs`,
+which drains `world.RenderDirty` and requests loads for the keys it finds. If that set is
+empty at join, nothing starts, and the 116 sections that did arrive came from captures as
+the player's own chunks streamed in. Both cache databases were decoded to rule out the
+first suspect: both have a complete L0-L6 pyramid and no pending `ApplyToParent`
+obligations, so a missing coarse level is not the cause.
+
+**What is not established:** why the dirty set was empty in that world and not in the other
+five. Do not spend a session on a theory here - one log cannot distinguish "nothing was
+ever dirtied" from "everything dirtied was drained into loads that had not landed yet",
+and the difference decides the fix. This is the shape of mistake G63 records.
+
+**0.3.56 adds the measurement instead.** If the first mesh has not appeared ten seconds
+after level finalize, the log now carries one `Join:` line naming the bootstrap state -
+sections known and resident, render-dirty count, loads in flight, columns captured and
+pending, mesh jobs queued, and how many render frames were skipped for want of a mesh.
+There is also a `Fill-in: first mesh after Xs` milestone now, because the old series
+started at a hundred and could not distinguish a slow start from a stalled one.
+
+**How to settle it:** join the larger world once, normally, and read that line. If the
+dirty set is empty, the bootstrap never started and the fix belongs at join. If it is
+large with loads in flight, the bootstrap is running and the fix is a throughput one.
 
 ## The mask default is settled; what remains is coverage, not the decision
 
@@ -377,6 +473,15 @@ Human-reported and still open:
 
 ## Flagged decisions awaiting human evidence
 
+- **The arenas are gated on capability the indirect path does not use.**
+  `LodGpuCapabilityPolicy.Evaluate` only reports `Tier1RuntimeValidated` when the HZB
+  requirements - compute shaders, image load/store, a validated depth copy - all pass, and
+  the arenas only attach behind that flag. Indirect drawing needs multi-draw and the arenas
+  and nothing else, so on a driver with MDI but no compute it would be refused for no
+  reason. Not touched here deliberately: that flag also gates the measurement shadow whose
+  accepted numbers were taken under it, and everything validates on the owner's machine, so
+  changing it now would alter a validated path to fix a case nobody has hit. Revisit when
+  Phase 4 splits the gates anyway, or if a second machine refuses.
 - Should new/startup configuration remain unlimited, or adopt the `.vhconfig` Defaults
   value of 32,768 blocks after a controlled benchmark and playtest?
 - Does visual quality permit more aggressive off-screen GPU eviction without noticeable turn-around stalls?
