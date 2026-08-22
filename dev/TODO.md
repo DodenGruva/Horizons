@@ -41,10 +41,10 @@ profile, which produces no first-time captures. A cold or moving route should sh
 per change and a smaller saving; `ChangeLocalityChecks` pins both cases, but neither has been
 run in game.
 
-**Stale claim still in the tree:** `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` says 752
-live sections were re-mirrored 5,845 times and that "each of which is a full re-upload in the
-established renderer too". The second half is the withdrawn inference. Fix it when that plan
-is next touched.
+**Corrected in the GPU plan too.** `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` carried
+the same withdrawn inference and has been fixed, with the consequence spelled out there:
+arena retirement and reclamation must be sized for a burst during load rather than a
+sustained trickle, and settled play does not exercise that path enough to validate it.
 
 ## The micro-hitches: dozens per second, and current instrumentation cannot see them
 

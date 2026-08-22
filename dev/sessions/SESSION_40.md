@@ -203,9 +203,11 @@ Claims lacking the required evidence level:
   both unverified in game.
 - The one-edge-per-change result comes only from a frozen warm profile. A cold or moving route
   should show two edges and a smaller saving; not run.
-- `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` still carries the withdrawn claim that each
-  mirror replacement "is a full re-upload in the established renderer too". Left uncorrected
-  deliberately; that plan is mid-flight.
+- `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` carried the same withdrawn claim and was
+  corrected at the owner's direction after the ritual, adding the sizing consequence: arena
+  retirement must be budgeted for a load-time burst, and settled play does not exercise the
+  retirement path enough to validate it. The corrected paragraph states what it used to say,
+  so the reversal is legible rather than silently rewritten.
 - The micro-hitch section now names the quadtree walk (95 us average, 393 us max) and the
   readiness shadow (27.8 us average, 710 us max) as the largest unexplained per-frame costs.
   That is a reading of one run's phase histogram, not an attribution.

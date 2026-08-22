@@ -768,10 +768,31 @@ third of the world. Separately, the ceiling was split between the arenas by the 
 of the geometry while pages are allocated in pairs, so the index arena refused new page
 sets at 60% full and capped the mirror at 19 sets; the split now follows page size.
 
-**Observed in passing, not part of this phase:** 752 live sections were re-mirrored 5,845
-times in about six minutes with the camera at fixed viewpoints - roughly seven re-meshes per
-section - each of which is a full re-upload in the established renderer too. Cause not yet
-established. Recorded in `dev/TODO.md`.
+**Observed in passing, and since explained (2026-08-22, session 40).** 752 live sections
+were re-mirrored 5,845 times in about six minutes with the camera at fixed viewpoints. This
+note previously read "roughly seven re-meshes per section - each of which is a full
+re-upload in the established renderer too. Cause not yet established." **Both halves of
+that were wrong, and the correction matters to this phase's sizing.**
+
+The churn is not spread across the run: it is warm-up. Splitting a later equivalent run's
+reporting intervals gave 1,827 mesh uploads and 2,131 MiB in the first ~2.5 minutes (about
+237 MiB per 15 s) against 54 uploads and 35 MiB over the following ~4 minutes (about 2.1
+MiB per 15 s), with several settled intervals doing nothing at all. Dividing a whole-run
+total by the run length produced the "seven re-meshes per section" figure and implied a
+steady-state cost that does not exist.
+
+The re-meshing itself is 781 sections being meshed once as 3,291 cached sections load,
+which is work the renderer has to do. It is not amplification, and the separate
+`MarkChanged` fan-out that was blamed for it accounts for 38-40 content changes in six
+minutes, not thousands. See G62 and G63.
+
+**What this means for the arena design.** Bounded per-frame reclamation is still right, but
+it must be sized for a **burst during load**, not a sustained trickle: essentially all
+replacement, retirement and fence pressure arrives in the first few minutes after joining
+and then stops. Do not budget retirement for ~1,000 replacements per minute in settled
+play; do not assume settled play exercises the retirement path enough to validate it. The
+phase gate "turning does not trigger remesh/reload storms" is unaffected - that is a
+movement question, and movement was not measured here.
 
 Still to do for the phase: the vertex array object and instanced record attribute, a fast
 variant of the terrain shader reading the record buffer, the visible draw behind a switch,
