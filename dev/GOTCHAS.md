@@ -1212,7 +1212,7 @@ measure temporal occlusion.
 
 **Found:** 2026-08-21, during the Phase 0 Bodanboys GPU feasibility routes.
 
-### G59 — A multi-draw batch is one buffer pair, so paired allocation is a correctness rule
+### G59 â€” A multi-draw batch is one buffer pair, so paired allocation is a correctness rule
 
 **Trigger:** designing regional GPU arenas, or any allocator whose spans will later be drawn
 by `glMultiDraw*Indirect`.
@@ -1236,7 +1236,7 @@ other fails may be released immediately rather than fenced: nothing ever referen
 
 **Found:** 2026-08-22, designing Phase 3 on top of the Phase 2 arenas.
 
-### G60 — A measurement that cannot see what it missed will report success
+### G60 â€” A measurement that cannot see what it missed will report success
 
 **Trigger:** instrumenting a shadow or mirror that covers only part of what the real path
 does, then reporting a ratio over it.
@@ -1256,6 +1256,30 @@ hits over hits-plus-misses, and print coverage beside every ratio the measuremen
 Treat a ratio without a coverage figure as unreported, not as an approximation.
 
 **Found:** 2026-08-22, on the first Bodanboys GPU arena measurement run.
+
+### G61 â€” Rewriting a file on Windows without naming an encoding corrupts what you typed
+
+**Trigger:** any edit that reads a repository file, changes it in memory and writes it back
+through tooling whose default encoding is the Windows locale rather than UTF-8.
+
+**Trap:** the round trip is byte-preserving for content it did not touch - cp1252 decodes and
+re-encodes existing bytes unchanged - so nothing already in the file is harmed and nothing
+looks wrong. Only the characters *newly typed* in that pass are written in the wrong
+encoding. One em dash becomes a lone `0x97`, the file stops being valid UTF-8, it still
+opens, and `dev/DocCheck.ps1` still passes. This was introduced twice in one session, in a
+gotcha heading and a TODO heading, before anything noticed.
+
+**Do:** name the encoding on every read and write, or keep the text ASCII. `StaticAssetChecks`
+now fails the fast tier on any tracked text file that does not decode as UTF-8, and names the
+byte.
+
+**Repair:** do not decode the whole file as cp1252 and re-encode - that double-encodes every
+sequence that was already correct. Decode as UTF-8 with `errors="surrogateescape"`, map the
+surrogate-escaped bytes back through cp1252, and re-encode. **Restrict the pass to text
+files:** a repair sweep that walked every tracked file mangled `modicon.png`, which was
+restored from git.
+
+**Found:** 2026-08-22, while adding G59 and G60.
 
 ## Reversals and disproved claims
 

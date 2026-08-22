@@ -12,6 +12,7 @@ public static class StaticAssetChecks
     public static void Run(Check c)
     {
         AsciiOnly(c);
+        TextFilesAreUtf8(c);
         TintSlotAgreement(c);
         AlphaPacking(c);
         LodFallbackAndStableColour(c);
@@ -70,6 +71,60 @@ public static class StaticAssetChecks
     /// Scans the whole asset tree rather than a list of known shaders, so a file added
     /// later is covered without anyone remembering to add it here.
     /// </summary>
+    /// <summary>
+    /// Every tracked text file must decode as UTF-8. Windows tooling defaults to cp1252,
+    /// so an editing pass that reads and rewrites a file without naming an encoding turns
+    /// one em dash into a lone 0x97 byte. The round trip is byte-preserving for content it
+    /// did not touch, which is exactly why it goes unnoticed: the file still opens, the
+    /// documentation checks still pass, and only the characters that pass actually
+    /// change. Introduced twice in one session before this check existed.
+    /// </summary>
+    static void TextFilesAreUtf8(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string[] extensions = [".md", ".cs", ".json", ".ps1", ".sh", ".py", ".vsh", ".fsh", ".ash", ".txt"];
+        var offenders = new List<string>();
+        int scanned = 0;
+
+        foreach (string path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            if (!extensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)) continue;
+            string relative = Path.GetRelativePath(root, path);
+            if (relative.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}")
+                || relative.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}")
+                || relative.StartsWith(".testdata", StringComparison.Ordinal)
+                || relative.StartsWith(".git", StringComparison.Ordinal)
+                || relative.StartsWith("dist", StringComparison.Ordinal)
+                || relative.StartsWith("NuGetScratch", StringComparison.Ordinal)) continue;
+
+            scanned++;
+            byte[] bytes = File.ReadAllBytes(path);
+            try
+            {
+                new UTF8Encoding(false, throwOnInvalidBytes: true).GetString(bytes);
+            }
+            catch (ArgumentException)
+            {
+                int at = FirstInvalidByte(bytes);
+                offenders.Add($"{relative} byte {at} = 0x{bytes[at]:X2}");
+            }
+        }
+
+        c.SeqEq(Array.Empty<string>(), offenders, $"all {scanned} tracked text files decode as UTF-8");
+    }
+
+    static int FirstInvalidByte(byte[] bytes)
+    {
+        var strict = new UTF8Encoding(false, throwOnInvalidBytes: true);
+        for (int i = 0; i < bytes.Length; i++)
+        {
+            if (bytes[i] < 0x80) continue;
+            try { strict.GetString(bytes, i, Math.Min(4, bytes.Length - i)); }
+            catch (ArgumentException) { return i; }
+        }
+        return 0;
+    }
+
     static void AsciiOnly(Check c)
     {
         string assets = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "assets");

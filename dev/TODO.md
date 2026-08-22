@@ -2,6 +2,61 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
+## Cached terrain drifts away from vanilla as the light changes — do this before the fast shader
+
+The owner reports (long-standing, restated 2026-08-22) that cached terrain matches vanilla
+well in good daylight, and the difference grows progressively worse through the day until
+sunset and night look substantially different. G50 records the same signature from 0.3.22 and
+names the rule: an error that varies with TIME OF DAY at a fixed season is lighting, not
+albedo and not tint.
+
+**Already fixed, and not the current symptom.** `flatTopLight` copies vanilla's rule that an
+up-facing surface never darkens as the sun drops (`normal.y * 0.95` floor). It is on by
+default (`LodTerrainRenderer.FlatTopLight = true`), so flat ground is already protected. That
+is precisely why the remaining error should read as growing rather than constant, and why it
+should be most visible on **hillsides**, which is most of what a distant view contains.
+
+**Three divergences found by reading both shaders side by side (2026-08-22).** Vanilla's
+`assets/game/shaders/chunkopaque.vsh:139` computes
+`nb = max(max(intensity, 0.5 + 0.5 * dot(normal, lightPosition)), normal.y * 0.95)` with
+`intensity` 0.45, and `shaderincludes/fogandlight.vsh:97` `applyLight` blends a per-vertex
+baked sun level against an ambient colour. The mod's `lodterrain.fsh:144-185` computes
+`shade = 0.55 + 0.45 * dot(normal, sunPosition)` and multiplies by
+`clamp(sunColor * dayLight, 0.02, 1.0)`.
+
+1. **Light direction.** `DefaultShaderUniforms` exposes `SunPosition3D` *and* a separate
+   `LightPosition3D`. Vanilla terrain shades by `lightPosition`; the mod shades by
+   `capi.World.Calendar.SunPositionNormalized` (`LodTerrainRenderer.cs:2348`). If
+   `LightPosition3D` does not track the real sun, vanilla's slopes hold still through the day
+   while the mod's rotate — the exact shape of the report. **Unverified:** nobody has
+   established what `LightPosition3D` actually is over a day cycle. Settle that first, by IL
+   or by logging it in game; it decides whether this is the dominant term.
+2. **Light colour.** The mod multiplies by `Calendar.SunColor * DayLightStrength`. Vanilla
+   uses an ambient colour blended with baked per-vertex light. `SunColor` swings hard toward
+   orange at sunset, so the mod pushes all cached terrain further orange than vanilla does,
+   and only at the times of day the owner reports.
+3. **Darkness floor.** Vanilla floors every surface at 0.45 and ramps `0.5 + 0.5 * dot`; the
+   mod floors at 0.55 and ramps `0.55 + 0.45 * dot`. A constant offset on away-facing
+   surfaces, smaller than the other two but free to correct.
+
+**Not fixable, and settled (G50).** Vanilla carries a per-vertex baked sun level and a shadow
+map. LOD sections store neither and should not. The goal is to stop the divergence *growing*
+through the day, not to reach a pixel match.
+
+**Approach.** Put each correction behind its own runtime switch beside `.vhtoplight`, then
+ask the owner for one sweep from afternoon through sunset into night, standing where cached
+hillsides sit beside vanilla ones, flipping them while watching. Reading the engine's shaders
+cannot settle whether vanilla's behaviour looks right when copied onto distant terrain; only
+that sweep can. This is the pattern that has worked here before — ship the toggle, not
+another build.
+
+**Sequencing: this must land before the Phase 3 fast shader, not inside it.** The fast path's
+only acceptance gate is that it draws pixels identical to the established path, which is how
+a buffer-indexing or record-addressing bug gets caught. Changing lighting in the same shader
+at the same time destroys that gate. The fast shader is also a port of this fragment code, so
+fixing first means porting the corrected version once instead of maintaining the fix in two
+shaders while both exist.
+
 ## Re-mesh amplification: 64 real terrain changes cost 5,057 mesh rebuilds
 
 Measured 2026-08-22 on 0.3.49, sandbox, frozen `bodanboys` profile, camera stationary at six
