@@ -10,6 +10,7 @@ public static class PersistenceChecks
         ExactAcknowledgements(c);
         PendingSnapshotsCoalesce(c);
         FailedWritesAcknowledgeAndRecover(c);
+        GatedWorkerWaitsForCheckpoint(c);
         FullWorkerBacklogDrains(c);
         NewestRevisionSurvivesRestart(c);
         RetryDelayIsBounded(c);
@@ -111,6 +112,24 @@ public static class PersistenceChecks
             "the retry emits its own acknowledgement");
         c.True(recovered.Succeeded, "the retry succeeds after the injected failure");
         c.Eq(1L, worker.SectionsWritten, "only the durable retry counts as written");
+    }
+
+    static void GatedWorkerWaitsForCheckpoint(Check c)
+    {
+        int writes = 0;
+        using var store = new LodStore(null!);
+        using var worker = new LodStorageThread(store,
+            _ => Interlocked.Increment(ref writes), autoCommitSaves: false);
+
+        c.True(worker.Enqueue(Fixtures.Snapshot(Fixtures.SolidSection(), sx: 9, revision: 1)),
+            "the gated storage worker accepts a RAM snapshot");
+        Thread.Sleep(300); // longer than the worker's idle wake: polling must not commit it
+        c.Eq(0, Volatile.Read(ref writes),
+            "a queued snapshot does not write before its checkpoint is published");
+
+        worker.CommitPendingSaves();
+        c.True(worker.Drain(5000), "the explicit checkpoint drains");
+        c.Eq(1, Volatile.Read(ref writes), "publishing the checkpoint writes the snapshot once");
     }
 
     static void FullWorkerBacklogDrains(Check c)

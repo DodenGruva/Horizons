@@ -110,11 +110,16 @@ public class LodTintRegistry
     // shader interpolates between these by vertex height.
     readonly float[] tintsLow = new float[MaxSlots * 4];
     readonly float[] tintsHigh = new float[MaxSlots * 4];
+    readonly float[] pendingTintsLow = new float[MaxSlots * 4];
+    readonly float[] pendingTintsHigh = new float[MaxSlots * 4];
+    float pendingSampleYLow;
+    float pendingSampleYHigh;
 
     /// <summary>Bumped by Refresh; lets the renderer skip re-uploading unchanged tints.</summary>
     public int Version { get; private set; }
     public float[] TintsLow => tintsLow;
     public float[] TintsHigh => tintsHigh;
+    public int SlotCount => representative.Count;
 
     /// <summary>World Y the two tint tables were sampled at.</summary>
     public float SampleYLow { get; private set; }
@@ -125,7 +130,8 @@ public class LodTintRegistry
         representative.Add(null);              // slot 0: no tint
         untintedShare.Add(LodUntintedShare.None);
         slotByMaps[(null, null, 0)] = SlotNone;
-        for (int i = 0; i < tintsLow.Length; i++) tintsLow[i] = tintsHigh[i] = 1f;
+        for (int i = 0; i < tintsLow.Length; i++)
+            tintsLow[i] = tintsHigh[i] = pendingTintsLow[i] = pendingTintsHigh[i] = 1f;
     }
 
     /// <summary>
@@ -174,20 +180,43 @@ public class LodTintRegistry
     /// </summary>
     public void Refresh(IClientWorldAccessor world, int x, int z)
     {
+        BeginRefresh(world);
+        for (int slot = 1; slot < representative.Count; slot++) RefreshSlot(world, x, z, slot);
+        CompleteRefresh();
+    }
+
+    /// <summary>Start an incremental refresh without changing the currently displayed table.</summary>
+    public void BeginRefresh(IClientWorldAccessor world)
+    {
+        Array.Copy(tintsLow, pendingTintsLow, tintsLow.Length);
+        Array.Copy(tintsHigh, pendingTintsHigh, tintsHigh.Length);
         // Span the height range terrain actually occupies around the viewer, so the
         // interpolation covers valley floor to peak rather than extrapolating.
+        pendingSampleYLow = world.SeaLevel;
+        pendingSampleYHigh = world.SeaLevel + 320;
+    }
+
+    /// <summary>Refresh one climate/season tint slot; safe to spread over render frames.</summary>
+    public void RefreshSlot(IClientWorldAccessor world, int x, int z, int slot)
+    {
+        if (slot <= SlotNone || slot >= representative.Count) return;
+        Block? block = representative[slot];
+        if (block == null) return;
+
+        Sample(world, block, x, (int)pendingSampleYLow, z,
+            pendingTintsLow, slot, untintedShare[slot]);
+        Sample(world, block, x, (int)pendingSampleYHigh, z,
+            pendingTintsHigh, slot, untintedShare[slot]);
+    }
+
+    /// <summary>Atomically publish the completely refreshed table to the renderer.</summary>
+    public void CompleteRefresh()
+    {
+        Array.Copy(pendingTintsLow, tintsLow, tintsLow.Length);
+        Array.Copy(pendingTintsHigh, tintsHigh, tintsHigh.Length);
+        SampleYLow = pendingSampleYLow;
+        SampleYHigh = pendingSampleYHigh;
         Version++;
-        SampleYLow = world.SeaLevel;
-        SampleYHigh = world.SeaLevel + 320;
-
-        for (int slot = 1; slot < representative.Count; slot++)
-        {
-            Block? block = representative[slot];
-            if (block == null) continue;
-
-            Sample(world, block, x, (int)SampleYLow, z, tintsLow, slot, untintedShare[slot]);
-            Sample(world, block, x, (int)SampleYHigh, z, tintsHigh, slot, untintedShare[slot]);
-        }
     }
 
     /// <summary>
@@ -201,7 +230,8 @@ public class LodTintRegistry
     ///
     /// 64 positions eight blocks apart cover a 56-block square: wide enough for the hashes
     /// to decorrelate, narrow enough that the climate underneath them is still the player's
-    /// own. It runs every 240 frames for a handful of slots, so the cost is nothing.
+    /// own. The renderer updates one slot per frame and publishes the completed table at
+    /// once, avoiding both a frame spike and a half-old/half-new seasonal palette.
     /// </summary>
     const int SampleGridSide = 8;
     const int SampleGridStride = 8;

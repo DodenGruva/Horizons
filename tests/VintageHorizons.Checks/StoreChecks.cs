@@ -337,6 +337,12 @@ public static class StoreChecks
             long[] initial = WaitForOfferDelta(offers);
             c.SeqEq(new[] { first }, initial,
                 "the reader publishes its initial key scan from the worker");
+            c.True(offers.RequestBlob(first),
+                "a sibling-cache blob read is accepted by the I/O worker");
+            LodLocalOfferSource.BlobResult asyncBlob = WaitForBlobResult(offers);
+            c.Eq(first, asyncBlob.Key, "the background blob result retains its section key");
+            c.SeqEq(new byte[] { 0 }, asyncBlob.Blob ?? Array.Empty<byte>(),
+                "the background worker returns the stored blob without a game-thread query");
 
             // A later scan publishes only the row that appeared since the first one,
             // never the complete retained table again.
@@ -466,13 +472,16 @@ public static class StoreChecks
             if (offers == null) return;
 
             long key = LodWorld.SectionKey(0, 11, 12);
-            c.True(offers.Blob(key) == null,
+            c.True(offers.RequestBlob(key), "the forced-miss blob read is queued");
+            c.True(WaitForBlobResult(offers).Blob == null,
                 "the integration hook forces exactly one retryable sibling-cache miss");
             c.Eq(LodLocalOfferSource.DescribeKey(key), File.ReadAllText(marker).Trim(),
                 "the miss marker identifies the exact section that must retry");
 
             Thread.Sleep(1100);
-            c.SeqEq(new byte[] { 1, 2, 3 }, offers.Blob(key) ?? Array.Empty<byte>(),
+            c.True(offers.RequestBlob(key), "the same key can retry after its cooldown");
+            c.SeqEq(new byte[] { 1, 2, 3 },
+                WaitForBlobResult(offers).Blob ?? Array.Empty<byte>(),
                 "the same sibling-cache key succeeds after the normal retry cooldown");
         }
         finally
@@ -493,6 +502,17 @@ public static class StoreChecks
             Thread.Sleep(10);
         }
         return Array.Empty<long>();
+    }
+
+    static LodLocalOfferSource.BlobResult WaitForBlobResult(LodLocalOfferSource offers)
+    {
+        var timeout = System.Diagnostics.Stopwatch.StartNew();
+        while (timeout.ElapsedMilliseconds < 5000)
+        {
+            if (offers.TryTakeBlobResult(out LodLocalOfferSource.BlobResult result)) return result;
+            Thread.Sleep(10);
+        }
+        return default;
     }
 
     static bool ProcessHoldsHandleTo(string path)

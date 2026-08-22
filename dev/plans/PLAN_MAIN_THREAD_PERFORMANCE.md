@@ -5,6 +5,9 @@
 **Working baseline:** Fork master at commit `4496948`, branch `codex/gpu-overdraw-culling`.
 **Primary evidence:** Source-traced review recorded in `dev/sessions/SESSION_1.md`.
 **Open work authority:** `dev/TODO.md`.
+**Proposed renderer follow-on:** `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` records the
+regional-buffer, indirect-draw and HZB vision with independent go/no-go gates. It is not an
+approved or started implementation phase.
 
 ## Reconciliation note
 
@@ -376,7 +379,9 @@ After that evidence:
 - Exercise other drivers, sustained streaming, multiplayer, caves/structures, long turns,
   and long sessions before broadening the default's portability claim.
 - Evaluate regional combined buffers or multi-draw only if the remaining measured CPU draw
-  submission cost justifies their complexity.
+  submission cost justifies their complexity. If justified, follow the staged proposal in
+  `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` rather than combining buffer ownership,
+  HZB, packed geometry and GPU LOD in one rewrite.
 
 ### Acceptance
 

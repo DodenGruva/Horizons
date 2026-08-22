@@ -74,6 +74,7 @@ Completion evidence:
 | Task | Read first |
 |---|---|
 | Changing tick, render, scheduling, or performance behavior | `dev/GOTCHAS.md` G2–G8, then `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md` |
+| Implementing regional GPU buffers, indirect draws, HZB, GPU culling, packed quads, or GPU LOD | `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` after the general render/performance route above |
 | Adding worker-thread work | `dev/ARCHITECTURE.md` concurrency invariants and `dev/GOTCHAS.md` G1, G7, G9 |
 | Changing storage or serialization | `dev/WIRE_HISTORY.md`, `dev/ARCHITECTURE.md`, and `dev/GOTCHAS.md` G1, G7 |
 | Adding or changing a network message | `dev/WIRE_HISTORY.md` and `dev/GOTCHAS.md` G6 |
@@ -87,6 +88,10 @@ Completion evidence:
 
 - Build: `dotnet build VintageHorizons/VintageHorizons.csproj`
 - Fast checks: `dotnet run --project tests/VintageHorizons.Checks/VintageHorizons.Checks.csproj --configuration Release`
+- Before creating or installing any new zip or other playable artifact, increment the
+  patch component by exactly one in both `modinfo.json` and the project file (for example,
+  `0.3.40` -> `0.3.41`). Never put changed binaries behind an already-used version. Ordinary
+  compile and test runs are not playable artifacts and do not consume a version number.
 - Full test tiers and isolated game-process rules are documented in `README.md`.
 - Set `VINTAGE_STORY` to the game install when it is not at the project fallback location.
 - Never launch or stop a Vintage Story test process outside the repository's isolation scripts,

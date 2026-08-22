@@ -43,6 +43,8 @@ public class LodStorageThread : IDisposable
 {
     readonly LodStore store;
     readonly Action<LodSaveSnapshot> saveAction;
+    readonly bool usesStoreBatch;
+    readonly bool autoCommitSaves;
     readonly object saveGate = new();
     readonly Queue<long> saveOrder = new();
     readonly Dictionary<long, LodSaveSnapshot> pendingSaves = new();
@@ -50,6 +52,7 @@ public class LodStorageThread : IDisposable
     readonly AutoResetEvent signal = new(false);
     readonly Thread thread;
     volatile bool running = true;
+    bool commitRequested;
 
     // Demand reloads. Requests come from the render path, which can tolerate a
     // section arriving a few frames late; the capture path still loads inline
@@ -163,9 +166,10 @@ public class LodStorageThread : IDisposable
     int interruptMipMarked;
 
     public LodStorageThread(LodStore store, Action<LodSaveSnapshot>? saveAction = null,
-        bool enableMipInterruptionHook = true)
+        bool enableMipInterruptionHook = true, bool autoCommitSaves = true)
     {
         this.store = store;
+        this.autoCommitSaves = autoCommitSaves;
         if (enableMipInterruptionHook)
         {
             interruptMipMarker =
@@ -173,6 +177,7 @@ public class LodStorageThread : IDisposable
             interruptMipRelease =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_INTERRUPT_MIP_RELEASE");
         }
+        usesStoreBatch = saveAction == null;
         this.saveAction = saveAction ?? (snapshot => store.SaveBlob(
             snapshot.Level, snapshot.SX, snapshot.SZ, LodStore.Serialize(snapshot),
             snapshot.ApplyToParent));
@@ -206,8 +211,15 @@ public class LodStorageThread : IDisposable
                 Interlocked.Increment(ref saveOutstanding);
             }
         }
-        signal.Set();
+        if (autoCommitSaves) signal.Set();
         return true;
+    }
+
+    /// <summary>Publish the currently coalesced checkpoint to the storage owner.</summary>
+    public void CommitPendingSaves()
+    {
+        lock (saveGate) commitRequested = true;
+        signal.Set();
     }
 
     public bool TryTakeSaveCompletion(out LodSaveCompletion completion) =>
@@ -235,17 +247,34 @@ public class LodStorageThread : IDisposable
                 ReadOne(key);
             }
 
-            if (TryTakePendingSave(out LodSaveSnapshot snap))
+            if (ShouldCommit() && TryTakePendingSaveBatch(out List<LodSaveSnapshot> batch))
             {
                 didWork = true;
-                WriteOne(snap);
+                WriteBatch(batch);
             }
 
             if (!didWork) signal.WaitOne(200);
         }
 
         // Shutting down: never drop queued work, the rows are the player's cache.
-        while (TryTakePendingSave(out LodSaveSnapshot snap)) WriteOne(snap);
+        if (TryTakePendingSaveBatch(out List<LodSaveSnapshot> finalBatch)) WriteBatch(finalBatch);
+    }
+
+    bool ShouldCommit()
+    {
+        lock (saveGate)
+        {
+            if (!autoCommitSaves && !commitRequested) return false;
+            commitRequested = false;
+            return true;
+        }
+    }
+
+    bool TryTakePendingSaveBatch(out List<LodSaveSnapshot> batch)
+    {
+        batch = new List<LodSaveSnapshot>();
+        while (TryTakePendingSave(out LodSaveSnapshot snapshot)) batch.Add(snapshot);
+        return batch.Count > 0;
     }
 
     bool TryTakePendingSave(out LodSaveSnapshot snapshot)
@@ -354,6 +383,55 @@ public class LodStorageThread : IDisposable
         }
     }
 
+    void WriteBatch(List<LodSaveSnapshot> batch)
+    {
+        if (!usesStoreBatch)
+        {
+            foreach (LodSaveSnapshot snapshot in batch) WriteOne(snapshot);
+            return;
+        }
+
+        bool succeeded = false;
+        string? error = null;
+        try
+        {
+            store.SaveBatch(batch);
+            Interlocked.Add(ref SectionsWritten, batch.Count);
+            succeeded = true;
+
+            foreach (LodSaveSnapshot snapshot in batch) PublishMipInterruptionMarker(snapshot);
+        }
+        catch (Exception e)
+        {
+            error = e.ToString();
+            Interlocked.Add(ref SaveErrors, batch.Count);
+            try { FirstSaveError ??= error; } catch { /* never let diagnostics kill the thread */ }
+        }
+        finally
+        {
+            foreach (LodSaveSnapshot snapshot in batch)
+            {
+                saveCompletions.Enqueue(new LodSaveCompletion(
+                    snapshot.Key, snapshot.Revision, succeeded, error));
+            }
+            Interlocked.Add(ref saveOutstanding, -batch.Count);
+        }
+    }
+
+    void PublishMipInterruptionMarker(LodSaveSnapshot snap)
+    {
+        if (!snap.ApplyToParent || string.IsNullOrEmpty(interruptMipMarker)
+            || Interlocked.CompareExchange(ref interruptMipMarked, 1, 0) != 0) return;
+
+        File.WriteAllText(interruptMipMarker,
+            $"{snap.Level},{snap.SX},{snap.SZ},{DateTime.UtcNow:o}\n");
+        while (running && !string.IsNullOrEmpty(interruptMipRelease)
+            && !File.Exists(interruptMipRelease))
+        {
+            Thread.Sleep(25);
+        }
+    }
+
     /// <summary>
     /// Block until every queued section has been written. Called before the store is
     /// closed on leave-world; without it a crash-free exit could still lose sections.
@@ -361,7 +439,7 @@ public class LodStorageThread : IDisposable
     public bool Drain(int timeoutMs = 15000)
     {
         var clock = System.Diagnostics.Stopwatch.StartNew();
-        signal.Set();
+        CommitPendingSaves();
         while (Backlog > 0 && clock.ElapsedMilliseconds < timeoutMs)
         {
             Thread.Sleep(10);

@@ -1167,6 +1167,26 @@ occasional seam loss motivated the mixed-section bypass.
 
 **Found:** 0.3.33-0.3.37, through owner-run seam, motion, rapid-turn, and profile comparisons.
 
+### G57 — Changed playable artifacts require a new patch identity
+
+**Trigger:** creating or installing a zip, mod folder, playtest package, or other playable
+artifact after source changes.
+
+**Trap:** overwriting an existing version with a different binary makes logs, screenshots,
+installed archives, hashes, and player reports disagree while all claiming to be the same
+build. A filename and `modinfo.json` version are artifact identity, not merely release
+decoration. A hash can prove two copies match, but it cannot make two different binaries
+with one advertised version understandable later.
+
+**Do:** before packaging or installing changed code, increment the current patch component
+by exactly one in both `VintageHorizons/modinfo.json` and
+`VintageHorizons/VintageHorizons.csproj`. Ordinary compile/check runs do not consume a
+version. Use a larger minor or major jump only when the owner explicitly chooses one. Never
+overwrite an already-used version with changed binaries.
+
+**Found:** 2026-08-21, after a local performance build reused the existing 0.3.40 artifact
+identity and the owner established the smallest-increment rule.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

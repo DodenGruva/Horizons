@@ -123,14 +123,53 @@ public class LodStore : SQLiteDBConnection
 
         lock (transactionLock)
         {
-            upsertCmd.Parameters["@detail"].Value = level;
-            upsertCmd.Parameters["@sx"].Value = sx;
-            upsertCmd.Parameters["@sz"].Value = sz;
-            upsertCmd.Parameters["@data"].Value = data;
-            upsertCmd.Parameters["@atp"].Value = applyToParent ? 1 : 0;
-            upsertCmd.Parameters["@ms"].Value = Environment.TickCount64;
-            upsertCmd.ExecuteNonQuery();
+            ExecuteUpsert(level, sx, sz, data, applyToParent);
         }
+    }
+
+    /// <summary>
+    /// Serialize a checkpoint outside the database lock, then commit every row in one
+    /// SQLite transaction. The cache is reconstructible and checkpoints are deliberately
+    /// coarse; paying one durable transaction per section only multiplies filesystem
+    /// synchronization without making the checkpoint meaningfully safer.
+    /// </summary>
+    public void SaveBatch(IReadOnlyList<LodSaveSnapshot> snapshots)
+    {
+        if (upsertCmd == null || snapshots.Count == 0) return;
+
+        var blobs = new byte[snapshots.Count][];
+        for (int i = 0; i < snapshots.Count; i++) blobs[i] = Serialize(snapshots[i]);
+
+        lock (transactionLock)
+        {
+            using SqliteTransaction transaction = sqliteConn.BeginTransaction();
+            upsertCmd.Transaction = transaction;
+            try
+            {
+                for (int i = 0; i < snapshots.Count; i++)
+                {
+                    LodSaveSnapshot snapshot = snapshots[i];
+                    ExecuteUpsert(snapshot.Level, snapshot.SX, snapshot.SZ, blobs[i],
+                        snapshot.ApplyToParent);
+                }
+                transaction.Commit();
+            }
+            finally
+            {
+                upsertCmd.Transaction = null;
+            }
+        }
+    }
+
+    void ExecuteUpsert(int level, int sx, int sz, byte[] data, bool applyToParent)
+    {
+        upsertCmd!.Parameters["@detail"].Value = level;
+        upsertCmd.Parameters["@sx"].Value = sx;
+        upsertCmd.Parameters["@sz"].Value = sz;
+        upsertCmd.Parameters["@data"].Value = data;
+        upsertCmd.Parameters["@atp"].Value = applyToParent ? 1 : 0;
+        upsertCmd.Parameters["@ms"].Value = Environment.TickCount64;
+        upsertCmd.ExecuteNonQuery();
     }
 
     /// <summary>

@@ -24,7 +24,8 @@ client ChunkDirty / server ChunkColumnLoaded / transient generation
     -> immutable mip snapshot -> mip worker -> revision-validated owning-thread publication
     -> immutable mesh snapshot -> mesh workers
     -> render-thread GPU upload and draw
-    -> immutable save snapshot -> storage worker -> SQLite
+    -> 30-second RAM checkpoint -> immutable save snapshots
+    -> storage worker serialization/compression -> one SQLite transaction
 ```
 
 Optional server assist adds:
@@ -43,7 +44,8 @@ server cache key manifest
 Integrated singleplayer sibling-cache discovery adds a dedicated read-only SQLite reader.
 It scans at a coarse cadence, computes key deltas on its own thread, and publishes bounded
 immutable batches for owning-thread registration. Visibility-driven blob reads use a
-separate connection that remains owned by the game thread.
+second bounded worker and worker-owned read-only connection; the game thread only requests
+keys and publishes completed immutable blobs.
 
 Owning-thread section installation is FIFO and bounded by elapsed time and content bytes.
 The oldest item is allowed to exceed a ceiling once so an unusually large section cannot
@@ -83,7 +85,11 @@ The mip worker receives immutable child-section arrays, a copied captured-column
 
 ### Storage worker
 
-The storage worker serializes immutable save snapshots, compresses them, and writes SQLite rows. Background loads deserialize block codes without touching the live block registry; the owning thread resolves those codes before publication.
+The storage worker holds coalesced immutable save snapshots in RAM until the owning
+pipeline publishes a checkpoint. It then serializes and compresses the whole batch and
+writes its rows in one SQLite transaction. Background loads deserialize block codes
+without touching the live block registry; the owning thread resolves those codes before
+publication.
 
 The same owner inflates and structurally deserializes compressed sections received from
 server assist or the integrated-singleplayer sibling cache. Network and local producers
@@ -96,8 +102,9 @@ recolours client data, filters skipped runs, and publishes valid sections.
 
 The integrated-singleplayer sibling-cache scanner exclusively owns its read-only SQLite
 connection and its discovered-key set. It never touches `LodWorld`; the owning thread
-applies each published key batch once. Its separate visibility-driven blob connection is
-used only by the owning thread.
+applies each published key batch once. A second below-normal worker exclusively owns the
+visibility-driven blob connection, caps outstanding reads, publishes key-tagged byte arrays,
+and enforces retry cooldowns. Neither SQLite connection is used by the owning thread.
 
 ### Server-assist blob reader
 
@@ -176,6 +183,18 @@ same-frame answer. A zero-sample result suppresses later mesh submissions. Hidde
 periodically draw their real geometry again, making one operation both the visibility probe
 and the correct terrain draw for that frame. Water is not queried.
 
+OpenGL query commands cannot leave the render context, so their remaining owning-thread
+work is explicitly bounded: at most eight new queries and sixteen result-availability checks
+per frame. GPU mesh eviction likewise uses a rolling four-key queue instead of periodic
+full dictionary sweeps. CPU section eviction examines two rolling resident keys per game
+tick. Both policies trade slightly later reclamation for the removal of collection-sized
+frame/tick bursts.
+
+Seasonal/climate sampling uses game APIs and therefore also remains on the owning thread.
+It starts no more than once every 30 seconds, samples one registered tint slot per frame into
+staging arrays, and publishes the completed low/high tables atomically. The visible palette
+is never half old and half new.
+
 Visibility state is fail-open and remains independent from residency and persistence. A
 projection change or profile-specific camera threshold advances a scene epoch, and results
 from an older epoch are consumed but cannot hide anything. Streamed mesh replacement
@@ -232,13 +251,20 @@ They must not share one timestamp or state flag if doing so makes turning the ca
 Persistence has its own monotonically increasing per-section revision, separate from the
 content revision used by mip jobs. This distinction is required because clearing the
 persisted `ApplyToParent` flag changes a row without changing terrain content. Snapshot
-enqueue reserves a revision but leaves `SaveDirty` set. The storage owner coalesces a
-newer still-pending snapshot for the same key, executes at most one older plus one pending
-revision, and publishes a success/failure acknowledgement for every executed write. Only
-a successful acknowledgement matching the current persistence revision clears dirty
-state; stale success and all failure paths retain it. Failures retry with bounded
-exponential delay. A successful local write retires a foreign fallback only after that
-acknowledgement.
+enqueue reserves a revision but leaves `SaveDirty` set. Normal mutations stay solely in
+authoritative RAM until a 30-second checkpoint begins. The owning thread freezes at most
+one section per tick under its elapsed-time/byte admission budget because live section and
+registry state cannot be read safely by the worker; serialization, compression, and I/O do
+not run there. One checkpoint admits at most 256 distinct dirty keys. The storage owner
+coalesces newer pending snapshots for the same key and publishes the completed checkpoint
+as one SQLite transaction. Additional dirty keys remain in RAM for the next checkpoint.
+
+Every executed snapshot receives a success/failure acknowledgement. Only a successful
+acknowledgement matching the current persistence revision clears dirty state; stale success
+and all failure paths retain it. Failures retry with bounded exponential delay. A successful
+local write retires a foreign fallback only after that acknowledgement. A client and an
+integrated-server cache are separate active pipelines and therefore each owns its own
+checkpoint transaction when both are capturing.
 
 Shutdown applies the same protocol rather than using a separate best-effort path: drain
 accepted writes, publish their acknowledgements, queue remaining dirty revisions, and
@@ -292,6 +318,14 @@ The server must answer every accepted section request, including explicit refusa
     winding makes culling safe for all six solid face directions; water and thin surfaces
     remain two-sided. Front-to-back ordering affects opaque submission only and reuses its
     storage rather than allocating per frame.
+20. **Ordinary persistence is a coarse RAM checkpoint, not a mutation stream.** Each active
+    pipeline starts no more than one checkpoint every 30 seconds, freezes no more than one
+    section per tick, caps the retained batch, and commits it in one storage-thread SQLite
+    transaction. Shutdown remains the explicit immediate durability boundary.
+21. **Collection maintenance is rolling where reclamation may lag safely.** Mesh eviction
+    checks four keys per frame and CPU section eviction checks two per tick. Seasonal tint
+    tables refresh one slot per frame on a 30-second cadence. Full periodic sweeps are not
+    reintroduced merely for exact reclamation timing.
 
 ## Concurrency invariants
 

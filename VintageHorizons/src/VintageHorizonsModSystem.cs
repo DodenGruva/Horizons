@@ -399,9 +399,9 @@ public class VintageHorizonsModSystem : ModSystem
     ///
     /// Identical in shape to PumpServerAssist and deliberately so - same remote-key
     /// bookkeeping, same recolour on install, same nearest-first ordering. Only the
-    /// transport differs, and there is no in-flight cap because a local file read has no
-    /// round trip to protect. The budget per tick is there so a sweep of ten thousand
-    /// sections does not try to install all of them in one frame.
+    /// transport differs. Reads have a small in-flight cap and publication has its own
+    /// budget so a sweep of ten thousand sections cannot turn into either unbounded RAM
+    /// or a main-thread installation burst.
     /// </summary>
     void PumpLocalOffers()
     {
@@ -436,6 +436,49 @@ public class VintageHorizonsModSystem : ModSystem
             }
         }
 
+        var installBudget = new LodDrainBudget();
+        int completed = 0;
+        while (completed < LocalOffersPerTick
+            && localOffers.TryPeekBlobResult(out LodLocalOfferSource.BlobResult waiting)
+            && installBudget.TryStart(waiting.Blob?.LongLength ?? 0))
+        {
+            // Keep sibling-cache work within its own bounded decoder allowance. Server
+            // assist has a separate reservation, so local adoption cannot crowd it out.
+            if (waiting.Blob is { Length: > 0 }
+                && !pipeline.CanQueueForeignBlob(LodForeignSource.LocalOffer)) break;
+            if (!localOffers.TryTakeBlobResult(out LodLocalOfferSource.BlobResult result)) break;
+            completed++;
+
+            // A miss is ordinary while the sweep is still running: the key was listed but
+            // its row is not written yet. MarkRemoteUnavailable is permanent, so it must
+            // not be used for "not yet". It also must not enter the taken batch: no source
+            // accepted responsibility, so forgetting it here would strand the key in
+            // LodWorld.LoadsInFlight and make a later row permanently invisible.
+            if (result.Blob == null || result.Blob.Length == 0)
+            {
+                localOfferRetryableMisses++;
+                pipeline.CompleteLocalOffer(result.Key, LodLocalOfferOutcome.RetryableMiss);
+                continue;
+            }
+
+            LodForeignQueueOutcome queued = pipeline.QueueForeignBlob(
+                result.Key, result.Blob, LodForeignSource.LocalOffer);
+            if (queued == LodForeignQueueOutcome.Queued)
+            {
+                localOfferSectionsAccepted++;
+                pipeline.MarkLocalOfferAccepted(result.Key);
+            }
+            else if (queued == LodForeignQueueOutcome.Unavailable)
+            {
+                // Local data already won before submission, or persistence is gone.
+                pipeline.CompleteLocalOffer(result.Key, LodLocalOfferOutcome.Unavailable);
+            }
+            else break;
+        }
+
+        localOfferItemsProcessed += installBudget.Items;
+        localOfferBytesProcessed += installBudget.Bytes;
+
         long[] wanted = pipeline.RemoteWanted();
         if (wanted.Length == 0) return;
 
@@ -447,47 +490,10 @@ public class VintageHorizonsModSystem : ModSystem
                 LodWorld.NearestDistanceSqTo(a, px, pz).CompareTo(LodWorld.NearestDistanceSqTo(b, px, pz)));
         }
 
-        var installBudget = new LodDrainBudget();
-        int itemLimit = Math.Min(wanted.Length, LocalOffersPerTick);
-        for (int i = 0; i < itemLimit && installBudget.TryStart(0); i++)
-        {
-            // Keep sibling-cache work within its own bounded decoder allowance. Server
-            // assist has a separate reservation, so local adoption cannot crowd it out.
-            if (!pipeline.CanQueueForeignBlob(LodForeignSource.LocalOffer)) break;
-
-            long key = wanted[i];
-
-            byte[]? blob = localOffers.Blob(key);
-            installBudget.AddBytes(blob?.LongLength ?? 0);
-            // A miss is ordinary while the sweep is still running: the key was listed but
-            // its row is not written yet. MarkRemoteUnavailable is permanent, so it must
-            // not be used for "not yet". It also must not enter the taken batch: no source
-            // accepted responsibility, so forgetting it here would strand the key in
-            // LodWorld.LoadsInFlight and make a later row permanently invisible.
-            if (blob == null || blob.Length == 0)
-            {
-                localOfferRetryableMisses++;
-                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.RetryableMiss);
-                continue;
-            }
-
-            LodForeignQueueOutcome queued = pipeline.QueueForeignBlob(
-                key, blob, LodForeignSource.LocalOffer);
-            if (queued == LodForeignQueueOutcome.Queued)
-            {
-                localOfferSectionsAccepted++;
-                pipeline.MarkLocalOfferAccepted(key);
-            }
-            else if (queued == LodForeignQueueOutcome.Unavailable)
-            {
-                // Local data already won before submission, or persistence is gone.
-                pipeline.CompleteLocalOffer(key, LodLocalOfferOutcome.Unavailable);
-            }
-            else break;
-        }
-
-        localOfferItemsProcessed += installBudget.Items;
-        localOfferBytesProcessed += installBudget.Bytes;
+        int requests = 0;
+        for (int i = 0; i < wanted.Length && requests < LocalOffersPerTick
+            && localOffers.CanRequestBlob; i++)
+            if (localOffers.RequestBlob(wanted[i])) requests++;
     }
 
     void PublishTestLocalOfferInstall(long key)
@@ -505,9 +511,9 @@ public class VintageHorizonsModSystem : ModSystem
     }
 
     /// <summary>
-    /// Compressed sibling-cache blobs transferred to the decoder per tick. The worker
-    /// performs inflation and structural parsing; owning-thread publication has its own
-    /// elapsed-time and decoded-byte budget in LodPipeline.
+    /// Compressed sibling-cache blobs transferred from the I/O reader to the decoder per
+    /// tick. Both SQLite and structural parsing run on workers; owning-thread publication
+    /// has its own elapsed-time and decoded-byte budget in LodPipeline.
     /// </summary>
     const int LocalOffersPerTick = 4;
     int localOfferItemsProcessed;

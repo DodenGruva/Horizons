@@ -61,10 +61,10 @@ public class LodAssistServerSystem : ModSystem
         // is capped at one tick's share, so a slow tick cannot cause a catch-up burst.
         api.Event.RegisterGameTickListener(_ => MeasureServePending(), LodTickAllowance.TickMilliseconds);
 
-        // Every five seconds, which is slow next to the serve loop on purpose: this walks
-        // the whole key snapshot per player, and the thing it is chasing (a pregen, a
-        // sweep, another player exploring) takes minutes, not milliseconds.
-        api.Event.RegisterGameTickListener(_ => MeasureOfferNewKeys(), 5000);
+        // Match the persistence checkpoint. New rows cannot become servable more often,
+        // and this walks the complete key set on the server thread; scanning every five
+        // seconds only created a periodic tick spike and advertised not-yet-durable rows.
+        api.Event.RegisterGameTickListener(_ => MeasureOfferNewKeys(), 30000);
         if (allocationTelemetryEnabled)
             api.Event.RegisterGameTickListener(_ => LogStats(), 15000);
 

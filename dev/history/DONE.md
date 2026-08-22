@@ -549,3 +549,26 @@ by the owner.**
   Release tier passes 1,533 assertions and the Release build has zero warnings or errors.
 - Packaged and installed `vintagehorizons_0.3.40.zip`; the two copies had SHA-256
   `52B89A30B95187F335DFB6043318B7652C63844E6BD91F27750CE10DCFA2662A`.
+
+## 2026-08-21 — periodic stutter and disk-write audit
+
+- Source-traced ordinary persistence from owning-thread dirty membership through snapshot
+  freezing, storage-worker serialization/compression and SQLite. The old path could admit
+  six snapshots per 50 ms game tick and execute every row independently; clean idle wrote
+  nothing, but active capture could generate a high-frequency transaction stream.
+- Replaced ordinary writes with per-pipeline 30-second RAM checkpoints. Snapshot freezing is
+  capped at one section per tick and 256 distinct keys per checkpoint; newer/overflow work
+  remains dirty in RAM. The storage owner serializes and compresses the batch and commits it
+  in one SQLite transaction. Shutdown retains its immediate exact-revision flush.
+- Moved integrated-singleplayer sibling-cache blob SQL from the game tick to a bounded
+  below-normal read-only worker. Key discovery was already off-thread and remains separate.
+- Replaced the 240-frame seasonal burst with a 30-second staged refresh, one tint slot per
+  frame and atomic publication. Replaced full GPU mesh and CPU resident-section eviction
+  sweeps with rolling four-per-frame and two-per-tick queues.
+- Capped unavoidable render-context visibility work at eight query issues and sixteen result
+  checks per frame. Aligned server follow-up manifest scans with the 30-second checkpoint.
+- Added gated-writer, async-blob, rolling-eviction and cross-file cadence guards. A warning-
+  free Release build and 1,555 assertions passed. No game process was launched, so stutter
+  improvement and visual/reclamation tradeoffs remain awaiting human playtest.
+- Established G57 and the canonical build rule: every changed playable/package/install
+  artifact advances the patch component by exactly one; ordinary compile/check runs do not.

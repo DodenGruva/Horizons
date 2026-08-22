@@ -2,6 +2,29 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
+## Validate the periodic-stutter changes in game
+
+Source audit found that ordinary dirty activity could admit six save snapshots every game
+tick and write each row independently, while several unrelated whole-collection sweeps
+landed on fixed frame/tick intervals. The implementation is complete: 30-second bounded RAM
+checkpoints and one SQLite transaction, incremental seasonal sampling, rolling GPU/CPU
+eviction, capped render-context queries, a 30-second server-manifest scan, and worker-owned
+singleplayer sibling-cache blob reads. Build and 1,555 fast assertions pass.
+
+Still owed is human/runtime evidence. Compare an ordinary moving session with the prior
+build and specifically report:
+
+- whether the several-times-per-second tiny spikes are gone or reduced;
+- whether the larger three-to-six-second spikes remain;
+- whether a new burst appears around the 30-second checkpoint;
+- whether seasonal colour changes remain visually smooth; and
+- whether turning around after long travel shows delayed mesh recovery or excess RAM.
+
+If a periodic spike remains, capture phase telemetry before changing more cadence. The
+readiness tracker/mask still has owning-thread game queries and a once-per-second authority
+resync; GPU uploads and live registry publication also must remain on their owning threads.
+Do not attribute an unmeasured residual to disk merely because its interval is regular.
+
 ## Cached terrain slow to appear after joining — recovered, on one sample
 
 Reported 2026-08-19 on 0.3.7: `Fill-in: 100 meshes after 36.4s` against `6.1s` on 0.3.4 with
@@ -92,7 +115,11 @@ longer a live reason to expect that to be needed.
 
 ## Renderer scaling after delayed occlusion
 
-The approved implementation sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
+The accepted current-renderer sequence remains
+`dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`. The proposed long-term GPU-driven follow-on is
+`dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`: measure/capability-probe first, then gate
+regional opaque arenas, indirect multi-draw, HZB suppression, cached-on-cached depth and
+packed quads independently. No phase of that proposal is approved or implemented yet.
 
 The renderer rejects off-screen quadtree nodes, distance-capped sections, fully
 vanilla-owned sections and back-facing opaque triangles; submits opaque sections nearest
@@ -125,7 +152,9 @@ over real geometry after vanilla depth are a different design. Remaining work:
   mesh-upload cadence; stale results may occur but must never hide terrain; seam and
   turning-edge protection should rise only in their intended cases.
 - Measure remaining CPU draw-submission time before choosing regional combined buffers,
-  multi-draw, or instancing. Keep visibility independent from residency and persistence.
+  multi-draw, or instancing. Use the proposed GPU-driven plan's Phase 0 noise floor and
+  independent regional/HZB go/no-go gates rather than treating the whole vision as one
+  rewrite. Keep visibility independent from residency and persistence.
 
 ### Existing near-handoff coverage
 
@@ -234,7 +263,9 @@ Human-reported and still open:
 - Human-check clipping and turn-around behavior on the thousands-section build. Automated
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
-- Measure whether regional buffers or multi-draw are warranted after the accepted delayed-occlusion work.
+- Execute only the measurement/capability milestone in
+  `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` before deciding whether regional buffers,
+  multi-draw or HZB are warranted after the accepted delayed-occlusion work.
 - Decide whether startup configuration should change from unlimited cached drawing. The
   `.vhconfig` scale and its `Defaults` button now use 32,768 blocks, but that player-facing
   choice is not a controlled far-cap benchmark. The mask's benefit scales with vanilla

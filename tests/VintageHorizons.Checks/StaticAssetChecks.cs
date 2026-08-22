@@ -19,12 +19,46 @@ public static class StaticAssetChecks
         ReadinessTelemetryContract(c);
         OwnershipMaskWiring(c);
         OcclusionCullingWiring(c);
+        PersistenceCadenceWiring(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
         ChatCommandNamesAreUnique(c);
         ConfigDialogWiring(c);
         NoIntegerVectorUniforms(c);
         SourceHasNoControlCharacters(c);
+    }
+
+    static void PersistenceCadenceWiring(Check c)
+    {
+        string src = Path.Combine(GameAssemblies.RepoRoot, "VintageHorizons", "src");
+        string pipeline = File.ReadAllText(Path.Combine(src, "Lod", "LodPipeline.cs"));
+        string storage = File.ReadAllText(Path.Combine(src, "Storage", "LodStorageThread.cs"));
+        string renderer = File.ReadAllText(Path.Combine(src, "Render", "LodTerrainRenderer.cs"));
+        string assist = File.ReadAllText(Path.Combine(src, "Net", "LodAssistServerSystem.cs"));
+        string modSystem = File.ReadAllText(Path.Combine(src, "VintageHorizonsModSystem.cs"));
+
+        c.True(pipeline.Contains("PersistenceCheckpointIntervalMs = 30_000", StringComparison.Ordinal),
+            "LOD persistence uses a 30-second checkpoint interval");
+        c.True(pipeline.Contains("autoCommitSaves: false", StringComparison.Ordinal),
+            "the live pipeline keeps snapshots in RAM until checkpoint publication");
+        c.True(storage.Contains("store.SaveBatch(batch)", StringComparison.Ordinal),
+            "a published checkpoint uses the batched SQLite path");
+        c.True(renderer.Contains("SeasonalRefreshIntervalMs = 30_000", StringComparison.Ordinal),
+            "seasonal tint refresh uses a 30-second cadence");
+        c.True(renderer.Contains("MeshEvictionChecksPerFrame", StringComparison.Ordinal),
+            "mesh eviction is a rolling per-frame queue");
+        c.False(renderer.Contains("EvictSweepInterval", StringComparison.Ordinal),
+            "the renderer no longer performs periodic full mesh sweeps");
+        c.True(renderer.Contains("TemporalOcclusionQueryIssuesPerFrame", StringComparison.Ordinal)
+            && renderer.Contains("TemporalOcclusionResultChecksPerFrame", StringComparison.Ordinal),
+            "render-context occlusion queries have fixed per-frame issue and result budgets");
+        c.True(assist.Contains("MeasureOfferNewKeys(), 30000", StringComparison.Ordinal),
+            "server manifest follow-up scans align with the 30-second checkpoint");
+        c.True(modSystem.Contains("localOffers.RequestBlob", StringComparison.Ordinal)
+            && modSystem.Contains("localOffers.TryTakeBlobResult", StringComparison.Ordinal),
+            "singleplayer sibling-cache blob reads use the background I/O worker");
+        c.False(modSystem.Contains("localOffers.Blob(", StringComparison.Ordinal),
+            "the game tick never performs a synchronous sibling-cache SQLite read");
     }
 
     /// <summary>

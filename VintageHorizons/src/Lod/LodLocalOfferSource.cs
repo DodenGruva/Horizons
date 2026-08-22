@@ -24,13 +24,20 @@ namespace VintageHorizons;
 /// </summary>
 public sealed class LodLocalOfferSource : IDisposable
 {
-    readonly SqliteConnection conn;
+    public readonly record struct BlobResult(long Key, byte[]? Blob);
+
     readonly ILogger logger;
     readonly string path;
     readonly ConcurrentQueue<long[]> keyDeltas = new();
     readonly AutoResetEvent scanSignal = new(false);
     readonly Thread scanThread;
-    readonly Dictionary<long, long> blobRetryNotBefore = new();
+    readonly ConcurrentQueue<long> blobRequests = new();
+    readonly ConcurrentQueue<BlobResult> blobResults = new();
+    readonly AutoResetEvent blobSignal = new(false);
+    readonly Thread blobThread;
+    readonly object blobRequestGate = new();
+    readonly HashSet<long> blobsInFlight = new();
+    readonly Dictionary<long, long> asyncBlobRetryNotBefore = new();
     readonly string? testMissMarker =
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_TEST_LOCAL_OFFER_MISS_MARKER");
     long? testMissKey;
@@ -52,11 +59,11 @@ public sealed class LodLocalOfferSource : IDisposable
 
     /// <summary>A transient row miss should not become a 20 Hz SQLite poll.</summary>
     const int BlobMissRetryMs = 1000;
+    const int MaxBlobRequestsInFlight = 16;
 
-    LodLocalOfferSource(string path, SqliteConnection conn, ILogger logger)
+    LodLocalOfferSource(string path, ILogger logger)
     {
         this.path = path;
-        this.conn = conn;
         this.logger = logger;
         scanThread = new Thread(ScanLoop)
         {
@@ -64,7 +71,14 @@ public sealed class LodLocalOfferSource : IDisposable
             IsBackground = true,
             Priority = ThreadPriority.BelowNormal,
         };
+        blobThread = new Thread(BlobLoop)
+        {
+            Name = "vintagehorizons-local-blob-reader",
+            IsBackground = true,
+            Priority = ThreadPriority.BelowNormal,
+        };
         scanThread.Start();
+        blobThread.Start();
     }
 
     static SqliteConnection OpenReadOnly(string path)
@@ -105,8 +119,8 @@ public sealed class LodLocalOfferSource : IDisposable
             // "it seems to be not writable", every time, on the platform whose file
             // sharing blocks a writer while any handle is open. This connection is opened
             // once per world; pooling bought nothing to begin with.
-            SqliteConnection opened = OpenReadOnly(path);
-            return new LodLocalOfferSource(path, opened, logger);
+            using SqliteConnection opened = OpenReadOnly(path);
+            return new LodLocalOfferSource(path, logger);
         }
         catch (Exception e)
         {
@@ -125,14 +139,100 @@ public sealed class LodLocalOfferSource : IDisposable
     /// <summary>Wake the reader early. Used by the isolated fixture; production polls.</summary>
     internal void RequestDiscovery() => scanSignal.Set();
 
+    /// <summary>Queue a visibility-driven blob read without touching SQLite on the game thread.</summary>
+    public bool RequestBlob(long key)
+    {
+        lock (blobRequestGate)
+        {
+            if (!running || blobsInFlight.Contains(key)
+                || blobsInFlight.Count >= MaxBlobRequestsInFlight) return false;
+            if (asyncBlobRetryNotBefore.TryGetValue(key, out long notBefore)
+                && Environment.TickCount64 < notBefore) return false;
+            blobsInFlight.Add(key);
+        }
+        blobRequests.Enqueue(key);
+        blobSignal.Set();
+        return true;
+    }
+
+    public bool CanRequestBlob
+    {
+        get
+        {
+            lock (blobRequestGate) return running
+                && blobsInFlight.Count < MaxBlobRequestsInFlight;
+        }
+    }
+
+    public bool TryTakeBlobResult(out BlobResult result)
+    {
+        if (!blobResults.TryDequeue(out result)) return false;
+        lock (blobRequestGate) blobsInFlight.Remove(result.Key);
+        return true;
+    }
+
+    public bool TryPeekBlobResult(out BlobResult result) => blobResults.TryPeek(out result);
+
+    void BlobLoop()
+    {
+        try
+        {
+            using SqliteConnection blobConn = OpenReadOnly(path);
+            while (running)
+            {
+                if (!blobRequests.TryDequeue(out long key))
+                {
+                    blobSignal.WaitOne(200);
+                    continue;
+                }
+
+                byte[]? blob = null;
+                try
+                {
+                    // Isolated integration-test hook. A real miss is timing-dependent;
+                    // the marker forces exactly one on this worker without introducing a
+                    // production game-thread read path just for the fixture.
+                    if (testMissKey == null && !string.IsNullOrEmpty(testMissMarker))
+                    {
+                        testMissKey = key;
+                        File.WriteAllText(testMissMarker, DescribeKey(key));
+                    }
+                    else
+                    {
+                        blob = ReadBlob(blobConn, key);
+                    }
+                }
+                catch (Exception e)
+                {
+                    try { logger.Warning("Could not read a server-side LOD section: {0}", e.Message); }
+                    catch { /* diagnostics must not kill the reader */ }
+                }
+
+                lock (blobRequestGate)
+                {
+                    if (blob == null || blob.Length == 0)
+                        asyncBlobRetryNotBefore[key] = Environment.TickCount64 + BlobMissRetryMs;
+                    else
+                        asyncBlobRetryNotBefore.Remove(key);
+                }
+                blobResults.Enqueue(new BlobResult(key, blob));
+            }
+        }
+        catch (Exception e)
+        {
+            try { logger.Warning("Could not start server-side LOD blob reader: {0}", e.Message); }
+            catch { /* diagnostics must not kill shutdown */ }
+        }
+    }
+
     void ScanLoop()
     {
         var known = new HashSet<long>();
         try
         {
-            // This connection is created, used and disposed on this thread. The separate
-            // connection above remains game-thread-owned for small, visibility-driven
-            // blob reads; no command or connection state crosses thread ownership.
+            // This connection is created, used and disposed on this thread. Blob reads
+            // have a second worker-owned connection; no command or connection state
+            // crosses thread ownership.
             using SqliteConnection scanConn = OpenReadOnly(path);
             using SqliteCommand cmd = scanConn.CreateCommand();
             cmd.CommandText = "SELECT Detail, SX, SZ FROM Section";
@@ -186,54 +286,14 @@ public sealed class LodLocalOfferSource : IDisposable
         }
     }
 
-    /// <summary>
-    /// One section's stored blob, or null when it is not there. A miss is ordinary rather
-    /// than exceptional: the sweep is very likely still running and writing more.
-    /// </summary>
-    public byte[]? Blob(long key)
+    static byte[]? ReadBlob(SqliteConnection connection, long key)
     {
-        long now = Environment.TickCount64;
-        if (blobRetryNotBefore.TryGetValue(key, out long notBefore) && now < notBefore)
-        {
-            return null;
-        }
-
-        // Isolated integration-test hook. A real row miss is timing-dependent: the key
-        // scan can race a growing sibling cache, but a reliable recovery test must force
-        // that state transition once. The hook has no path and no behaviour unless the
-        // runner supplies a private marker inside its sandbox.
-        if (testMissKey == null && !string.IsNullOrEmpty(testMissMarker))
-        {
-            testMissKey = key;
-            blobRetryNotBefore[key] = now + BlobMissRetryMs;
-            File.WriteAllText(testMissMarker, DescribeKey(key));
-            return null;
-        }
-
-        try
-        {
-            using SqliteCommand cmd = conn.CreateCommand();
-            cmd.CommandText = "SELECT Data FROM Section WHERE Detail=@d AND SX=@x AND SZ=@z";
-            cmd.Parameters.AddWithValue("@d", LodWorld.KeyLevel(key));
-            cmd.Parameters.AddWithValue("@x", LodWorld.KeySx(key));
-            cmd.Parameters.AddWithValue("@z", LodWorld.KeySz(key));
-            byte[]? blob = cmd.ExecuteScalar() as byte[];
-            if (blob == null || blob.Length == 0)
-            {
-                blobRetryNotBefore[key] = now + BlobMissRetryMs;
-            }
-            else
-            {
-                blobRetryNotBefore.Remove(key);
-            }
-            return blob;
-        }
-        catch (Exception e)
-        {
-            blobRetryNotBefore[key] = now + BlobMissRetryMs;
-            logger.Warning("Could not read a server-side LOD section: {0}", e.Message);
-            return null;
-        }
+        using SqliteCommand cmd = connection.CreateCommand();
+        cmd.CommandText = "SELECT Data FROM Section WHERE Detail=@d AND SX=@x AND SZ=@z";
+        cmd.Parameters.AddWithValue("@d", LodWorld.KeyLevel(key));
+        cmd.Parameters.AddWithValue("@x", LodWorld.KeySx(key));
+        cmd.Parameters.AddWithValue("@z", LodWorld.KeySz(key));
+        return cmd.ExecuteScalar() as byte[];
     }
 
     internal static string DescribeKey(long key) =>
@@ -243,17 +303,10 @@ public sealed class LodLocalOfferSource : IDisposable
     {
         running = false;
         scanSignal.Set();
+        blobSignal.Set();
         scanThread.Join(15000);
+        blobThread.Join(15000);
         scanSignal.Dispose();
-
-        try
-        {
-            conn.Close();
-            conn.Dispose();
-        }
-        catch (Exception)
-        {
-            // Closing a read-only connection is not worth reporting a failure over.
-        }
+        blobSignal.Dispose();
     }
 }

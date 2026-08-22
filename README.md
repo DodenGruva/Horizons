@@ -102,6 +102,9 @@ dotnet build VintageHorizons
 
 The build assembles a loadable mod folder at `VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons`.
 `scripts/package.sh` produces a ModDB-ready zip in `dist/`.
+Before creating or installing any changed playable artifact, increment the patch version
+by exactly one in both `modinfo.json` and the project file. Ordinary compile and check runs
+do not consume a version number.
 
 ```sh
 scripts/dev-run.sh              # opens/creates the "vhsurvival" test world

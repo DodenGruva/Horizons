@@ -57,7 +57,8 @@ public class LodPipeline
     const int CaptureAppliesPerTick = 8;
     const int PropagationsPerTick = 3;
     const int MaxMipBacklog = 12;
-    const int SectionSavesPerTick = 6;
+    const int PersistenceSnapshotsPerTick = 1;
+    const long PersistenceCheckpointIntervalMs = 30_000;
     const int MaxWorkerCaptureBacklog = 24;
     const int ChunkSize = GlobalConstants.ChunkSize;
 
@@ -160,6 +161,9 @@ public class LodPipeline
 
     readonly Queue<LodForeignInstallCompletion> foreignInstallCompletions = new();
     readonly Dictionary<long, SaveRetryState> saveRetries = new();
+    readonly Queue<long> persistenceCheckpointKeys = new();
+    bool persistenceCheckpointActive;
+    long nextPersistenceCheckpointMs;
 
     readonly record struct SaveRetryState(long Revision, int Failures, long NotBeforeMs);
 
@@ -291,7 +295,9 @@ public class LodPipeline
         // environment. The guarded crash hook belongs to the client cache only; a server
         // row winning the marker race would not prove client recovery on restart.
         storageThread = new LodStorageThread(
-            newStore, enableMipInterruptionHook: string.IsNullOrEmpty(suffix));
+            newStore, enableMipInterruptionHook: string.IsNullOrEmpty(suffix),
+            autoCommitSaves: false);
+        nextPersistenceCheckpointMs = Environment.TickCount64 + PersistenceCheckpointIntervalMs;
 
         // Background reloads for the render path. The loader runs on the storage
         // thread; results are installed on the world thread in Tick.
@@ -417,7 +423,7 @@ public class LodPipeline
         MipScheduleCost.Add(phaseStart);
 
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
-        SaveSomeDirtySections(SectionSavesPerTick);
+        PumpPersistenceCheckpoint();
         SaveSnapshotCost.Add(phaseStart);
         tickCounter++;
     }
@@ -498,13 +504,13 @@ public class LodPipeline
     }
 
     /// <summary>
-    /// Drop cold sections from RAM around an anchor. Only meaningful once reload-from-disk
-    /// exists, and only every ~5s: the sweep walks every resident section.
+    /// Drop a few cold sections from RAM around an anchor. The world keeps a rolling queue,
+    /// so this never turns one game tick into a full resident-section scan.
     /// </summary>
     public bool MaybeEvictAround(double x, double z)
     {
-        if (tickCounter % 100 != 0 || World.LoadFromStore == null) return false;
-        World.EvictColdSections(x, z, 50);
+        if (World.LoadFromStore == null) return false;
+        World.EvictColdSections(x, z, 2);
         return tickCounter % 1200 == 0;
     }
 
@@ -802,6 +808,83 @@ public class LodPipeline
         if (ms > SaveMsMax) SaveMsMax = ms;
     }
 
+    /// <summary>
+    /// Freeze one fixed RAM checkpoint over several ticks, then publish it to SQLite as
+    /// one transaction. Newer mutations remain dirty and belong to the next checkpoint.
+    /// Snapshot creation must stay on this thread because sections mutate in place, but
+    /// its elapsed time, bytes and item count are bounded; compression and I/O are not.
+    /// </summary>
+    void PumpPersistenceCheckpoint()
+    {
+        if (store == null || storageThread == null) return;
+
+        long now = Environment.TickCount64;
+        if (!persistenceCheckpointActive)
+        {
+            if (now < nextPersistenceCheckpointMs) return;
+
+            // Cap one checkpoint's frozen copies. Anything beyond the cap remains dirty
+            // in authoritative RAM for the next checkpoint instead of forcing extra disk
+            // transactions or an unbounded snapshot allocation burst.
+            foreach (long key in World.SaveDirty)
+            {
+                persistenceCheckpointKeys.Enqueue(key);
+                if (persistenceCheckpointKeys.Count >= MaxStorageBacklog) break;
+            }
+            persistenceCheckpointActive = persistenceCheckpointKeys.Count > 0;
+            if (!persistenceCheckpointActive)
+            {
+                nextPersistenceCheckpointMs = now + PersistenceCheckpointIntervalMs;
+                return;
+            }
+        }
+
+        storageClock.Restart();
+        var drain = new LodDrainBudget();
+        int remaining = PersistenceSnapshotsPerTick;
+        while (remaining > 0 && persistenceCheckpointKeys.TryDequeue(out long key))
+        {
+            long revision = World.PersistenceRevision(key);
+            if (saveRetries.TryGetValue(key, out SaveRetryState retry)
+                && retry.Revision == revision && now < retry.NotBeforeMs)
+                continue;
+            if (!World.Sections.TryGetValue(key, out LodSection? section)) continue;
+            if (World.QueuedSaveRevision(key) != 0) continue;
+            if (!drain.TryStart(section.EstimatedContentBytes))
+            {
+                persistenceCheckpointKeys.Enqueue(key);
+                break;
+            }
+            if (!World.TryQueueSave(key, out revision)) continue;
+
+            var snapshot = LodSaveSnapshot.Of(
+                LodWorld.KeyLevel(key), LodWorld.KeySx(key), LodWorld.KeySz(key),
+                revision, section, api.World, World.MipDirty.Contains(key));
+            if (!storageThread.Enqueue(snapshot))
+            {
+                World.CancelQueuedSave(key, revision);
+                persistenceCheckpointKeys.Enqueue(key);
+                break;
+            }
+            remaining--;
+        }
+
+        if (drain.Items > 0)
+        {
+            double ms = storageClock.Elapsed.TotalMilliseconds;
+            SaveCalls++;
+            SaveMsTotal += ms;
+            if (ms > SaveMsMax) SaveMsMax = ms;
+        }
+
+        if (persistenceCheckpointKeys.Count == 0)
+        {
+            storageThread.CommitPendingSaves();
+            persistenceCheckpointActive = false;
+            nextPersistenceCheckpointMs = now + PersistenceCheckpointIntervalMs;
+        }
+    }
+
     bool FlushPersistence(int timeoutMs)
     {
         if (storageThread == null) return World.SaveDirty.Count == 0;
@@ -861,6 +944,9 @@ public class LodPipeline
         pendingColumns.Clear();
         Remote.Clear();
         saveRetries.Clear();
+        persistenceCheckpointKeys.Clear();
+        persistenceCheckpointActive = false;
+        nextPersistenceCheckpointMs = 0;
         foreignInstallCompletions.Clear();
         // Results for the world we are leaving must not be applied to the next one.
         // Both queues, or a result held back for a reload would cross worlds.

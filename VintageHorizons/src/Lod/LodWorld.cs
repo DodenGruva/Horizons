@@ -106,6 +106,8 @@ public class LodWorld
     }
 
     public readonly Dictionary<long, LodSection> Sections = new();
+    readonly Queue<long> residentEvictionOrder = new();
+    readonly HashSet<long> residentEvictionQueued = new();
 
     /// <summary>Set by the coordinator when persistence is available: reload an evicted section from disk.</summary>
     public Func<long, LodSection?>? LoadFromStore;
@@ -190,12 +192,14 @@ public class LodWorld
             if (section != null)
             {
                 Sections[key] = section;
+                TrackResident(key);
                 SectionBecameResident?.Invoke(key);
                 return section;
             }
         }
 
         Sections[key] = section = new LodSection();
+        TrackResident(key);
         LoadFailed.Remove(key); // it has data again; a past miss must not block reloads
         RegisterInTree(key);
         return section;
@@ -211,6 +215,7 @@ public class LodWorld
         if (loaded == null) return false;
 
         Sections[key] = section = loaded;
+        TrackResident(key);
         SectionBecameResident?.Invoke(key);
         return true;
     }
@@ -273,6 +278,7 @@ public class LodWorld
         if (Sections.ContainsKey(key)) return;
 
         Sections[key] = section;
+        TrackResident(key);
 
         // Deliberately not marked render-dirty: reloads are requested by the render
         // path AND by mip propagation, and the selection walk re-requests a mesh by
@@ -296,21 +302,39 @@ public class LodWorld
 
     public void EvictColdSections(double camX, double camZ, int budget)
     {
-        List<long>? evict = null;
         LastSweepChecked = 0;
         LastSweepPinned = 0;
         LastSweepCold = 0;
+        if (budget <= 0) return;
 
-        foreach ((long key, LodSection _) in Sections)
+        // Sections normally enter through the methods above. Seed only as a defensive
+        // fallback for diagnostic/tests that populate the public dictionary directly.
+        if (residentEvictionOrder.Count == 0 && Sections.Count > 0)
+            foreach (long key in Sections.Keys) TrackResident(key);
+
+        int available = residentEvictionOrder.Count;
+        for (int n = 0; n < budget && n < available; n++)
         {
+            long key = residentEvictionOrder.Dequeue();
             LastSweepChecked++;
+            if (!Sections.ContainsKey(key))
+            {
+                residentEvictionQueued.Remove(key);
+                continue;
+            }
+
             int level = KeyLevel(key);
-            if (level >= MaxLevel) continue;
+            if (level >= MaxLevel)
+            {
+                residentEvictionOrder.Enqueue(key);
+                continue;
+            }
             // Unsaved or unpropagated data pins a section; a pending mesh rebuild does
             // NOT - the scheduler demand-reloads from disk when its turn comes.
             if (SaveDirty.Contains(key) || MipDirty.Contains(key) || mipParentPins.ContainsKey(key))
             {
                 LastSweepPinned++;
+                residentEvictionOrder.Enqueue(key);
                 continue;
             }
 
@@ -319,21 +343,25 @@ public class LodWorld
             double minZ = KeySz(key) * (double)footprint;
             double dx = Math.Max(0, Math.Max(minX - camX, camX - (minX + footprint)));
             double dz = Math.Max(0, Math.Max(minZ - camZ, camZ - (minZ + footprint)));
-            double dist = Math.Sqrt(dx * dx + dz * dz);
+            double distSq = dx * dx + dz * dz;
 
-            if (WantedLevelFor(dist) < level + 2) continue;
+            if (WantedLevelForSq(distSq) < level + 2)
+            {
+                residentEvictionOrder.Enqueue(key);
+                continue;
+            }
 
             LastSweepCold++;
-            (evict ??= new List<long>()).Add(key);
-            if (evict.Count >= budget) break;
-        }
-
-        if (evict == null) return;
-        foreach (long key in evict)
-        {
             Sections.Remove(key);
+            residentEvictionQueued.Remove(key);
             EvictedSectionsTotal++;
         }
+    }
+
+    void TrackResident(long key)
+    {
+        if (!residentEvictionQueued.Add(key)) return;
+        residentEvictionOrder.Enqueue(key);
     }
 
     public static int WantedLevelFor(double distance)
@@ -576,6 +604,8 @@ public class LodWorld
     public void Clear()
     {
         Sections.Clear();
+        residentEvictionOrder.Clear();
+        residentEvictionQueued.Clear();
         RenderDirty.Clear();
         SaveDirty.Clear();
         MipDirty.Clear();

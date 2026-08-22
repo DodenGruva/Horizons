@@ -162,6 +162,10 @@ if a level's merge produced no change, stop climbing (Voxy).
 packed quads + vertex pulling, per-face-direction buckets, indirect multi-draw, Hi-Z
 occlusion. Never required; the 3.3 path remains complete.
 
+The staged proposal, compatibility fallback, measurement gates and rejected/deferred
+alternatives for this direction live in
+`dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`. No phase is approved or implemented yet.
+
 ## 7. Threading
 
 - **One unified worker pool** (n = cores/1.5), services scheduled by weighted-random

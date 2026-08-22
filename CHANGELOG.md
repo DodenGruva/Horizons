@@ -8,6 +8,35 @@ first.
 
 ## [Unreleased]
 
+**A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
+The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
+gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
+cached-on-cached depth strategies and packed quads before any default decision. This is a
+planning and verification artifact only; it changes no runtime rendering behavior.
+
+Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+
+**LOD cache writes are now coarse checkpoints instead of a stream of tiny transactions.**
+Dirty sections remain authoritative in RAM. Each active client or server pipeline starts a
+checkpoint no more than once every 30 seconds, freezes at most one section per tick, and
+hands at most 256 coalesced snapshots to the storage worker for one SQLite transaction.
+Compression, serialization and disk I/O remain off the game thread; leaving a world still
+forces an immediate final flush. Exact revision acknowledgements keep mutations made during
+a checkpoint dirty for the next one.
+
+**Periodic collection-sized maintenance has been replaced with rolling work.** Seasonal
+colour sampling now starts every 30 seconds, updates one tint slot per frame, and publishes
+the finished table atomically. GPU mesh eviction checks four resident keys per frame rather
+than scanning every mesh every 300 frames, while CPU section eviction checks two keys per
+game tick instead of scanning the resident dictionary every five seconds. Server manifest
+follow-up scans now match the 30-second persistence cadence.
+
+**The remaining safe SQLite work has left the game thread.** Integrated-singleplayer
+sibling-cache blob reads now use a bounded, below-normal read-only worker. OpenGL visibility
+queries cannot leave their render context, so they are capped at eight new queries and
+sixteen result checks per frame instead. The complete fast tier passes 1,555 assertions and
+the Release build is warning-free; no game process was launched for this change.
+
 ## [0.3.40]
 
 In development. Automated and source verification are complete; revised in-game layout

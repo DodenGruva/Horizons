@@ -410,8 +410,9 @@ public class LodTerrainRenderer : IRenderer
     // Visibility is intentionally absent from this state. The camera may stop walking
     // an off-screen subtree, but distance-based residency still keeps appropriate meshes
     // warm for a turn-around (G8).
-    readonly Dictionary<long, long> lastResidencyFrame = new();
-    readonly List<long> evictBatch = new();
+    readonly Dictionary<long, long> lastResidencyMs = new();
+    readonly Queue<long> meshEvictionOrder = new();
+    readonly HashSet<long> meshEvictionQueued = new();
     long frameCounter;
 
     sealed class TemporalOcclusionQuery
@@ -435,6 +436,9 @@ public class LodTerrainRenderer : IRenderer
     bool temporalOcclusionQueryTargetAvailable;
     bool temporalOcclusionFailed;
     bool temporalOcclusionFailureReported;
+    int temporalOcclusionQueriesIssuedThisFrame;
+    const int TemporalOcclusionQueryIssuesPerFrame = 8;
+    const int TemporalOcclusionResultChecksPerFrame = 16;
 
     /// <summary>
     /// Sides (W, E, N, S as bits 0-3) whose live mesh was built against a neighbour that
@@ -488,9 +492,9 @@ public class LodTerrainRenderer : IRenderer
     long readinessLastFullRevalidateMs;
     bool readinessAggregateReported;
 
-    /// <summary>Meshes unselected for this many frames (~1 min) get evicted; the quadtree re-requests on demand.</summary>
-    const int EvictAfterFrames = 3600;
-    const int EvictSweepInterval = 300;
+    /// <summary>Meshes outside the residency band for one minute get evicted.</summary>
+    const long EvictAfterMs = 60_000;
+    const int MeshEvictionChecksPerFrame = 4;
 
     public int EvictedTotal { get; private set; }
     readonly Matrixf modelMat = new();
@@ -504,9 +508,16 @@ public class LodTerrainRenderer : IRenderer
     /// <summary>Dev/testing: keep the game unpaused even without window focus.</summary>
     public bool AutoUnpause;
 
-    // Live seasonal state, refreshed periodically and fed to the shader as uniforms.
+    // Live seasonal state, refreshed incrementally and fed to the shader as uniforms.
+    const long SeasonalRefreshIntervalMs = 30_000;
     float snowLineY = 99999;
-    long lastSeasonRefreshFrame = -99999;
+    float pendingSnowLineY = 99999;
+    long lastSeasonRefreshMs;
+    bool seasonalStateInitialized;
+    bool seasonalRefreshActive;
+    int seasonalRefreshSlot;
+    int seasonalRefreshX;
+    int seasonalRefreshZ;
     readonly BlockPos climatePos = new(0, 0, 0);
 
     /// <summary>Optional hard cap in blocks; 0 = unlimited (render every cached section).</summary>
@@ -785,23 +796,46 @@ public class LodTerrainRenderer : IRenderer
     }
 
     /// <summary>
-    /// Refresh the live tint table and snow line (~every 4s). Each tint slot is sampled
+    /// Refresh the live tint table and snow line every 30 seconds. Each tint slot is sampled
     /// at two altitudes and interpolated per vertex, because the climate maps are keyed
     /// by temperature and temperature falls with height; the snow line extrapolates the
     /// same lapse rate to where it hits freezing.
     /// </summary>
     void RefreshSeasonalState()
     {
-        if (frameCounter - lastSeasonRefreshFrame < 240) return;
-        lastSeasonRefreshFrame = frameCounter;
+        long now = Environment.TickCount64;
+        if (!seasonalRefreshActive)
+        {
+            if (seasonalStateInitialized
+                && now - lastSeasonRefreshMs < SeasonalRefreshIntervalMs) return;
 
-        int px = (int)camPos.X;
-        int pz = (int)camPos.Z;
+            seasonalRefreshActive = true;
+            seasonalRefreshSlot = 1;
+            seasonalRefreshX = (int)camPos.X;
+            seasonalRefreshZ = (int)camPos.Z;
+            tints.BeginRefresh(capi.World);
+            pendingSnowLineY = CalculateSnowLine(seasonalRefreshX, seasonalRefreshZ);
+        }
 
-        // Every registered colour-map pair at once: leaves are per species (oak turns
-        // while pine stays green) and water has its own map, so one shared foliage tint
-        // was never going to be right.
-        tints.Refresh(capi.World, px, pz);
+        // Game climate and colour-map APIs are owning-thread state. Keep them here, but
+        // spread the calls over frames and publish only after the whole table is ready.
+        if (seasonalRefreshSlot < tints.SlotCount)
+        {
+            tints.RefreshSlot(capi.World, seasonalRefreshX, seasonalRefreshZ,
+                seasonalRefreshSlot++);
+            return;
+        }
+
+        tints.CompleteRefresh();
+        snowLineY = pendingSnowLineY;
+        seasonalRefreshActive = false;
+        seasonalStateInitialized = true;
+        lastSeasonRefreshMs = now;
+    }
+
+    float CalculateSnowLine(int px, int pz)
+    {
+        float calculated = 99999;
 
         try
         {
@@ -813,19 +847,20 @@ public class LodTerrainRenderer : IRenderer
 
             if (low == null || high == null || low.Temperature <= high.Temperature)
             {
-                snowLineY = 99999; // no usable lapse rate → snow line disabled
+                calculated = 99999; // no usable lapse rate → snow line disabled
             }
             else
             {
                 float lapsePerBlock = (low.Temperature - high.Temperature) / 150f;
-                snowLineY = seaLevel + (low.Temperature - (-1f)) / lapsePerBlock;
-                snowLineY = GameMath.Clamp(snowLineY, seaLevel - 64, 99999);
+                calculated = seaLevel + (low.Temperature - (-1f)) / lapsePerBlock;
+                calculated = GameMath.Clamp(calculated, seaLevel - 64, 99999);
             }
         }
         catch
         {
-            snowLineY = 99999;
+            calculated = 99999;
         }
+        return calculated;
     }
 
 
@@ -850,29 +885,25 @@ public class LodTerrainRenderer : IRenderer
 
     void EvictStaleMeshes()
     {
-        if (frameCounter % EvictSweepInterval != 0) return;
-
-        evictBatch.Clear();
-        foreach ((long key, MeshRef _) in sectionMeshes)
+        int available = meshEvictionOrder.Count;
+        for (int n = 0; n < MeshEvictionChecksPerFrame && n < available; n++)
         {
-            if (ShouldEvictMesh(key))
+            long key = meshEvictionOrder.Dequeue();
+            if (!HasAnyMesh(key))
             {
-                evictBatch.Add(key);
+                meshEvictionQueued.Remove(key);
+                lastResidencyMs.Remove(key);
+                continue;
             }
-        }
-        foreach ((long key, MeshRef _) in waterMeshes)
-        {
-            if (!sectionMeshes.ContainsKey(key)
-                && ShouldEvictMesh(key))
+            if (!ShouldEvictMesh(key))
             {
-                evictBatch.Add(key);
+                meshEvictionOrder.Enqueue(key);
+                continue;
             }
-        }
 
-        foreach (long key in evictBatch)
-        {
             RemoveMeshes(key);
-            lastResidencyFrame.Remove(key);
+            meshEvictionQueued.Remove(key);
+            lastResidencyMs.Remove(key);
             EvictedTotal++;
         }
     }
@@ -881,12 +912,18 @@ public class LodTerrainRenderer : IRenderer
     {
         if (LodTraversalPolicy.WithinResidencyBand(key, camPos.X, camPos.Z))
         {
-            lastResidencyFrame[key] = frameCounter;
+            lastResidencyMs[key] = Environment.TickCount64;
             return false;
         }
 
-        return !lastResidencyFrame.TryGetValue(key, out long last)
-            || frameCounter - last > EvictAfterFrames;
+        return !lastResidencyMs.TryGetValue(key, out long last)
+            || Environment.TickCount64 - last > EvictAfterMs;
+    }
+
+    void QueueMeshEvictionCheck(long key)
+    {
+        if (!meshEvictionQueued.Add(key)) return;
+        meshEvictionOrder.Enqueue(key);
     }
 
     // ---- Mesh job scheduling + result upload ----
@@ -1101,7 +1138,11 @@ public class LodTerrainRenderer : IRenderer
 
             // Fresh uploads get an age grace period. Later retention depends on distance,
             // never on whether the current camera happens to see the mesh.
-            lastResidencyFrame[result.Key] = frameCounter;
+            if (hasMesh)
+            {
+                lastResidencyMs[result.Key] = Environment.TickCount64;
+                QueueMeshEvictionCheck(result.Key);
+            }
         }
 
         MeshUploadItems += uploadBudget.Items;
@@ -2396,6 +2437,15 @@ public class LodTerrainRenderer : IRenderer
             return;
         }
 
+        // GL queries belong to the render context and cannot move to a worker. A hard
+        // per-frame issue budget prevents many sections whose intervals align from all
+        // adding driver commands to the same frame.
+        if (temporalOcclusionQueriesIssuedThisFrame >= TemporalOcclusionQueryIssuesPerFrame)
+        {
+            capi.Render.RenderMesh(mesh);
+            return;
+        }
+
         // A renderer earlier in this stage may deliberately span a query across us.
         // Beginning the same target would fail, and blindly ending afterwards could close
         // the other renderer's query. Check once per frame and simply draw when occupied.
@@ -2420,6 +2470,7 @@ public class LodTerrainRenderer : IRenderer
 
         query.State.BeginQuery(frameCounter, temporalOcclusionEpoch);
         temporalOcclusionPending.Add(key);
+        temporalOcclusionQueriesIssuedThisFrame++;
         TemporalOcclusionQueries++;
         try
         {
@@ -2441,7 +2492,10 @@ public class LodTerrainRenderer : IRenderer
 
         try
         {
-            for (int i = temporalOcclusionPending.Count - 1; i >= 0; i--)
+            int checkedThisFrame = 0;
+            for (int i = temporalOcclusionPending.Count - 1;
+                i >= 0 && checkedThisFrame < TemporalOcclusionResultChecksPerFrame;
+                i--, checkedThisFrame++)
             {
                 long key = temporalOcclusionPending[i];
                 if (!temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query)
@@ -2487,6 +2541,7 @@ public class LodTerrainRenderer : IRenderer
 
     void PrepareTemporalOcclusionQueries()
     {
+        temporalOcclusionQueriesIssuedThisFrame = 0;
         temporalOcclusionQueryTargetAvailable = false;
         if (!TemporalOcclusionActive) return;
 
@@ -2699,7 +2754,13 @@ public class LodTerrainRenderer : IRenderer
         appliedZFar = 0;
         EffectiveFarDistance = LodFarDistance.MinimumProjectionDistance;
         meshJobInFlight.Clear();
-        lastResidencyFrame.Clear();
+        lastResidencyMs.Clear();
+        meshEvictionOrder.Clear();
+        meshEvictionQueued.Clear();
+        seasonalRefreshActive = false;
+        seasonalStateInitialized = false;
+        seasonalRefreshSlot = 0;
+        snowLineY = pendingSnowLineY = 99999;
         DisposeTemporalOcclusionQueries();
         ClearReadiness();
     }

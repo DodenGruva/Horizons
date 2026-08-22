@@ -22,6 +22,7 @@ public static class ResidencyChecks
         FailedLoadIsRemembered(c);
         NoStorageThreadFallsBackToInline(c);
         LoadedSectionNeverClobbersALiveOne(c);
+        ColdEvictionIsIncremental(c);
     }
 
     /// <summary>
@@ -122,6 +123,25 @@ public static class ResidencyChecks
 
         c.True(ReferenceEquals(live, world.Sections[Key]),
             "the section that was already live survives the arriving copy");
+    }
+
+    static void ColdEvictionIsIncremental(Check c)
+    {
+        var world = new LodWorld();
+        long first = LodWorld.SectionKey(0, 1, 1);
+        long second = LodWorld.SectionKey(0, 2, 2);
+        world.GetOrCreateSection(first);
+        world.GetOrCreateSection(second);
+
+        world.EvictColdSections(1_000_000, 1_000_000, budget: 1);
+        c.Eq(1, world.LastSweepChecked,
+            "one RAM-eviction call examines only its rolling item budget");
+        c.Eq(1, world.Sections.Count,
+            "the first incremental pass evicts one unpinned cold section");
+
+        world.EvictColdSections(1_000_000, 1_000_000, budget: 1);
+        c.Eq(0, world.Sections.Count,
+            "the next pass continues from the rolling queue instead of rescanning");
     }
 
     // ---- helpers ----

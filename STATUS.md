@@ -2,8 +2,8 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-20
-**Mod version:** `0.3.40` (in development; `0.2.1` is the released version, and test builds increment the patch number)
+**Status date:** 2026-08-21
+**Mod version:** `0.3.40` source metadata (`0.2.1` is the released version; the next changed playable artifact must increment exactly once to `0.3.41`)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `45` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -12,7 +12,7 @@
 
 ## 1. Repository state
 
-`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `codex/gpu-overdraw-culling`, branched from `origin/master` at `4496948`, and is intended to track the same-named origin branch.
+`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `master` at base commit `0c1f28a1600bce3ac16fecefdc1782e2d74ae032`, tracking `origin/master`, with the Session 36 source changes and current documentation changes still uncommitted.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -22,6 +22,27 @@ one logarithmic scale plus a separate cached-terrain draw-distance slider. Exist
 one-distance configs migrate to the equivalent doubling sequence; cache and network
 formats are unchanged. The 0.3.38 distance correction was human-tested and accepted;
 the revised 0.3.40 window layout still awaits in-game review.
+
+**Ordinary LOD persistence is now a coarse RAM checkpoint rather than an activity-driven
+row stream** (Session 36). Before this change an active pipeline could admit six snapshots
+per 50 ms tick and the storage owner executed rows individually. Each active client or
+server pipeline now starts no more than one checkpoint every 30 seconds, freezes one section
+per game tick, retains at most 256 distinct snapshot keys, and commits the coalesced batch in
+one storage-thread SQLite transaction. Overflow and newer revisions remain authoritative and
+dirty in RAM for the next checkpoint. Compression, serialization and disk I/O remain off the
+owning thread; shutdown remains an explicit immediate flush. This changes no schema, blob or
+assist protocol number.
+
+**The periodic sweep candidates from the stutter audit are now rolling or coarsened.**
+Seasonal tint sampling begins every 30 seconds, updates one slot per frame into staging
+tables, and publishes atomically. GPU mesh eviction checks four keys per frame instead of
+scanning every mesh every 300 frames; CPU section eviction checks two resident keys per game
+tick instead of scanning the dictionary every five seconds. OpenGL queries remain on their
+required render context but are capped at eight issues and sixteen result checks per frame.
+Server follow-up manifest scans now run every 30 seconds. Integrated-singleplayer sibling-
+cache blob SQLite reads moved from the game tick to a bounded worker-owned connection.
+These changes are source- and harness-tested only; no game process has measured their
+effect on the reported tiny or three-to-six-second spikes.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
 geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
@@ -168,7 +189,14 @@ every binding, and the public culler fields, against the installed assembly.
 
 The client captures received chunk columns, converts them into persistent 3D RLE sections, builds a mip pyramid, meshes selected sections on workers, and renders them beyond vanilla view distance. An optional server installation can capture collectively explored terrain, sweep existing savegame columns, generate transient terrain on request, and offer stored sections to clients.
 
-Capture, meshing, mip boundary construction, compression, storage writes, demand-load decompression, foreign blob inflation/structural parsing, and integrated-singleplayer sibling-cache key discovery have background workers. The sibling-cache scanner owns a separate read-only unpooled SQLite connection and publishes bounded immutable key deltas. `LodWorld`, block-registry/palette resolution, revision validation, mip publication, foreign recolouring/publication, GPU upload, selection, and draw setup remain on their owning game or render threads.
+Capture, meshing, mip boundary construction, persistence serialization/compression and
+SQLite writes, demand-load decompression, foreign blob inflation/structural parsing, and
+integrated-singleplayer sibling-cache key and blob reads have background workers. The
+sibling-cache workers own separate read-only unpooled SQLite connections and publish
+bounded immutable key deltas and blob results. `LodWorld`, immutable persistence snapshot
+capture, block-registry/palette resolution, revision validation, mip publication, foreign
+recolouring/publication, GPU upload, selection, and draw setup remain on their owning game
+or render threads.
 
 Sweep, transient generation, and server-assist allowances accrue across normal 50 ms ticks instead of releasing a full second's work in one callback. Client assist arrivals, decoded foreign publication, completed background-load publication, and capture-result publication use 2 ms / 512 KiB boundary drains. One oldest item always progresses even if it alone exceeds a ceiling; later work waits. Queued/in-progress capture jobs plus completed/deferred results share one 24-item backpressure cap. Server and sibling-cache decode have separate outstanding limits, and concrete result queues expose pending items/bytes and oldest age.
 
@@ -195,9 +223,13 @@ Section rows carry a runtime-only persistence revision separate from mip content
 `SaveDirty` remains set through snapshot enqueue and clears only when the storage owner
 acknowledges that exact current revision. Failed writes retain dirty state under bounded
 retry; newer pending snapshots for one key coalesce; foreign fallback retires after the
-first durable local row. Close alternates drain, acknowledgement publication, and
-remaining-dirty enqueue until clean or a 15-second deadline, then reports exact unresolved
-keys/revisions. Database schema 6, blob 4, and assist protocol 1 are unchanged.
+first durable local row. Normal mutations remain in RAM until the 30-second checkpoint for
+that active pipeline. The owner freezes at most one snapshot per tick and at most 256 keys
+per checkpoint; the storage worker serializes and compresses the batch and commits it in
+one SQLite transaction. Overflow remains dirty for the following checkpoint. Close
+alternates drain, acknowledgement publication, and remaining-dirty enqueue until clean or
+a 15-second deadline, then reports exact unresolved keys/revisions. Database schema 6,
+blob 4, and assist protocol 1 are unchanged.
 
 Render-dirty membership publishes new-key deltas into a nearest-first priority index.
 Existing priorities rebuild after a 256-block camera-cell crossing, detail-distance change,
@@ -406,6 +438,18 @@ submissions without a same-frame wait. Local streaming invalidation, mixed-seam 
 turning probes and a narrow horizontal edge guard preserve convergence and accepted visuals.
 The owner observed about 170 to nearly 500 FPS stationary and roughly 250-350 FPS in sampled
 motion; aggressive is default-on in 0.3.37.
+38. Ordinary LOD-cache mutations now stay in RAM until a 30-second per-pipeline
+checkpoint. Snapshot capture is limited to one section per tick and 256 keys per
+checkpoint; the storage worker commits each active batch in one SQLite transaction and
+shutdown retains the existing exact-revision final flush.
+39. Integrated-singleplayer sibling-cache blob lookup and reads moved off the game thread
+to a second bounded read-only worker. The owning thread now only admits requests and
+publishes completed immutable results.
+40. Periodic maintenance was spread across frames: seasonal tint refresh runs every 30
+seconds and stages one tint slot per frame before atomic publication, GPU mesh eviction
+examines four rolling candidates per frame, CPU section eviction examines two per tick,
+delayed-occlusion work is capped at eight query issues and sixteen result checks per frame,
+and unchanged server manifest follow-up runs every 30 seconds.
 
 ## 4. Measured diagnosis and result
 
@@ -570,15 +614,24 @@ looking down. Delayed exact-geometry occlusion now skips opaque mesh submission 
 available zero-sample result; the owner saw about 170 to nearly 500 FPS stationary and
 roughly 250-350 in sampled motion. A controlled alternating 0.3.37 comparison, final edge-
 guard cost, GPU timer breakdown and cross-driver evidence remain absent.
+7. The new 30-second checkpoint removes frequent SQLite commits, but freezing one section
+snapshot remains an owning-thread atomic unit. The worker transaction can also create a
+30-second I/O burst, although it no longer blocks the game thread directly. Neither tail
+has been measured in game yet.
+8. One seasonal tint slot still performs its 128 colour-map samples atomically on the
+render thread. Mesh/section rolling eviction and delayed-query caps bound aggregate work,
+but the cost distribution has only source and harness evidence.
 
 The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`.
 
 ## 6. Remaining correctness and durability findings
 
 - Exact persistence revisions, success/failure acknowledgements, bounded retry,
-  same-key pending coalescing, and repeated shutdown drain/ack/enqueue are implemented.
-  Persistent-failure timeout reporting has deterministic/source evidence but has not been
-  forced in a game process.
+  same-key pending coalescing, 30-second checkpoint batching, and repeated shutdown
+  drain/ack/enqueue are implemented. A crash can lose up to the recent checkpoint window
+  of reconstructible LOD-cache mutations; it cannot lose game-world data. Persistent-
+  failure timeout reporting has deterministic/source evidence but has not been forced in
+  a game process.
 - Asynchronous mip propagation now has a longer movement/capture convergence run,
   graceful restart, deliberate interruption after a durable `ApplyToParent` write,
   successful recovery, and fresh-process zero-obligation postchecks in both dedicated and
@@ -594,30 +647,37 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-1. Measure what direction-dependent renderer cost remains after delayed exact-geometry
+1. Playtest and instrument the periodic-stutter changes: compare the recurring tiny spikes
+and the reported 3-6-second spikes, watch for a new 30-second checkpoint burst, and verify
+seasonal transitions, turn-around behavior, mesh residency, and RAM residency. If a tail
+remains, capture phase telemetry before moving more owning-thread atomic work.
+2. Measure what direction-dependent renderer cost remains after delayed exact-geometry
 occlusion before selecting regional buffers, multi-draw, or instancing. Repeat a controlled
 alternating 0.3.37 comparison in settled and streaming views, quantify the final edge guard,
 and cover other drivers, multiplayer, vertical look transitions, caves/structures, teleports
 and long sessions. The same-frame proxy-query prototype remains rejected evidence; it is not
 the accepted delayed real-draw design. Visibility must remain fail-open and independent from
-residency and persistence.
-2. The per-cell mask default is settled. The frame-rate question was answered in game on
+residency and persistence. The proposed follow-on architecture and its independent
+measurement gates are in `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`; no implementation
+phase has begun.
+3. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
 What remains is coverage rather than the decision: no controlled benchmark since 0.3.9, and
 boundary flicker, approach popping, cave and structure have never been individually
 confirmed. `.vhmask off` restores the measured radial handoff, which has no holes.
-3. Complete ordinary coverage of clipping, turn-around behavior, visual mesh replacement,
+4. Complete ordinary coverage of clipping, turn-around behavior, visual mesh replacement,
 boundary flicker, cave/structure handoff, multiplayer, other drivers and long sessions.
-4. Keep extreme fast-flight coarseness and brief approach overlap recorded at low priority.
+5. Keep extreme fast-flight coarseness and brief approach overlap recorded at low priority.
 The owner has played extensively without seeing either in normal gameplay, and those speeds
 are not normally achievable. `.vhcoarse` remains ready if the symptom becomes practical.
-5. Keep the recovered join fill-in regression under observation: one 0.3.23 join reached
+6. Keep the recovered join fill-in regression under observation: one 0.3.23 join reached
 100 meshes in 6.6 s against the old 6.1 s baseline, reversing the 36.4 s regression, but it
 is still one sample.
-6. Decide whether startup configuration should remain unlimited or adopt the `.vhconfig`
+7. Decide whether startup configuration should remain unlimited or adopt the `.vhconfig`
    Defaults value of 32,768 blocks, and whether regional buffers/multi-draw are warranted
-   after delayed-occlusion evidence and cross-driver testing.
+   after delayed-occlusion evidence and cross-driver testing. The proposed decision and
+   implementation gates are in `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`.
 
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
@@ -627,7 +687,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - Supplied code matched fork commit `27e5e6a` with zero source/asset project mismatches.
 - The active branch descends from fork release 0.2.1 at `f8d4b03`.
-- The complete sibling-cache key query exists only on the dedicated discovery worker; the owning tick consumes at most one immutable delta batch.
+- Complete sibling-cache key queries and sibling-cache blob SQL reads exist only on their
+  dedicated read-only workers; the owning tick consumes bounded immutable delta/result
+  batches.
 - Manifest ingestion publishes each chunk's new keys once; ordinary ticks no longer pass the retained `RemoteKeys` set through the pipeline.
 - The steady far-distance path no longer enumerates resident mesh dictionaries. Mesh arrival/removal owns bounds updates, and only an extreme removal requests a later exact rebuild.
 - Sweep, generation, and assist serving now spend capped fractional allowances across 50 ms ticks; delayed ticks cannot release full-second catch-up work.
@@ -638,7 +700,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   is never treated as durability.
 - Persistence revisions are independent of mip content revisions. Dirty membership
   survives enqueue, stale/failed acknowledgements cannot clear it, pending same-key
-  snapshots coalesce, and shutdown repeats drain/ack/enqueue before exact timeout report.
+  snapshots coalesce, ordinary work checkpoints every 30 seconds with one owning-thread
+  snapshot per tick and at most 256 keys, each worker batch uses one transaction, and
+  shutdown repeats drain/ack/enqueue before exact timeout report.
 - Allocation counter reads are opt-in per measured owner and sit outside the elapsed-time interval.
 - Server pipeline, sweep, generation, and assist phase costs are independently timed;
   allocation reads remain opt-in, assist queues report exact oldest-head age, and stats
@@ -652,7 +716,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   admits ordered session-tagged work and publishes completed packets.
 - Quadtree nodes are frustum-tested before descent; invisible subtrees cannot request
   meshes. Visible-child coverage remains conservative, while eviction uses a separate
-  distance/age residency timestamp that camera visibility never updates.
+  distance/age residency timestamp that camera visibility never updates. GPU eviction
+  examines four rolling candidates per frame and CPU section eviction two per tick.
 - Exact render-dirty membership feeds only new-key deltas into a nearest-first heap on
   ordinary frames. Camera-cell and detail-policy changes plus world clears own full
   reindexing; stale and busy heap entries cannot clear exact membership.
@@ -673,15 +738,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,533 assertions, including delayed-occlusion
+- The full game-backed Release tier passes 1,555 assertions, including delayed-occlusion
   state transitions, stale-epoch rejection, camera/profile thresholds, exact turn detection,
   mixed-seam invalidation, horizontal edge guards and static GL/query/default wiring; the water-seam
   frontier coverage added in 0.3.23 (four wall states plus the opposite-side pairing the
   repair depends on) and the 240-assertion
-  readiness suite with the draw-range no-hole sweep and the mask-exclusion regression, 44
+  readiness suite with the draw-range no-hole sweep and the mask-exclusion regression, 48
   persistence assertions for exact/stale/failure acknowledgements, pending coalescing,
   bounded retry, 300-key drain, and newest-row restart; 20
-  render-dirty-scheduling assertions, 7 visibility-traversal/residency,
+  render-dirty-scheduling assertions, 20 visibility-traversal/residency,
   53 benchmark-route/config/camera-mapping, the durable-mip
   client-scoped interruption marker, exact-key sibling retry, foreign queue/deferred-palette/failure isolation, assist-reader
   FIFO/cap/miss/failure/handle lifetime, async request-slot retention and saturation
@@ -817,6 +882,10 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Not yet established
 
+- No game process has run since the persistence checkpoint, sibling-cache blob-reader,
+  rolling seasonal/eviction, or delayed-query cap changes. Their effect on the reported
+  several-times-per-second and 3-6-second lag spikes remains unmeasured, as does any new
+  30-second checkpoint burst.
 - One brief human playtest reported a noticeable subjective improvement after off-thread foreign decode; it was not a controlled or thorough comparison.
 - No person has watched the clean-cache frontier, warm-join, completed-sweep,
   completed-generation, or saturated-assist routes in motion; long join/sweep/assist
@@ -872,7 +941,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ## 9. Known uncertainty
 
-- The reported recurring spikes may have multiple CPU and GPU causes. The current route proves one major synchronous source, not exclusivity.
+- The reported recurring spikes may have multiple CPU, GPU, allocation, and external I/O
+  causes. The audit removed several matching periodic owning-thread and disk paths, but no
+  post-change game run has established which visible spike classes disappeared.
 - Teleport-driven exploration emphasizes capture/propagation, and the original route's incorrect sky-facing pitch underrepresented terrain traversal, draw, and shader costs.
 - Memory readings in the short routes are noisy and were not used to claim an improvement.
 - Incremental discovery removes whole-set owning-thread work by construction, but its in-game frame-time effect has not been isolated in a before/after run.
