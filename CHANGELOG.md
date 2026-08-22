@@ -16,6 +16,42 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+## [0.3.47]
+
+In development. Telemetry, runtime compute/SSBO validation, and private depth-copy/mip
+allocation are game-probed on the primary machine; controlled performance baselines remain
+open.
+
+**The renderer now has a legacy-only dual-path boundary for the next GPU phases.** Mesh
+publication/removal, frame preparation, opaque/water drawing, world clear and disposal pass
+through one coordinator whose visible target is fixed to the established renderer. An
+opt-in, CPU-only shadow can mirror section identities and geometry counts after capability
+validation, but owns no GL resources and is never asked to draw. Shadow faults disable only
+the mirror. World, section-render and resource generations make stale ownership explicit,
+and the disposable GPU probes now share exact, verified GL-state restoration. Source and
+1,627 fast assertions pass; runtime equivalence remains owner-tested.
+
+**Phase 0 GPU feasibility measurement is now available without changing rendered pixels.**
+An opt-in benchmark mode records delayed, nonblocking GPU timings for cached opaque and
+water passes plus draw counts, submitted geometry, live mesh bytes, advertised GPU
+capabilities and the active depth attachment. The first isolated run on the owner's Radeon
+RX 9070 XT confirmed that the instrumentation works and that the chosen generic landscape
+camera angle is suitable for repeatable probes.
+
+The entry-point follow-up validated the required advanced OpenGL entry points, compiled and
+dispatched a minimal compute shader, read the expected SSBO value and restored the prior
+program and generic/indexed SSBO bindings. It cannot activate the proposed fast renderer;
+the complete legacy path remains selected.
+
+The private-depth follow-up allocates a same-format, viewport-sized depth texture with a
+complete mip chain, blits the active vanilla depth into level zero, verifies framebuffer
+completeness and restores the incoming framebuffer and texture bindings. The disposable
+probe does not retain the copy or construct a conservative HZB. The isolated primary-machine
+run validated a 2,560x1,440 `DEPTH_COMPONENT32` copy with 12 mip levels and no GL errors.
+The later uncapped Bodanboys pair is retained only as open-horizon GPU-cost evidence: its
+aerial camera placed essentially no cached terrain behind vanilla terrain, so it is not a
+temporal-occlusion comparison. The owner now owns FPS baselines and noise-floor evidence.
+
 **LOD cache writes are now coarse checkpoints instead of a stream of tiny transactions.**
 Dirty sections remain authoritative in RAM. Each active client or server pipeline starts a
 checkpoint no more than once every 30 seconds, freezes at most one section per tick, and

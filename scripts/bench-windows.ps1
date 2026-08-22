@@ -18,7 +18,14 @@ param(
     [int]$Port = 42425,
     [switch]$ServerMod,
     [switch]$DisableStats,
+    [switch]$GpuStats,
     [string]$AutoCommand,
+    [ValidatePattern('^[A-Za-z0-9_-]+$')]
+    [string]$SandboxProfile,
+    [string]$SeedSave,
+    [string]$SeedClientCache,
+    [string]$SeedServerCache,
+    [switch]$SeedOnly,
     [ValidateSet('Any', 'Warm', 'Cold')]
     [string]$ClientCache = 'Any',
     [ValidateSet('Any', 'Warm', 'Cold')]
@@ -55,7 +62,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$sandboxRoot = Join-Path $repoRoot '.testdata'
+$sandboxBase = Join-Path $repoRoot '.testdata'
+$sandboxRoot = if ($SandboxProfile) {
+    Join-Path $sandboxBase (Join-Path 'profiles' $SandboxProfile)
+} else { $sandboxBase }
 $sandbox = if ($IntegratedSingleplayer) { Join-Path $sandboxRoot 'integrated' } else { $sandboxRoot }
 $game = if ($env:VINTAGE_STORY) { $env:VINTAGE_STORY } else { Join-Path $env:APPDATA 'Vintagestory' }
 $routePath = if ($Route) { [IO.Path]::GetFullPath($Route) } else { Join-Path $repoRoot 'bench/routes/vhsurvival.txt' }
@@ -64,6 +74,7 @@ $benchOut = Join-Path $sandbox 'bench'
 $clientMods = Join-Path $sandbox 'Mods'
 $serverData = Join-Path $sandbox 'server'
 $serverMods = Join-Path $serverData 'Mods'
+$seedDir = Join-Path $sandboxRoot 'seed'
 $clientPidFile = Join-Path $sandbox 'test-instance.pid'
 $serverPidFile = Join-Path $serverData 'server.pid'
 $clientCacheDir = Join-Path $sandbox 'ModData\vintagehorizons'
@@ -71,6 +82,14 @@ $serverCacheDir = if ($IntegratedSingleplayer) { $clientCacheDir } else {
     Join-Path $serverData 'ModData\vintagehorizons'
 }
 $clientMainLog = Join-Path $sandbox 'Logs\client-main.log'
+$seedManifest = Join-Path $benchOut 'seed-profile.json'
+$seedSavePath = if ($SeedSave) { [IO.Path]::GetFullPath($SeedSave) } else { $null }
+$seedClientCachePath = if ($SeedClientCache) {
+    [IO.Path]::GetFullPath($SeedClientCache)
+} else { $null }
+$seedServerCachePath = if ($SeedServerCache) {
+    [IO.Path]::GetFullPath($SeedServerCache)
+} else { $null }
 
 function Assert-UnderSandbox {
     param([string]$Path)
@@ -99,6 +118,72 @@ function Assert-FreshAssembly {
     }
 }
 
+function Initialize-SeedFile {
+    param(
+        [Parameter(Mandatory)][string]$Source,
+        [Parameter(Mandatory)][string]$Target
+    )
+
+    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
+        throw "Seed source does not exist: $Source"
+    }
+    $sourceWal = Get-Item -LiteralPath "$Source-wal" -ErrorAction SilentlyContinue
+    if ($null -ne $sourceWal -and $sourceWal.Length -gt 0) {
+        throw "Seed source has a non-empty SQLite WAL and cannot be copied consistently: $Source-wal"
+    }
+    Assert-UnderSandbox $Target
+    $sourceFile = Get-Item -LiteralPath $Source -ErrorAction Stop
+    if (Test-Path -LiteralPath $Target -PathType Leaf) {
+        $targetFile = Get-Item -LiteralPath $Target -ErrorAction Stop
+        if (($targetFile.Length -ne $sourceFile.Length) -or ($targetFile.LastWriteTimeUtc -ne $sourceFile.LastWriteTimeUtc)) {
+            throw "Frozen seed target differs from its source; archive the sandbox profile before reseeding: $Target"
+        }
+    } else {
+        New-Item -ItemType Directory -Path (Split-Path -Parent $Target) -Force | Out-Null
+        Copy-Item -LiteralPath $Source -Destination $Target
+        $targetFile = Get-Item -LiteralPath $Target -ErrorAction Stop
+        if ($targetFile.Length -ne $sourceFile.Length) {
+            throw "Seed copy length mismatch for $Target"
+        }
+    }
+
+    return [ordered]@{
+        name = $sourceFile.Name
+        bytes = $sourceFile.Length
+        lastWriteUtc = $sourceFile.LastWriteTimeUtc.ToString('o')
+        sandboxTarget = [IO.Path]::GetRelativePath($repoRoot, $Target).Replace('\', '/')
+    }
+}
+
+function Restore-FrozenSeedFile {
+    param(
+        [Parameter(Mandatory)][object]$Record,
+        [Parameter(Mandatory)][string]$Target
+    )
+
+    $relativeSource = ([string]$Record.sandboxTarget).Replace('/', '\')
+    $source = [IO.Path]::GetFullPath((Join-Path $repoRoot $relativeSource))
+    Assert-UnderSandbox $source
+    Assert-UnderSandbox $Target
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw "Frozen seed input is missing: $source"
+    }
+    $sourceFile = Get-Item -LiteralPath $source -ErrorAction Stop
+    if ($sourceFile.Length -ne [int64]$Record.bytes) {
+        throw "Frozen seed input length changed: $source"
+    }
+
+    New-Item -ItemType Directory -Path (Split-Path -Parent $Target) -Force | Out-Null
+    # These are exact working-copy sidecars below the validated profile root. A previous
+    # run may leave them behind after graceful shutdown; never pair them with a restored
+    # main database from an earlier point in time.
+    Remove-Item -LiteralPath "$Target-wal", "$Target-shm" -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $source -Destination $Target -Force
+    if ((Get-Item -LiteralPath $Target -ErrorAction Stop).Length -ne $sourceFile.Length) {
+        throw "Restored working-copy length mismatch for $Target"
+    }
+}
+
 function Get-SandboxProcess {
     param([string]$PidFile)
     if (-not (Test-Path -LiteralPath $PidFile)) { return $null }
@@ -106,7 +191,8 @@ function Get-SandboxProcess {
     if ($raw -notmatch '^\d+$') { Remove-Item -LiteralPath $PidFile -Force; return $null }
     $record = Get-CimInstance Win32_Process -Filter "ProcessId=$raw" -ErrorAction SilentlyContinue
     if ($null -eq $record) { Remove-Item -LiteralPath $PidFile -Force; return $null }
-    if (-not ([string]$record.CommandLine).Contains($sandbox, [StringComparison]::OrdinalIgnoreCase)) {
+    if (([string]$record.CommandLine).IndexOf(
+            $sandbox, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
         throw "PID $raw is live but is not a Vintage Horizons sandbox process; refusing to signal it."
     }
     return Get-Process -Id ([int]$raw) -ErrorAction Stop
@@ -125,7 +211,8 @@ function Wait-ForText {
     do {
         if (Test-Path -LiteralPath $Path) {
             $text = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
-            if ($text -and $text.Contains($Needle, [StringComparison]::Ordinal)) { return $true }
+            if ($text -and ([string]$text).IndexOf(
+                    $Needle, [StringComparison]::Ordinal) -ge 0) { return $true }
         }
         if ($Process.HasExited) { return $false }
         Start-Sleep -Milliseconds 500
@@ -224,7 +311,8 @@ function Get-ReportedServerCachedSectionCount {
 function Get-CompletedGenerationRecord {
     if (-not (Test-Path -LiteralPath $serverOut -PathType Leaf)) { return $null }
     $line = @(Get-Content -LiteralPath $serverOut -ErrorAction Stop |
-        Where-Object { $_.Contains('Generation finished around block ', [StringComparison]::Ordinal) } |
+        Where-Object { ([string]$_).IndexOf(
+            'Generation finished around block ', [StringComparison]::Ordinal) -ge 0 } |
         Select-Object -Last 1)[0]
     if (-not $line) { return $null }
 
@@ -535,6 +623,78 @@ function Get-ClientReadinessRecord {
     return $record
 }
 
+function Get-ClientGpuRenderRecord {
+    if (-not (Test-Path -LiteralPath $clientMainLog -PathType Leaf)) { return $null }
+    $lines = @(Get-Content -LiteralPath $clientMainLog -ErrorAction Stop)
+    $probeLine = @($lines | Where-Object {
+        ([string]$_).IndexOf('[VintageHorizons] GPU probe:', [StringComparison]::Ordinal) -ge 0
+    } | Select-Object -Last 1)[0]
+
+    $timerPattern =
+        'delayed GPU pass p95/p99/max us: opaque (?<opaqueP95>\d+)/(?<opaqueP99>\d+)/(?<opaqueMax>\d+) ' +
+        'over (?<opaqueSamples>\d+) samples \| water (?<waterP95>\d+)/(?<waterP99>\d+)/(?<waterMax>\d+) ' +
+        'over (?<waterSamples>\d+); (?<pending>\d+) pending, (?<skips>\d+) ring-full skips, ' +
+        '(?<conflicts>\d+) time-query target conflicts, timing (?<state>active|inactive)'
+    $timerSamples = @()
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, $timerPattern)
+        if (-not $match.Success) { continue }
+        $timerSamples += [ordered]@{
+            line = $line
+            opaqueP95Microseconds = [int64]$match.Groups['opaqueP95'].Value
+            opaqueP99Microseconds = [int64]$match.Groups['opaqueP99'].Value
+            opaqueMaxMicroseconds = [int64]$match.Groups['opaqueMax'].Value
+            opaqueSamples = [int64]$match.Groups['opaqueSamples'].Value
+            waterP95Microseconds = [int64]$match.Groups['waterP95'].Value
+            waterP99Microseconds = [int64]$match.Groups['waterP99'].Value
+            waterMaxMicroseconds = [int64]$match.Groups['waterMax'].Value
+            waterSamples = [int64]$match.Groups['waterSamples'].Value
+            pending = [int64]$match.Groups['pending'].Value
+            ringFullSkips = [int64]$match.Groups['skips'].Value
+            targetConflicts = [int64]$match.Groups['conflicts'].Value
+            timingActive = $match.Groups['state'].Value -eq 'active'
+        }
+    }
+
+    $drawPattern =
+        'render draw interval: opaque (?<opaqueCalls>\d+) calls, ' +
+        '(?<opaqueVertices>\d+) vertices/(?<opaqueIndices>\d+) indices \| ' +
+        'water (?<waterCalls>\d+) calls, (?<waterVertices>\d+) vertices/' +
+        '(?<waterIndices>\d+) indices \| live geometry (?<liveMiB>[\d.,]+) MiB, ' +
+        'opaque (?<liveOpaqueVertices>\d+)/(?<liveOpaqueIndices>\d+), ' +
+        'water (?<liveWaterVertices>\d+)/(?<liveWaterIndices>\d+)'
+    $drawSamples = @()
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, $drawPattern)
+        if (-not $match.Success) { continue }
+        $drawSamples += [ordered]@{
+            line = $line
+            opaqueCalls = [int64]$match.Groups['opaqueCalls'].Value
+            opaqueVertices = [int64]$match.Groups['opaqueVertices'].Value
+            opaqueIndices = [int64]$match.Groups['opaqueIndices'].Value
+            waterCalls = [int64]$match.Groups['waterCalls'].Value
+            waterVertices = [int64]$match.Groups['waterVertices'].Value
+            waterIndices = [int64]$match.Groups['waterIndices'].Value
+            liveGeometryMiB = [double]::Parse(
+                $match.Groups['liveMiB'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            liveOpaqueVertices = [int64]$match.Groups['liveOpaqueVertices'].Value
+            liveOpaqueIndices = [int64]$match.Groups['liveOpaqueIndices'].Value
+            liveWaterVertices = [int64]$match.Groups['liveWaterVertices'].Value
+            liveWaterIndices = [int64]$match.Groups['liveWaterIndices'].Value
+        }
+    }
+
+    if (-not $probeLine -and $timerSamples.Count -eq 0 -and $drawSamples.Count -eq 0) {
+        return $null
+    }
+    return [ordered]@{
+        probeLine = $probeLine
+        timerSamples = $timerSamples
+        drawSamples = $drawSamples
+    }
+}
+
 function Get-CacheRecord {
     param([string]$Directory)
     if (-not (Test-Path -LiteralPath $Directory -PathType Container)) { return @() }
@@ -551,7 +711,8 @@ function Get-LastLogLineContaining {
     param([string]$Path, [string]$Needle)
     if (-not $Needle -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     return @(Get-Content -LiteralPath $Path -ErrorAction Stop |
-        Where-Object { $_.Contains($Needle, [StringComparison]::Ordinal) } | Select-Object -Last 1)[0]
+        Where-Object { ([string]$_).IndexOf($Needle, [StringComparison]::Ordinal) -ge 0 } |
+        Select-Object -Last 1)[0]
 }
 
 if ($IntegratedSingleplayer -and $ServerMod) {
@@ -559,6 +720,18 @@ if ($IntegratedSingleplayer -and $ServerMod) {
 }
 if ($IntegratedSingleplayer -and $ReuseServer) {
     throw '-ReuseServer is only for a separate dedicated server, not integrated singleplayer.'
+}
+if (($SeedSave -or $SeedClientCache -or $SeedServerCache) -and -not $SandboxProfile) {
+    throw 'Seed files require -SandboxProfile so the default benchmark world is never replaced.'
+}
+if ($IntegratedSingleplayer -and ($SeedSave -or $SeedServerCache)) {
+    throw 'Seeded save/server-cache support currently targets the isolated dedicated-server path.'
+}
+if (($SeedClientCache -or $SeedServerCache) -and -not $SeedSave) {
+    throw 'Seeded caches require -SeedSave so their world identity cannot be applied alone.'
+}
+if ($SeedOnly -and -not $SeedSave) {
+    throw '-SeedOnly requires -SeedSave.'
 }
 if ($serverConfigPath -and -not ($ServerMod -or $IntegratedSingleplayer)) {
     throw '-ServerConfig requires -ServerMod or -IntegratedSingleplayer so the pinned settings have a consumer.'
@@ -607,6 +780,59 @@ $requiredInputs = @(
 if ($serverConfigPath) { $requiredInputs += $serverConfigPath }
 foreach ($required in $requiredInputs) {
     if (-not (Test-Path -LiteralPath $required)) { throw "Required benchmark input is missing: $required" }
+}
+$seedRecords = [ordered]@{
+    save = $null
+    clientCache = $null
+    serverCache = $null
+}
+$profileHasSeed = Test-Path -LiteralPath $seedManifest -PathType Leaf
+$seedClientProcess = if ($seedSavePath -or $profileHasSeed) {
+    Get-SandboxProcess $clientPidFile
+} else { $null }
+$seedServerProcess = if ($seedSavePath -or $profileHasSeed) {
+    Get-SandboxProcess $serverPidFile
+} else { $null }
+if (($seedSavePath -or $profileHasSeed) -and ($null -ne $seedClientProcess -or $null -ne $seedServerProcess)) {
+    throw 'A seeded sandbox process is still running; refusing to copy benchmark inputs.'
+}
+if ($seedSavePath) {
+    $seedRecords.save = Initialize-SeedFile `
+        $seedSavePath (Join-Path $seedDir ([IO.Path]::GetFileName($seedSavePath)))
+}
+if ($seedClientCachePath) {
+    $seedRecords.clientCache = Initialize-SeedFile `
+        $seedClientCachePath (Join-Path $seedDir ([IO.Path]::GetFileName($seedClientCachePath)))
+}
+if ($seedServerCachePath) {
+    $seedRecords.serverCache = Initialize-SeedFile `
+        $seedServerCachePath (Join-Path $seedDir ([IO.Path]::GetFileName($seedServerCachePath)))
+}
+if ($SeedOnly) {
+    New-Item -ItemType Directory -Path $benchOut -Force | Out-Null
+    [ordered]@{
+        sandboxProfile = $SandboxProfile
+        seedFiles = $seedRecords
+        seededUtc = [DateTime]::UtcNow.ToString('o')
+    } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $seedManifest -Encoding utf8
+    Write-Host "Seeded frozen sandbox profile '$SandboxProfile'."
+    Write-Host "Seed proof: $seedManifest"
+    return
+}
+if (-not $seedSavePath -and $profileHasSeed) {
+    $savedSeedManifest = Get-Content -LiteralPath $seedManifest -Raw | ConvertFrom-Json
+    $seedRecords = $savedSeedManifest.seedFiles
+}
+if ($null -ne $seedRecords.save) {
+    Restore-FrozenSeedFile $seedRecords.save (Join-Path $serverData 'Saves\default.vcdbs')
+}
+if ($null -ne $seedRecords.clientCache) {
+    Restore-FrozenSeedFile $seedRecords.clientCache `
+        (Join-Path $clientCacheDir ([string]$seedRecords.clientCache.name))
+}
+if ($null -ne $seedRecords.serverCache) {
+    Restore-FrozenSeedFile $seedRecords.serverCache `
+        (Join-Path $serverCacheDir ([string]$seedRecords.serverCache.name))
 }
 Assert-FreshAssembly `
     (Join-Path $repoRoot 'VintageHorizons/bin/Debug/net10.0/Mods/vintagehorizons/VintageHorizons.dll') `
@@ -768,6 +994,7 @@ $clientEnvironment = @{
     VHBENCH_COOLDOWN = ([Math]::Max(0, $Cooldown)).ToString([Globalization.CultureInfo]::InvariantCulture)
     VHBENCH_STOP_SERVER = if ($IntegratedSingleplayer) { '0' } else { '1' }
     VINTAGEHORIZONS_STATS = $statsEnabled
+    VINTAGEHORIZONS_GPU_STATS = if ($GpuStats) { '1' } else { '0' }
     VINTAGEHORIZONS_AUTOUNPAUSE = '1'
 }
 # Pinned in both directions since 0.3.17, when the mask became the default. Leaving the
@@ -873,12 +1100,15 @@ try {
     $localOfferRecord = Get-ClientLocalOfferRecord
     $mipConvergenceRecord = Get-ClientMipConvergenceRecord
     $readinessRecord = Get-ClientReadinessRecord
+    $gpuRenderRecord = Get-ClientGpuRenderRecord
     $reportedPersistedMipObligations = Get-ReportedPersistedMipObligations
     $scenarioRecord = [ordered]@{
         label = $Label
         route = [IO.Path]::GetRelativePath($repoRoot, $routePath).Replace('\', '/')
         integratedSingleplayer = [bool]$IntegratedSingleplayer
         worldName = if ($IntegratedSingleplayer) { $WorldName } else { $null }
+        sandboxProfile = if ($SandboxProfile) { $SandboxProfile } else { $null }
+        seedFiles = $seedRecords
         clientCacheRequirement = $ClientCache
         serverCacheRequirement = $ServerCache
         prelaunchClientCacheFiles = $prelaunchCacheRecord
@@ -921,6 +1151,9 @@ try {
         cooldownSeconds = [Math]::Max(0, $Cooldown)
         serverMod = [bool]$ServerMod
         statsEnabled = -not [bool]$DisableStats
+        gpuStatsEnabled = [bool]$GpuStats
+        autoCommand = if ($AutoCommand) { $AutoCommand } else { $null }
+        gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')
     }
     $scenarioRecord | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $scenario -Encoding utf8

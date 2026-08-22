@@ -572,3 +572,26 @@ by the owner.**
   improvement and visual/reclamation tradeoffs remain awaiting human playtest.
 - Established G57 and the canonical build rule: every changed playable/package/install
   artifact advances the patch component by exactly one; ordinary compile/check runs do not.
+
+## 2026-08-21 — GPU feasibility and legacy-only renderer boundary
+
+- Added opt-in delayed, nonblocking opaque/water GPU timers plus draw-call, submitted-
+  geometry and live-mesh-byte telemetry without changing rendered output.
+- Runtime-validated the primary Radeon RX 9070 XT's required GL entry points, minimal
+  compute dispatch, expected SSBO write/readback and a disposable exact-format copy of the
+  active 2,560x1,440 `DEPTH_COMPONENT32` texture with all 12 mip levels.
+- Centralized exact capture/restoration and verification for program, generic/indexed SSBO,
+  draw/read framebuffer, active texture and texture-unit-zero state.
+- Added a renderer lifecycle coordinator for publication/removal, frame preparation,
+  opaque/water draw, clear and disposal. Its visible target is structurally fixed to legacy.
+- Added an opt-in, validated CPU-only GPU shadow that mirrors generation-tagged identities
+  and counts, owns no GL resources, receives no draw calls and fails without affecting
+  legacy publication or drawing.
+- Added stale-world rejection and globally non-aliasing section/opaque/water resource
+  generations, including same-epoch clear coverage.
+- Added frozen Bodanboys save seeding and a six-view open-horizon GPU route. Corrected one
+  watched/refresh-capped run; retained the uncapped pair only as open-horizon cost evidence
+  because it placed essentially no cached terrain behind vanilla terrain.
+- Completed Phase 1 source/harness verification with a warning-free Release build, 1,627
+  passing assertions and 1,441 documentation checks. FPS benchmarking and runtime
+  equivalence remain owner-run.

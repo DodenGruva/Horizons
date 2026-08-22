@@ -223,7 +223,15 @@ together kill an unrelated process.
 Useful env variables for unattended runs: `VINTAGEHORIZONS_AUTOUNPAUSE=1` (game ticks
 continue without window focus), `VINTAGEHORIZONS_AUTOEXPLORE=1` and
 `VINTAGEHORIZONS_EXPLORE_HOP=<blocks>` (teleport along a spiral so that fresh chunks
-stream in).
+stream in). `VINTAGEHORIZONS_GPU_STATS=1` enables delayed GPU timers for the cached opaque
+and water passes. The timers poll only results a later frame reports available; leave the
+variable unset for a control run with no timer-query submission. The Windows runner's
+`-GpuStats` switch pins that value and records it in the scenario JSON.
+
+Renderer development also accepts `VINTAGEHORIZONS_GPU_RENDERER=off|shadow|auto`. `off` is
+the default. In the current Phase 1 implementation, every value keeps legacy as the only
+visible renderer; `shadow`/`auto` can only enable a validated CPU metadata mirror that owns
+no GL resources and submits no draws.
 
 The Windows benchmark runner requires PowerShell 7 and uses the same isolated
 client/server setup. Fixed route entries hold one position and camera angle; trajectory

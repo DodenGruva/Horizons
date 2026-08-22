@@ -21,6 +21,7 @@ public static class Program
         ("pure", "render dirty scheduling", RenderDirtySchedulerChecks.Run),
         ("pure", "vanilla render readiness", VanillaReadinessChecks.Run),
         ("pure", "phase timing", PhaseCostChecks.Run),
+        ("pure", "GPU renderer policy", GpuRendererChecks.Run),
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),
         ("fixture", "persistence acknowledgements", PersistenceChecks.Run),

@@ -1,6 +1,9 @@
 # Plan - GPU-driven cached-terrain renderer
 
-**Status:** Proposed. No implementation phase is approved or started by this document.
+**Status:** Phase 0 capability feasibility is complete on the primary machine; controlled
+FPS baselines and noise-floor ownership moved to the owner on 2026-08-21. Phase 1 is
+approved and source/harness-complete. Legacy remains the only visible draw path; no regional
+arena, indirect, HZB, or other visible fast path is approved yet.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -577,6 +580,26 @@ Use timestamp or elapsed queries in a delayed ring; never wait in the current fr
 
 ### Phase 0 - rebaseline and feasibility spike
 
+**Implementation status:** Capability feasibility complete; controlled performance evidence
+is owner-run. The first source slice adds pure capability policy,
+a one-time advertised-versus-validated GL/depth report, opt-in delayed opaque/water GPU
+timers, and live draw/geometry counters. The isolated 0.3.41 `ring-overlook` probe validated
+the instrumentation on the owner's Radeon RX 9070 XT: GL 4.3, advertised regional MDI/HZB,
+conventional 32-bit single-sample texture depth, 2,520 delayed samples, zero ring-full skips
+or timer-target conflicts, about 1.25 ms opaque p95/p99 and 0.05 ms water p95/p99. The owner
+confirmed the generic landscape camera angle. This is one instrumentation/feasibility run,
+not a controlled performance comparison. The isolated 0.3.44 follow-up validated the
+required loaded entry points, minimal compute dispatch and expected SSBO readback, including
+exact restoration of the incoming program and SSBO bindings. The legacy renderer remained
+selected. The isolated 0.3.47 follow-up then validated a disposable 2,560x1,440
+`DEPTH_COMPONENT32` blit, all 12 private mip allocations and exact framebuffer/texture
+binding restoration with no GL errors. This satisfies the primary-machine capability gate,
+not conservative HZB classification. The aerial Bodanboys route added an open-horizon GPU
+cost sample, but did not place cached terrain behind enough vanilla foreground to compare
+temporal occlusion. The owner has taken responsibility for FPS baselines and noise-floor
+measurement; those results remain external acceptance evidence rather than an assistant-run
+gate.
+
 **Purpose:** Decide whether the engine/driver surface supports the proposed path before
 building architecture on assumptions.
 
@@ -605,6 +628,18 @@ Gate:
   and document that no fast-path implementation is currently justified.
 
 ### Phase 1 - renderer boundary and shadow infrastructure
+
+**Implementation status:** Source- and harness-complete on 2026-08-21; owner runtime
+equivalence remains open. Publication/removal, frame preparation, opaque/water drawing,
+clear, and disposal now cross one coordinator. Its visible target is structurally fixed to
+legacy. An explicit `VINTAGEHORIZONS_GPU_RENDERER=shadow|auto` may activate only a CPU-only
+identity/count mirror after Tier 1 validation; the coordinator never invokes its draw
+methods, and `off` is the default. World, section-render, and opaque/water resource
+generations are tracked. The compute and depth probes share exact state capture/restoration
+for programs, generic/indexed SSBO bindings, draw/read framebuffers, active texture, and
+texture-unit-zero binding. Fast checks cover fail-closed selection, stale identities,
+world/clear lifecycle, shadow-fault isolation, zero shadow draw calls/GL ownership, and
+ordered exact state restoration.
 
 **Purpose:** Create a safe dual-path seam without changing rendered output.
 

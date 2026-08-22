@@ -1187,6 +1187,31 @@ overwrite an already-used version with changed binaries.
 **Found:** 2026-08-21, after a local performance build reused the existing 0.3.40 artifact
 identity and the owner established the smallest-increment rule.
 
+### G58 — An occlusion benchmark needs an occluder, and an uncapped run needs cap proof
+
+**Trigger:** comparing cached-terrain occlusion modes in a visually demanding landscape or
+using an automated client mode that keeps the game watched/focused.
+
+**Trap:** terrain variety and cache size do not establish occlusion opportunity. A high
+panoramic camera can expose kilometres of cached terrain while placing essentially none of
+it behind vanilla foreground, so an on/off pair measures open-horizon cost and noise rather
+than the feature being toggled. Separately, watch/focus behavior can engage the game's
+refresh-rate/VSync limit; a stable figure near monitor refresh is not an uncapped baseline.
+
+**Do:** inspect the actual depth relationship from the measured camera: the target cached
+terrain must project behind a nearer vanilla hill, wall, cliff or equivalent foreground.
+Record the launch/watch mode and verify observed FPS is not pinned to refresh before calling
+the run uncapped. Preserve a mis-targeted pair only for the narrower evidence it actually
+contains.
+
+**Evidence:** the first Bodanboys watched route held near 170 FPS and was capped rather than
+an uncapped renderer baseline. The corrected aerial temporal-on/off pair ran uncapped and
+produced useful stable open-horizon GPU timings, but the owner observed that essentially no
+cached terrain was behind vanilla terrain; its small FPS differences therefore cannot
+measure temporal occlusion.
+
+**Found:** 2026-08-21, during the Phase 0 Bodanboys GPU feasibility routes.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

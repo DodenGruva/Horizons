@@ -1,0 +1,16 @@
+# Demanding cached-terrain baseline seeded from the owner's BodanBoys world.
+#
+# The recent real-world player position was about 256193,248,256034. This route stays near
+# spawn but moves the camera to y=280, above the local terrain without entering the cloud
+# height that invalidated earlier routes. Fixed views cover the four horizons plus a steep
+# downward view; the final trajectory holds position while rotating one complete turn.
+#
+# Keep coordinates and angles fixed after the owner's visual confirmation. The frozen
+# `.testdata/profiles/bodanboys` save/cache profile and this route form one benchmark input.
+
+north-horizon    256000  280  256000     0  -20
+east-horizon     256000  280  256000    90  -20
+south-horizon    256000  280  256000   180  -20
+west-horizon     256000  280  256000   270  -20
+downward         256000  280  256000    45  -60
+slow-rotation    256000  280  256000     0  -20  ->  256000  280  256000   360  -20

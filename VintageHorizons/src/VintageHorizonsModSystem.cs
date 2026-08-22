@@ -140,7 +140,8 @@ public class VintageHorizonsModSystem : ModSystem
         // it needs the texture atlas, and a server stores 0 on purpose.
         pipeline.RepairUncoloredPalette = section => LodPaletteRepair.Fill(section, AtlasColorOf);
         pipeline.RecolorForeignSection = RecolorForeignSection;
-        renderer = new LodTerrainRenderer(capi, pipeline.World, pipeline.Worker, tints)
+        renderer = new LodTerrainRenderer(
+            capi, pipeline.World, pipeline.Worker, tints, () => pipeline.WorldEpoch)
         {
             AutoUnpause = Environment.GetEnvironmentVariable("VINTAGEHORIZONS_AUTOUNPAUSE") == "1",
             TrackPhaseAllocations = allocationTelemetryEnabled,
@@ -1233,6 +1234,30 @@ public class VintageHorizonsModSystem : ModSystem
                 "  render gpu calls p95/p99/max us: upload {0:0}/{1:0}/{2:0} | dispose {3:0}/{4:0}/{5:0}",
                 renderer.GlUploadCost.P95Us, renderer.GlUploadCost.P99Us, renderer.GlUploadCost.MaxUs,
                 renderer.MeshDisposeCost.P95Us, renderer.MeshDisposeCost.P99Us, renderer.MeshDisposeCost.MaxUs);
+
+            Mod.Logger.Notification(
+                "  render draw interval: opaque {0} calls, {1} vertices/{2} indices | "
+                + "water {3} calls, {4} vertices/{5} indices | live geometry {6:0.00} MiB, "
+                + "opaque {7}/{8}, water {9}/{10}",
+                renderer.OpaqueDrawCalls, renderer.OpaqueDrawVertices, renderer.OpaqueDrawIndices,
+                renderer.WaterDrawCalls, renderer.WaterDrawVertices, renderer.WaterDrawIndices,
+                renderer.LiveGpuMeshBytes / (1024.0 * 1024.0),
+                renderer.LiveOpaqueVertices, renderer.LiveOpaqueIndices,
+                renderer.LiveWaterVertices, renderer.LiveWaterIndices);
+
+            if (renderer.GpuTimingRequested)
+            {
+                LodPhaseCost opaqueGpu = renderer.GpuOpaqueCost;
+                LodPhaseCost waterGpu = renderer.GpuWaterCost;
+                Mod.Logger.Notification(
+                    "  delayed GPU pass p95/p99/max us: opaque {0:0}/{1:0}/{2:0} over {3} samples | "
+                    + "water {4:0}/{5:0}/{6:0} over {7}; {8} pending, {9} ring-full skips, "
+                    + "{10} time-query target conflicts, timing {11}",
+                    opaqueGpu.P95Us, opaqueGpu.P99Us, opaqueGpu.MaxUs, opaqueGpu.Calls,
+                    waterGpu.P95Us, waterGpu.P99Us, waterGpu.MaxUs, waterGpu.Calls,
+                    renderer.GpuTimerPendingResults, renderer.GpuTimerUnavailableSlots,
+                    renderer.GpuTimerTargetBusy, renderer.GpuTimingActive ? "active" : "inactive");
+            }
 
             // Collections since the last report, beside the phase maxima, because the
             // two are related and the relationship is easy to get backwards. A phase

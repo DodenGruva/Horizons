@@ -116,10 +116,18 @@ longer a live reason to expect that to be needed.
 ## Renderer scaling after delayed occlusion
 
 The accepted current-renderer sequence remains
-`dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`. The proposed long-term GPU-driven follow-on is
-`dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`: measure/capability-probe first, then gate
-regional opaque arenas, indirect multi-draw, HZB suppression, cached-on-cached depth and
-packed quads independently. No phase of that proposal is approved or implemented yet.
+`dev/plans/PLAN_MAIN_THREAD_PERFORMANCE.md`; the staged follow-on is
+`dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`. Phase 0 capability feasibility and Phase 1
+source/harness work are complete and recorded in `dev/history/DONE.md`. Open work is:
+
+- Owner-check that the next correctly versioned playable artifact is visually and
+  behaviorally indistinguishable with `VINTAGEHORIZONS_GPU_RENDERER=off` and `shadow`,
+  including shader reload, a world change, mod deferral and shutdown.
+- Let the owner establish FPS baselines/noise. A temporal-occlusion comparison must place
+  cached terrain behind vanilla foreground and prove the client is uncapped (G58); the
+  aerial Bodanboys pair does neither feature attribution nor Phase 1 acceptance.
+- Do not begin a visible fast path until its phase is approved. Phase 2's real regional GL
+  shadow buffers also need an explicit bounded dual-residency memory ceiling.
 
 The renderer rejects off-screen quadtree nodes, distance-capped sections, fully
 vanilla-owned sections and back-facing opaque triangles; submits opaque sections nearest
@@ -263,9 +271,10 @@ Human-reported and still open:
 - Human-check clipping and turn-around behavior on the thousands-section build. Automated
   scaling now covers 3,132 persisted sections; the controlled 601-section pair remains the
   causal traversal comparison.
-- Execute only the measurement/capability milestone in
-  `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` before deciding whether regional buffers,
-  multi-draw or HZB are warranted after the accepted delayed-occlusion work.
+- Complete the owner runtime-equivalence check for Phase 1 using the next correctly
+  versioned playable artifact. Keep owner-run FPS/noise evidence separate from source and
+  capability evidence. After that gate, seek approval before Phase 2 creates real regional
+  GL shadow buffers; no visible fast-path phase is approved.
 - Decide whether startup configuration should change from unlimited cached drawing. The
   `.vhconfig` scale and its `Defaults` button now use 32,768 blocks, but that player-facing
   choice is not a controlled far-cap benchmark. The mask's benefit scales with vanilla

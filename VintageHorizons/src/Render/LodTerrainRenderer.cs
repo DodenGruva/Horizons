@@ -123,6 +123,12 @@ public class LodTerrainRenderer : IRenderer
     readonly ICoreClientAPI capi;
     readonly LodWorld world;
     readonly LodWorker worker;
+    readonly LodGpuTelemetry gpuTelemetry;
+    readonly Func<long> currentWorldEpoch;
+    readonly string? gpuRendererPreference;
+    readonly LodRenderPathCoordinator renderPaths;
+    bool renderPathConfigured;
+    float renderCullDistanceSquared = float.MaxValue;
     /// <summary>
     /// What the renderer's own frame costs, by phase, since the last stats report. Each
     /// of these is tens of microseconds against a ten-millisecond frame, which is well
@@ -138,6 +144,24 @@ public class LodTerrainRenderer : IRenderer
     public long MeshSnapshotBytes { get; private set; }
     public int MeshSnapshotItems { get; private set; }
     public int MeshUploadItems { get; private set; }
+    public long OpaqueDrawCalls { get; private set; }
+    public long WaterDrawCalls { get; private set; }
+    public long OpaqueDrawVertices { get; private set; }
+    public long OpaqueDrawIndices { get; private set; }
+    public long WaterDrawVertices { get; private set; }
+    public long WaterDrawIndices { get; private set; }
+    public long LiveGpuMeshBytes { get; private set; }
+    public long LiveOpaqueVertices { get; private set; }
+    public long LiveOpaqueIndices { get; private set; }
+    public long LiveWaterVertices { get; private set; }
+    public long LiveWaterIndices { get; private set; }
+    public bool GpuTimingActive => gpuTelemetry.TimingActive;
+    public bool GpuTimingRequested => gpuTelemetry.TimingRequested;
+    public LodPhaseCost GpuOpaqueCost => gpuTelemetry.OpaqueCost;
+    public LodPhaseCost GpuWaterCost => gpuTelemetry.WaterCost;
+    public int GpuTimerPendingResults => gpuTelemetry.PendingResults;
+    public int GpuTimerUnavailableSlots => gpuTelemetry.UnavailableSlots;
+    public int GpuTimerTargetBusy => gpuTelemetry.TargetBusy;
     public long TemporalOcclusionQueries { get; private set; }
     public long TemporalOcclusionResults { get; private set; }
     public long TemporalOcclusionHiddenResults { get; private set; }
@@ -363,6 +387,13 @@ public class LodTerrainRenderer : IRenderer
         MeshSnapshotBytes = 0;
         MeshSnapshotItems = 0;
         MeshUploadItems = 0;
+        OpaqueDrawCalls = 0;
+        WaterDrawCalls = 0;
+        OpaqueDrawVertices = 0;
+        OpaqueDrawIndices = 0;
+        WaterDrawVertices = 0;
+        WaterDrawIndices = 0;
+        gpuTelemetry.ResetInterval();
         TemporalOcclusionQueries = 0;
         TemporalOcclusionResults = 0;
         TemporalOcclusionHiddenResults = 0;
@@ -401,6 +432,14 @@ public class LodTerrainRenderer : IRenderer
 
     readonly Dictionary<long, MeshRef> sectionMeshes = new();
     readonly Dictionary<long, MeshRef> waterMeshes = new();
+    readonly Dictionary<long, LodLiveMeshStats> liveMeshStats = new();
+
+    readonly record struct LodLiveMeshStats(
+        int OpaqueVertices, int OpaqueIndices, int WaterVertices, int WaterIndices)
+    {
+        public long Bytes => OpaqueVertices * 16L + OpaqueIndices * sizeof(int)
+            + WaterVertices * 16L + WaterIndices * sizeof(int);
+    }
     readonly LodMeshBounds meshBounds = new();
     readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
@@ -595,12 +634,37 @@ public class LodTerrainRenderer : IRenderer
     readonly LodTintRegistry tints;
     int uploadedTintVersion = -1;
 
-    public LodTerrainRenderer(ICoreClientAPI capi, LodWorld world, LodWorker worker, LodTintRegistry tints)
+    public LodTerrainRenderer(
+        ICoreClientAPI capi,
+        LodWorld world,
+        LodWorker worker,
+        LodTintRegistry tints,
+        Func<long>? currentWorldEpoch = null)
     {
         this.capi = capi;
         this.world = world;
         this.worker = worker;
         this.tints = tints;
+        this.currentWorldEpoch = currentWorldEpoch ?? (() => 0);
+        bool gpuTimingRequested =
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_STATS") == "1";
+        gpuRendererPreference =
+            Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_RENDERER");
+        gpuTelemetry = new LodGpuTelemetry(
+            gpuTimingRequested,
+            LodRenderPathPolicy.RequestsRuntimeValidation(gpuRendererPreference),
+            message => capi.Logger.Notification("{0}", message),
+            message => capi.Logger.Warning("{0}", message));
+        renderPaths = new LodRenderPathCoordinator(
+            new LodLegacyRenderPath(
+                PublishLegacy,
+                RemoveMeshesLegacy,
+                PrepareLegacyFrame,
+                DrawLegacyOpaque,
+                DrawLegacyWater,
+                ClearMeshesLegacy),
+            new LodGpuShadowRenderPath(),
+            message => capi.Logger.Warning("{0}", message));
         keepRenderDirty = KeepRenderDirty;
         renderDirtyBlocked = RenderDirtyBlocked;
         maxWorkerMeshBacklog = worker.MeshThreads * MeshBacklogPerThread;
@@ -1098,7 +1162,6 @@ public class LodTerrainRenderer : IRenderer
         {
             meshJobInFlight.Remove(result.Key);
 
-            bool hadMesh = HasAnyMesh(result.Key);
             MeshRef? newOpaque = null;
             MeshRef? newWater = null;
             try
@@ -1125,30 +1188,27 @@ public class LodTerrainRenderer : IRenderer
                 throw;
             }
 
-            ReplaceMeshRefs(result.Key, newOpaque, newWater);
-
-            // Tracks the mesh that is actually live, so a repair can only ever be owed by
-            // geometry that is on screen.
-            if (result.AssumedCoveredSides != 0) meshedWithoutNeighbor[result.Key] = result.AssumedCoveredSides;
-            else meshedWithoutNeighbor.Remove(result.Key);
-
-            bool hasMesh = HasAnyMesh(result.Key);
-            if (!hadMesh && hasMesh) meshBounds.Include(result.Key);
-            else if (hadMesh && !hasMesh) meshBounds.Remove(result.Key);
-
-            // Fresh uploads get an age grace period. Later retention depends on distance,
-            // never on whether the current camera happens to see the mesh.
-            if (hasMesh)
-            {
-                lastResidencyMs[result.Key] = Environment.TickCount64;
-                QueueMeshEvictionCheck(result.Key);
-            }
+            renderPaths.Publish(
+                currentWorldEpoch(),
+                result.Key,
+                newOpaque,
+                newWater,
+                result.VertexCount,
+                result.IndexCount,
+                result.WaterVertexCount,
+                result.WaterIndexCount,
+                result.AssumedCoveredSides);
         }
 
         MeshUploadItems += uploadBudget.Items;
     }
 
     void RemoveMeshes(long key)
+    {
+        renderPaths.Remove(currentWorldEpoch(), key);
+    }
+
+    void RemoveMeshesLegacy(long worldEpoch, long key)
     {
         meshedWithoutNeighbor.Remove(key);
         RemoveTemporalOcclusionQuery(key);
@@ -1159,8 +1219,65 @@ public class LodTerrainRenderer : IRenderer
 
     void DisposeMeshRefs(long key)
     {
+        RemoveLiveMeshStats(key);
         if (sectionMeshes.Remove(key, out MeshRef? mesh)) DisposeMeshRef(mesh);
         if (waterMeshes.Remove(key, out MeshRef? water)) DisposeMeshRef(water);
+    }
+
+    void PublishLegacy(LodRenderPublication publication)
+    {
+        long key = publication.Identity.SectionKey;
+        bool hadMesh = HasAnyMesh(key);
+        PublishLiveMeshStats(publication);
+        ReplaceMeshRefs(key, publication.Opaque, publication.Water);
+
+        // Tracks the mesh that is actually live, so a repair can only ever be owed by
+        // geometry that is on screen.
+        if (publication.AssumedCoveredSides != 0)
+            meshedWithoutNeighbor[key] = publication.AssumedCoveredSides;
+        else
+            meshedWithoutNeighbor.Remove(key);
+
+        bool hasMesh = HasAnyMesh(key);
+        if (!hadMesh && hasMesh) meshBounds.Include(key);
+        else if (hadMesh && !hasMesh) meshBounds.Remove(key);
+
+        // Fresh uploads get an age grace period. Later retention depends on distance,
+        // never on whether the current camera happens to see the mesh.
+        if (hasMesh)
+        {
+            lastResidencyMs[key] = Environment.TickCount64;
+            QueueMeshEvictionCheck(key);
+        }
+    }
+
+    void PublishLiveMeshStats(LodRenderPublication publication)
+    {
+        long key = publication.Identity.SectionKey;
+        RemoveLiveMeshStats(key);
+        var stats = new LodLiveMeshStats(
+            Math.Max(0, publication.OpaqueVertices),
+            Math.Max(0, publication.OpaqueIndices),
+            Math.Max(0, publication.WaterVertices),
+            Math.Max(0, publication.WaterIndices));
+        if (stats.OpaqueIndices == 0 && stats.WaterIndices == 0) return;
+
+        liveMeshStats[key] = stats;
+        LiveOpaqueVertices += stats.OpaqueVertices;
+        LiveOpaqueIndices += stats.OpaqueIndices;
+        LiveWaterVertices += stats.WaterVertices;
+        LiveWaterIndices += stats.WaterIndices;
+        LiveGpuMeshBytes += stats.Bytes;
+    }
+
+    void RemoveLiveMeshStats(long key)
+    {
+        if (!liveMeshStats.Remove(key, out LodLiveMeshStats stats)) return;
+        LiveOpaqueVertices -= stats.OpaqueVertices;
+        LiveOpaqueIndices -= stats.OpaqueIndices;
+        LiveWaterVertices -= stats.WaterVertices;
+        LiveWaterIndices -= stats.WaterIndices;
+        LiveGpuMeshBytes -= stats.Bytes;
     }
 
     void ReplaceMeshRefs(long key, MeshRef? newOpaque, MeshRef? newWater)
@@ -2141,6 +2258,8 @@ public class LodTerrainRenderer : IRenderer
 
         camPos = capi.World.Player.Entity.CameraPos;
         frameCounter++;
+        gpuTelemetry.BeginFrame();
+        ConfigureRenderPaths();
         float viewDistance = ApprovedViewDistance();
 
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
@@ -2276,50 +2395,24 @@ public class LodTerrainRenderer : IRenderer
             cullDistSq = cull * cull;
         }
 
+        renderPaths.PrepareFrame(new LodRenderFrame(
+            currentWorldEpoch(), frameCounter, drawList.Count, cullDistSq));
+
         phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
 
         skippedLastFrame.Clear();
 
         // Pass 1: opaque terrain. The experimental order computes distance once per
         // selected section and reuses list capacity; sorting is included in DrawCost so
-        // its CPU price stays visible beside any GPU-side gain.
-        if (OpaqueFrontToBack)
-        {
-            LodOpaqueDrawOrder.FillFrontToBack(opaqueFrontToBack, drawList, camPos.X, camPos.Z);
-            foreach (LodOpaqueDrawEntry entry in opaqueFrontToBack)
-            {
-                long key = entry.Key;
-                if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
-                if (SkipVanillaOwnedSection(key)) continue;
-                if (!SetupSectionTransform(key, cullDistSq)) continue;
-                RenderOpaqueMesh(key, mesh);
-            }
-        }
-        else
-        {
-            foreach (long key in drawList)
-            {
-                if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
-                if (SkipVanillaOwnedSection(key)) continue;
-                if (!SetupSectionTransform(key, cullDistSq)) continue;
-                RenderOpaqueMesh(key, mesh);
-            }
-        }
+        // its CPU price stays visible beside any GPU-side gain. The GPU timer ends after
+        // command submission and is read only after a later frame reports it available.
+        renderPaths.DrawOpaque();
 
         LastCulledCount = culledThisFrame; // opaque pass only: water covers a subset
 
         // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
         // and a plant mat has no opposite face to take over when the camera is underneath.
-        rapi.GlDisableCullFace();
-        rapi.GlToggleBlend(true);
-        foreach (long key in drawList)
-        {
-            if (!waterMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
-            if (SkipVanillaOwnedSection(key)) continue;
-            if (!SetupSectionTransform(key, cullDistSq)) continue;
-            capi.Render.RenderMesh(mesh);
-        }
-        rapi.GlToggleBlend(false);
+        renderPaths.DrawWater();
 
         // Submission only. RenderMesh queues work for the GPU and returns, so this
         // measures the CPU cost of the draw loop -- the uniform uploads, the culling and
@@ -2328,6 +2421,76 @@ public class LodTerrainRenderer : IRenderer
 
         rapi.GlEnableCullFace();
         prog.Stop();
+    }
+
+    void ConfigureRenderPaths()
+    {
+        if (renderPathConfigured || !gpuTelemetry.ProbeAttempted) return;
+        renderPathConfigured = true;
+        LodRenderPathSelection selection = LodRenderPathPolicy.Evaluate(
+            gpuRendererPreference, gpuTelemetry.Decision);
+        renderPaths.Configure(selection);
+        capi.Logger.Notification(
+            "[VintageHorizons] Renderer path: visible {0}; {1}.",
+            selection.VisiblePath,
+            selection.Reason);
+    }
+
+    void PrepareLegacyFrame(LodRenderFrame frame)
+    {
+        renderCullDistanceSquared = frame.CullDistanceSquared;
+    }
+
+    void DrawLegacyOpaque()
+    {
+        gpuTelemetry.BeginOpaque();
+        try
+        {
+            if (OpaqueFrontToBack)
+            {
+                LodOpaqueDrawOrder.FillFrontToBack(
+                    opaqueFrontToBack, drawList, camPos.X, camPos.Z);
+                foreach (LodOpaqueDrawEntry entry in opaqueFrontToBack)
+                {
+                    long key = entry.Key;
+                    if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+                    if (SkipVanillaOwnedSection(key)) continue;
+                    if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
+                    RenderOpaqueMesh(key, mesh);
+                }
+            }
+            else
+            {
+                foreach (long key in drawList)
+                {
+                    if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+                    if (SkipVanillaOwnedSection(key)) continue;
+                    if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
+                    RenderOpaqueMesh(key, mesh);
+                }
+            }
+        }
+        finally { gpuTelemetry.EndOpaque(); }
+    }
+
+    void DrawLegacyWater()
+    {
+        var rapi = capi.Render;
+        rapi.GlDisableCullFace();
+        rapi.GlToggleBlend(true);
+        gpuTelemetry.BeginWater();
+        try
+        {
+            foreach (long key in drawList)
+            {
+                if (!waterMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
+                if (SkipVanillaOwnedSection(key)) continue;
+                if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
+                SubmitWaterMesh(key, mesh);
+            }
+        }
+        finally { gpuTelemetry.EndWater(); }
+        rapi.GlToggleBlend(false);
     }
 
     /// <summary>
@@ -2379,7 +2542,7 @@ public class LodTerrainRenderer : IRenderer
     {
         if (!TemporalOcclusionActive)
         {
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2399,7 +2562,7 @@ public class LodTerrainRenderer : IRenderer
         {
             query.State.Invalidate(temporalOcclusionEpoch);
             LastTemporalOcclusionSeamDraws++;
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2413,7 +2576,7 @@ public class LodTerrainRenderer : IRenderer
         {
             query.State.Invalidate(temporalOcclusionEpoch);
             LastTemporalOcclusionEdgeDraws++;
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2433,7 +2596,7 @@ public class LodTerrainRenderer : IRenderer
             temporalOcclusionVisibleQueryIntervalFrames,
             hiddenProbeInterval))
         {
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2442,7 +2605,7 @@ public class LodTerrainRenderer : IRenderer
         // adding driver commands to the same frame.
         if (temporalOcclusionQueriesIssuedThisFrame >= TemporalOcclusionQueryIssuesPerFrame)
         {
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2451,7 +2614,7 @@ public class LodTerrainRenderer : IRenderer
         // the other renderer's query. Check once per frame and simply draw when occupied.
         if (!temporalOcclusionQueryTargetAvailable)
         {
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2464,7 +2627,7 @@ public class LodTerrainRenderer : IRenderer
         {
             DisableTemporalOcclusion(e);
             // Query failure is an optimization failure, never a reason to lose terrain.
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
             return;
         }
 
@@ -2477,13 +2640,35 @@ public class LodTerrainRenderer : IRenderer
             // This is both the ordinary visible draw and the exact visibility probe.
             // A hidden section therefore adds only two query commands, not proxy
             // geometry plus a conditional submission of the real mesh.
-            capi.Render.RenderMesh(mesh);
+            SubmitOpaqueMesh(key, mesh);
         }
         finally
         {
             try { GL.EndQuery(QueryTarget.AnySamplesPassed); }
             catch (Exception e) { DisableTemporalOcclusion(e); }
         }
+    }
+
+    void SubmitOpaqueMesh(long key, MeshRef mesh)
+    {
+        OpaqueDrawCalls++;
+        if (liveMeshStats.TryGetValue(key, out LodLiveMeshStats stats))
+        {
+            OpaqueDrawVertices += stats.OpaqueVertices;
+            OpaqueDrawIndices += stats.OpaqueIndices;
+        }
+        capi.Render.RenderMesh(mesh);
+    }
+
+    void SubmitWaterMesh(long key, MeshRef mesh)
+    {
+        WaterDrawCalls++;
+        if (liveMeshStats.TryGetValue(key, out LodLiveMeshStats stats))
+        {
+            WaterDrawVertices += stats.WaterVertices;
+            WaterDrawIndices += stats.WaterIndices;
+        }
+        capi.Render.RenderMesh(mesh);
     }
 
     void ResolveTemporalOcclusionQueries()
@@ -2744,10 +2929,19 @@ public class LodTerrainRenderer : IRenderer
 
     public void ClearMeshes()
     {
+        renderPaths.Clear(currentWorldEpoch());
+    }
+
+    void ClearMeshesLegacy(long worldEpoch)
+    {
         foreach (MeshRef meshRef in sectionMeshes.Values) meshRef.Dispose();
         foreach (MeshRef meshRef in waterMeshes.Values) meshRef.Dispose();
         sectionMeshes.Clear();
         waterMeshes.Clear();
+        liveMeshStats.Clear();
+        LiveOpaqueVertices = LiveOpaqueIndices = 0;
+        LiveWaterVertices = LiveWaterIndices = 0;
+        LiveGpuMeshBytes = 0;
         meshedWithoutNeighbor.Clear();
         meshBounds.Clear();
         farPlaneState.Reset();
@@ -2780,6 +2974,8 @@ public class LodTerrainRenderer : IRenderer
         // and the game's shutdown crash path disposes mods from another one, so putting
         // the engine call first meant a crashing client freed none of its GPU meshes.
         ClearMeshes();
+        renderPaths.Dispose();
+        gpuTelemetry.Dispose();
         // Same reason as the meshes: the mask texture is ours, and a shutdown that never
         // reaches the engine call must still not leak it.
         DisposeReadinessMaskTexture();

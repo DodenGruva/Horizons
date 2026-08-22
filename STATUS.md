@@ -3,16 +3,22 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-21
-**Mod version:** `0.3.40` source metadata (`0.2.1` is the released version; the next changed playable artifact must increment exactly once to `0.3.41`)
+**Mod version:** `0.3.47` source metadata (`0.2.1` is the released version; the next
+changed playable artifact must increment exactly once to `0.3.48`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `45` C# files under `VintageHorizons/src`
+**Source files:** `52` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
 
 ## 1. Repository state
 
-`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied source was code-equivalent to fork commit `27e5e6a`; the active branch is `master` at base commit `0c1f28a1600bce3ac16fecefdc1782e2d74ae032`, tracking `origin/master`, with the Session 36 source changes and current documentation changes still uncommitted.
+`origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied
+source was code-equivalent to fork commit `27e5e6a`. Published `master` and
+`render-overhaul` both begin this work at commit
+`d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
+tracking `origin/render-overhaul`. The current 0.3.47 work comprises the Phase 0
+telemetry/capability slice and Phase 1's legacy-only renderer boundary.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -658,8 +664,37 @@ and cover other drivers, multiplayer, vertical look transitions, caves/structure
 and long sessions. The same-frame proxy-query prototype remains rejected evidence; it is not
 the accepted delayed real-draw design. Visibility must remain fail-open and independent from
 residency and persistence. The proposed follow-on architecture and its independent
-measurement gates are in `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`; no implementation
-phase has begun.
+measurement gates are in `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md`. Phase 0 capability
+feasibility is complete on the primary machine and the owner now owns FPS/noise-floor
+baselines. Phase 1 is approved and source/harness-complete; no visible fast-path phase has
+begun. The first source
+slice adds delayed GPU-pass timers, draw/geometry counters and advertised-versus-validated
+capability/depth diagnostics without changing rendered pixels. Its isolated 0.3.41
+`ring-overlook` probe on the owner's Radeon RX 9070 XT reported GL 4.3, advertised regional
+MDI/HZB support, conventional 32-bit single-sample texture depth, 2,520 nonblocking GPU
+samples with zero ring-full skips or timer-target conflicts, about 1.25 ms opaque p95/p99,
+and about 0.05 ms water p95/p99. The owner confirmed the generic landscape camera angle;
+this single run establishes instrumentation and feasibility facts, not a comparative
+performance result. The isolated 0.3.44 follow-up then validated every required advanced
+OpenGL entry point, compiled and dispatched the minimal compute shader, read the expected
+SSBO value back, and verified restoration of the incoming program and SSBO bindings. Both
+processes shut down cleanly and the complete legacy renderer remained selected. The isolated
+0.3.47 depth follow-up then blitted the active 2,560x1,440 `DEPTH_COMPONENT32` attachment to
+a disposable same-format texture, verified all 12 allocated mip levels and restored the
+incoming framebuffer and texture bindings without GL errors. This satisfies the primary-
+machine Phase 0 capability gate; it does not prove conservative HZB classification. The
+aerial Bodanboys samples are valid open-horizon GPU-cost evidence, but not a temporal-
+occlusion comparison because essentially no cached terrain sat behind vanilla terrain.
+
+Phase 1 now routes resource publication/removal, frame preparation, opaque/water drawing,
+clear and disposal through one coordinator whose visible target is structurally fixed to
+legacy. `VINTAGEHORIZONS_GPU_RENDERER=off` is the default; `shadow` or `auto` can only
+activate a validated CPU identity/count mirror. It owns no GL resources, receives no draw
+calls and disables itself without affecting legacy if mirroring fails. World epochs,
+section-render generations and distinct opaque/water resource generations make stale
+ownership explicit. The compute and depth probes now use one exact GL-state owner for
+program, generic/indexed SSBO, draw/read framebuffer, active texture and texture-unit-zero
+bindings. Owner runtime equivalence and FPS baselines remain external acceptance evidence.
 3. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
@@ -738,7 +773,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
-- The full game-backed Release tier passes 1,555 assertions, including delayed-occlusion
+- The full game-backed Release tier passes 1,627 assertions, including delayed-occlusion
   state transitions, stale-epoch rejection, camera/profile thresholds, exact turn detection,
   mixed-seam invalidation, horizontal edge guards and static GL/query/default wiring; the water-seam
   frontier coverage added in 0.3.23 (four wall states plus the opposite-side pairing the
@@ -754,7 +789,8 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   discovery/delta, remote-request state, server-assist, blob, and 64 mip assertions.
   This result also includes the 23 conservative-handoff/shader assertions from Session 24,
   89 readiness-model assertions, and static guards for event subscription, probe budgets,
-  and the Phase 1 shadow state's exclusion from draw classification.
+  and the Phase 1 shadow state's exclusion from draw classification, plus 72 GPU renderer
+  capability/path/lifecycle/timer/GL-state assertions.
 - The 2026-08-20 client log on 0.3.23 reads `Fill-in: 100 meshes after 6.6s` against the same
   3,016-key manifest that produced `36.4s` on 0.3.7 and `6.1s` on 0.3.4. The join regression
   therefore appears to have been fixed by the 0.3.8 probe-lock restriction, on one join, one

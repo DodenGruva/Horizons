@@ -1,0 +1,320 @@
+using System.Diagnostics;
+using OpenTK.Graphics.OpenGL4;
+
+namespace VintageHorizons;
+
+internal interface ILodGpuTimerApi
+{
+    int CreateQuery();
+    bool TimeElapsedTargetIsFree();
+    void BeginTimeElapsed(int queryId);
+    void EndTimeElapsed();
+    bool TryGetResultNanoseconds(int queryId, out long nanoseconds);
+    void DeleteQuery(int queryId);
+}
+
+internal sealed class LodOpenGlTimerApi : ILodGpuTimerApi
+{
+    public int CreateQuery() => GL.GenQuery();
+
+    public bool TimeElapsedTargetIsFree()
+    {
+        GL.GetQuery(QueryTarget.TimeElapsed, GetQueryParam.CurrentQuery, out int current);
+        return current == 0;
+    }
+
+    public void BeginTimeElapsed(int queryId) => GL.BeginQuery(QueryTarget.TimeElapsed, queryId);
+    public void EndTimeElapsed() => GL.EndQuery(QueryTarget.TimeElapsed);
+
+    public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
+    {
+        GL.GetQueryObject(queryId, GetQueryObjectParam.QueryResultAvailable, out int available);
+        if (available == 0)
+        {
+            nanoseconds = 0;
+            return false;
+        }
+
+        GL.GetQueryObject(queryId, GetQueryObjectParam.QueryResult, out nanoseconds);
+        return true;
+    }
+
+    public void DeleteQuery(int queryId) => GL.DeleteQuery(queryId);
+}
+
+/// <summary>
+/// A fixed delayed query ring. Pending slots are polled for availability and never waited
+/// on; when the GPU falls more than the ring behind, timing is skipped for that pass.
+/// </summary>
+internal sealed class LodGpuTimerRing : IDisposable
+{
+    struct Slot
+    {
+        public int QueryId;
+        public bool Pending;
+        public long Epoch;
+    }
+
+    readonly ILodGpuTimerApi api;
+    readonly Slot[] slots;
+    int nextSlot;
+    int activeSlot = -1;
+    long epoch = 1;
+
+    public int UnavailableSlots { get; private set; }
+    public int TargetBusy { get; private set; }
+    public int PendingCount => slots.Count(slot => slot.Pending);
+
+    public LodGpuTimerRing(ILodGpuTimerApi api, int slotCount = 4)
+    {
+        if (slotCount < 2) throw new ArgumentOutOfRangeException(nameof(slotCount));
+        this.api = api;
+        slots = new Slot[slotCount];
+    }
+
+    public bool TryBegin()
+    {
+        if (activeSlot >= 0) throw new InvalidOperationException("GPU timer already active");
+        if (!api.TimeElapsedTargetIsFree())
+        {
+            TargetBusy++;
+            return false;
+        }
+
+        ref Slot slot = ref slots[nextSlot];
+        if (slot.Pending)
+        {
+            UnavailableSlots++;
+            return false;
+        }
+
+        if (slot.QueryId == 0) slot.QueryId = api.CreateQuery();
+        api.BeginTimeElapsed(slot.QueryId);
+        activeSlot = nextSlot;
+        return true;
+    }
+
+    public void End()
+    {
+        if (activeSlot < 0) return;
+        api.EndTimeElapsed();
+        ref Slot slot = ref slots[activeSlot];
+        slot.Pending = true;
+        slot.Epoch = epoch;
+        nextSlot = (activeSlot + 1) % slots.Length;
+        activeSlot = -1;
+    }
+
+    public void Poll(ref LodPhaseCost cost)
+    {
+        for (int i = 0; i < slots.Length; i++)
+        {
+            ref Slot slot = ref slots[i];
+            if (!slot.Pending
+                || !api.TryGetResultNanoseconds(slot.QueryId, out long nanoseconds)) continue;
+
+            slot.Pending = false;
+            if (slot.Epoch == epoch)
+                cost.AddElapsedTicks(NanosecondsToStopwatchTicks(nanoseconds));
+        }
+    }
+
+    public void ResetInterval()
+    {
+        epoch++;
+        UnavailableSlots = 0;
+        TargetBusy = 0;
+    }
+
+    internal static long NanosecondsToStopwatchTicks(long nanoseconds)
+    {
+        if (nanoseconds <= 0) return 0;
+        double ticks = nanoseconds * (double)Stopwatch.Frequency / 1_000_000_000.0;
+        return ticks >= long.MaxValue ? long.MaxValue : (long)Math.Round(ticks);
+    }
+
+    public void Dispose()
+    {
+        if (activeSlot >= 0)
+        {
+            try { api.EndTimeElapsed(); }
+            catch { /* Context teardown must continue. */ }
+            activeSlot = -1;
+        }
+
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i].QueryId == 0) continue;
+            try { api.DeleteQuery(slots[i].QueryId); }
+            catch { /* Context teardown must continue. */ }
+            slots[i].QueryId = 0;
+            slots[i].Pending = false;
+        }
+    }
+}
+
+/// <summary>Phase 0 capability report and optional delayed GPU-pass timers.</summary>
+internal sealed class LodGpuTelemetry : IDisposable
+{
+    readonly Action<string> log;
+    readonly Action<string> warn;
+    readonly LodGpuTimerRing opaqueTimer;
+    readonly LodGpuTimerRing waterTimer;
+    bool probeAttempted;
+    bool timingFailureReported;
+
+    public bool TimingRequested { get; }
+    public bool RuntimeValidationRequested { get; }
+    public bool ProbeAttempted => probeAttempted;
+    public bool TimingActive { get; private set; }
+    public LodGpuCapabilityFacts Capabilities { get; private set; }
+    public LodGpuRuntimeValidation RuntimeValidation { get; private set; }
+    public LodGpuDepthCopyValidation DepthCopyValidation { get; private set; }
+    public LodGpuDepthFacts Depth { get; private set; }
+    public LodGpuPathDecision Decision { get; private set; }
+    public LodPhaseCost OpaqueCost;
+    public LodPhaseCost WaterCost;
+    public int PendingResults => opaqueTimer.PendingCount + waterTimer.PendingCount;
+    public int UnavailableSlots => opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots;
+    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy;
+
+    public LodGpuTelemetry(
+        bool timingRequested,
+        bool runtimeValidationRequested,
+        Action<string> log,
+        Action<string> warn,
+        ILodGpuTimerApi? timerApi = null)
+    {
+        TimingRequested = timingRequested;
+        RuntimeValidationRequested = runtimeValidationRequested || timingRequested;
+        this.log = log;
+        this.warn = warn;
+        timerApi ??= new LodOpenGlTimerApi();
+        opaqueTimer = new LodGpuTimerRing(timerApi);
+        waterTimer = new LodGpuTimerRing(timerApi);
+    }
+
+    public void BeginFrame()
+    {
+        if (!probeAttempted) ProbeAndReport();
+        if (!TimingActive) return;
+
+        try
+        {
+            opaqueTimer.Poll(ref OpaqueCost);
+            waterTimer.Poll(ref WaterCost);
+        }
+        catch (Exception e)
+        {
+            DisableTiming(e);
+        }
+    }
+
+    public bool BeginOpaque() => Begin(opaqueTimer);
+    public void EndOpaque() => End(opaqueTimer);
+    public bool BeginWater() => Begin(waterTimer);
+    public void EndWater() => End(waterTimer);
+
+    public void ResetInterval()
+    {
+        OpaqueCost.Reset();
+        WaterCost.Reset();
+        opaqueTimer.ResetInterval();
+        waterTimer.ResetInterval();
+    }
+
+    void ProbeAndReport()
+    {
+        probeAttempted = true;
+        try
+        {
+            Capabilities = LodGpuCapabilities.Probe();
+            RuntimeValidation = RuntimeValidationRequested
+                ? LodGpuRuntimeProbe.Probe(Capabilities)
+                : new LodGpuRuntimeValidation(
+                    false, false, LodGpuRuntimeProbe.ProbeValue, 0,
+                    "runtime resource validation was not requested");
+            Capabilities = Capabilities with
+            {
+                RequiredEntryPointsValidated =
+                    RuntimeValidation.RequiredEntryPointsValidated,
+                MinimalComputeValidated = RuntimeValidation.MinimalComputeValidated,
+            };
+            Depth = LodGpuCapabilities.ProbeActiveDepth();
+            DepthCopyValidation = RuntimeValidationRequested && RuntimeValidation.Succeeded
+                ? LodGpuDepthCopyProbe.Probe(Depth)
+                : new LodGpuDepthCopyValidation(
+                    false, false, false, 0, 0, 0, 0,
+                    RuntimeValidationRequested
+                        ? "compute/SSBO validation did not pass"
+                        : "runtime resource validation was not requested");
+            Depth = Depth with { CopyValidated = DepthCopyValidation.Succeeded };
+            Decision = LodGpuCapabilityPolicy.Evaluate(Capabilities, Depth);
+            TimingActive = TimingRequested && Decision.TimerQueriesAvailable;
+
+            string depth = string.IsNullOrEmpty(Depth.FailureReason)
+                ? $"FBO draw/read {Depth.DrawFramebuffer}/{Depth.ReadFramebuffer}, "
+                  + $"{Depth.AttachmentType} {Depth.AttachmentName}, {Depth.DepthBits}-bit, "
+                  + $"{Depth.Samples}x, {Depth.DepthFunction} clear {Depth.ClearDepth:0.###}, {Depth.Convention}"
+                : "probe failed: " + Depth.FailureReason;
+            log($"[VintageHorizons] GPU probe: {Capabilities.Vendor} {Capabilities.Renderer}; "
+                + $"GL {Capabilities.Version}, GLSL {Capabilities.ShadingLanguageVersion}; "
+                + $"timer {(Decision.TimerQueriesAvailable ? "yes" : "no")}, "
+                + $"regional MDI advertised {(Decision.RegionalIndirectAdvertised ? "yes" : "no")}, "
+                + $"HZB advertised {(Decision.HierarchicalDepthAdvertised ? "yes" : "no")}; "
+                + $"advanced entry points {(Capabilities.RequiredEntryPointsValidated ? "validated" : "unavailable")}, "
+                + $"compute/SSBO {(Capabilities.MinimalComputeValidated ? "validated" : "failed")}; "
+                + $"private depth copy/mips {(DepthCopyValidation.Succeeded
+                    ? $"validated {DepthCopyValidation.Width}x{DepthCopyValidation.Height}/"
+                        + $"{DepthCopyValidation.MipLevels} levels/0x{DepthCopyValidation.InternalFormat:X}"
+                    : "not validated")}; "
+                + $"depth {depth}; GPU timing {(TimingActive ? "on" : "off")}. "
+                + $"Fast path remains legacy: {Decision.Reason}."
+                + (string.IsNullOrEmpty(RuntimeValidation.FailureReason)
+                    ? ""
+                    : " Runtime probe: " + RuntimeValidation.FailureReason + ".")
+                + (string.IsNullOrEmpty(DepthCopyValidation.FailureReason)
+                    ? ""
+                    : " Depth probe: " + DepthCopyValidation.FailureReason + "."));
+        }
+        catch (Exception e)
+        {
+            TimingActive = false;
+            warn("[VintageHorizons] GPU capability probe failed; legacy rendering remains active: "
+                + e.Message);
+        }
+    }
+
+    bool Begin(LodGpuTimerRing timer)
+    {
+        if (!TimingActive) return false;
+        try { return timer.TryBegin(); }
+        catch (Exception e)
+        {
+            DisableTiming(e);
+            return false;
+        }
+    }
+
+    void End(LodGpuTimerRing timer)
+    {
+        if (!TimingActive) return;
+        try { timer.End(); }
+        catch (Exception e) { DisableTiming(e); }
+    }
+
+    void DisableTiming(Exception e)
+    {
+        TimingActive = false;
+        if (timingFailureReported) return;
+        timingFailureReported = true;
+        warn("[VintageHorizons] Delayed GPU timing disabled; rendering is unchanged: " + e.Message);
+    }
+
+    public void Dispose()
+    {
+        opaqueTimer.Dispose();
+        waterTimer.Dispose();
+        TimingActive = false;
+    }
+}

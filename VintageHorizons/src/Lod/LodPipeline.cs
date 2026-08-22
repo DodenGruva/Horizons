@@ -169,6 +169,7 @@ public class LodPipeline
 
     int tickCounter;
     long worldEpoch;
+    public long WorldEpoch => worldEpoch;
 
     public LodPipeline(ICoreAPI api, ILogger logger, LodPaletteDescriber describePalette,
         LodTintSlotResolver? tintSlotFor = null, LodStableColorResolver? stableColorFor = null)
