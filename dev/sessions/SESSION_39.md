@@ -79,6 +79,21 @@ extreme coordinates, content equality, replacement, world-clear teardown, covera
 accounting, command and record layout, batching and ordering, page pairing, and a 3,000-step
 streaming stress with an overlap invariant. `dev/DocCheck.ps1` passes 1,447 checks.
 
+### 6. After the commit: what the churn actually was
+
+The owner asked about the re-mesh churn flagged in passing. Diffing the post-run client
+cache against the frozen seed settled it offline, with no further run: 64 of 3,291 sections
+genuinely changed, none were added, and capture was almost entirely re-confirming identical
+data. The 5,057 rebuilds come from `MarkChanged` refreshing four neighbours unconditionally
+and repeating that at every mip level - up to 35 rebuilds per changed section, a deferral the
+source records as such. Garbage collection was ruled out at about 10 gen0 per 15 seconds.
+
+The owner then reported a longstanding symptom: micro-hitches dozens of times per second on
+his frame-time graph, with a fully smooth mod as the end goal. The stationary runs do show
+1% low frame times at roughly twice the average in all six views, and the existing 25/50/100
+ms hitch counters cannot resolve anything at that scale when a whole frame is 2.5 ms. Both
+are recorded in `dev/TODO.md` with their next experiments.
+
 ---
 
 ## Delivered

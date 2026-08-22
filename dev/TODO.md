@@ -2,23 +2,78 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## Cached sections are re-meshed about seven times each while the camera sits still
+## Re-mesh amplification: 64 real terrain changes cost 5,057 mesh rebuilds
 
-Observed 2026-08-22 on 0.3.49 during the GPU arena measurement runs, in the sandbox on the
-frozen `bodanboys` profile: 752 live sections were published to the renderer 5,845 times in
-roughly six minutes, at six fixed viewpoints with no player movement. That is about seven
-re-meshes per section, and each one is a full mesh rebuild on a worker plus a full GPU
-upload in the established renderer, not only in the shadow.
+Measured 2026-08-22 on 0.3.49, sandbox, frozen `bodanboys` profile, camera stationary at six
+fixed viewpoints for about six minutes.
 
-Nobody has established the cause. The seasonal/tint sampling is the obvious suspect, and
-`LodTerrainRenderer` also re-meshes for seam repair and for readiness-mask changes; the
-counters that would separate them are the mirror's `replaced` total against
-`SeamRepairsQueued` and the render-dirty scheduler's own accounting.
+**What is measured, not inferred:**
 
-This is not a GPU-renderer problem - it costs the same in the current renderer, and it is
-the sort of steady background work that shows up as intermittent hitching. Worth measuring
-before the next renderer phase, because a fast submission path built on top of seven
-redundant uploads per section per six minutes would still pay for the uploads.
+- Diffing the post-run client cache against the frozen seed it started from: **64 of 3,291
+  sections had genuinely different terrain data** (40 at L0 plus 24 mip ancestors), and no
+  new sections were added. The world was effectively static.
+- The renderer published **5,057 mesh replacements** over the same window (mirror
+  `replaced` counter), against 781 live meshes.
+- Cost: **204-289 MiB of mesh data built and 76-119 MiB uploaded to the GPU every 15
+  seconds**, continuously, at a standstill. Individual uploads are 100-125 us p95, 426 us
+  max.
+- Garbage collection is **not** the mechanism here: about 10 gen0 per 15 seconds, one gen2
+  in the whole run.
+- Capture ran throughout (~30 capture batches per 15 s) but almost all were no-ops:
+  `LodSection.ReplaceColumns` compares packed runs and only reports a change when the bytes
+  differ.
+
+**The amplification is arithmetic out of the source, and it is a deliberate deferral.**
+`LodWorld.MarkChanged` marks the changed section render-dirty **and all four neighbours
+unconditionally** - the comment says "conservatively refresh all four (change locality
+tracking can come later)". A neighbour's mesh does hide faces against our edge columns, so
+the dependency is real, but nothing checks whether the change was anywhere near an edge.
+Then `LodWorld` line 580 calls `MarkChanged(parentKey)` when a mip result changes the
+parent, so the same five-way fan-out repeats at every level of the pyramid: **up to 35
+rebuilds from one changed section.**
+
+**Inferred, not measured:** ~145 change events across those 64 sections (about 2-3 each, as
+neighbouring vanilla chunks stream in and feed one section a slice at a time). 145 x 35
+matches the observed 5,057, but no counter records actual `MarkChanged` calls. Add one
+before quoting the amplification factor as measured.
+
+**The available fix.** `ReplaceColumns` already walks column by column and knows exactly
+which columns changed; it just does not report whether any were on an edge. Returning the
+touched edges would let an interior change rebuild one section instead of five, at every
+level. Unknown: what fraction of real changes are interior. The saving could be most of the
+5,057 or a fraction of it, and it is background work rather than frame work, so it may show
+up as fewer hitches rather than higher frame rates.
+
+**Next step:** add a `MarkChanged` counter and an edge-touch mask, then re-run the same
+frozen route. The route, profile and diff method above are reproducible as-is.
+
+## The micro-hitches: dozens per second, and current instrumentation cannot see them
+
+The owner reports (2026-08-22, from earlier playtesting) consistent micro-hitches on his
+frame-time graph occurring **dozens of times per second**, and wants them gone; a fully
+smooth mod is the stated end goal. This is a distinct symptom from the several-seconds-apart
+spikes recorded below.
+
+Nothing yet attributes them. What is known:
+
+- The stationary sandbox runs show real frame-time instability: `fps_avg` 386 against
+  `fps_1pct_low` 195, i.e. **the worst 1% of frames take about twice the average**
+  (`frame_ms_avg` 2.59 vs `frame_ms_1pct_low` 5.12), in every one of the six views and in
+  all three runs.
+- **The existing hitch counters cannot see this.** `Over25Ms`/`Over50Ms`/`Over100Ms` are
+  the only hitch thresholds, and at 400 FPS a whole frame is 2.5 ms. A 426 us mesh upload
+  is a 17% frame-time spike and is counted by nothing. The per-phase p95/p99/max
+  microsecond histograms are the only instrument with the right resolution.
+- Mesh upload is the leading suspect by shape: ~10/s while stationary at 100-426 us each,
+  and far more under movement, when capture and re-meshing are at their busiest. The
+  amplification recorded above multiplies exactly this work.
+- Ruled out for the stationary case: garbage collection (about 0.7 gen0 per second).
+
+**Next step:** run `bench/routes/moving-rotation.txt` on the frozen `bodanboys` profile with
+GPU stats on, and compare per-phase p95/p99/max and 1% lows against the stationary baseline
+already recorded. Movement is when the suspected mechanism is loudest, and the owner's
+observation was made while playing normally, not standing still. Add a frame-time histogram
+with sub-millisecond buckets if the phase histograms cannot attribute it.
 
 ## Validate the periodic-stutter changes in game
 

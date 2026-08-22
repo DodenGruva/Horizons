@@ -16,6 +16,14 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+**Measured, not yet changed: cached terrain is re-meshed far more often than it changes.**
+With the camera standing still for six minutes, 64 of 3,291 stored sections genuinely
+changed, and the renderer rebuilt and re-uploaded meshes 5,057 times - a sustained 90 MB of
+GPU upload every fifteen seconds for a world that was not moving. When a section changes the
+mod refreshes all four of its neighbours whether or not the change was anywhere near them,
+and repeats that at every zoom level. No behaviour changed; the finding and the available fix
+are recorded in `dev/TODO.md`.
+
 ## [0.3.50]
 
 In development. The measurement below is game-observed on the primary machine; nothing

@@ -733,6 +733,18 @@ untested. **This counts submissions removed, not frame time saved**; G52 applies
 performance verdict remains owner-run. An earlier 6x-8x figure from the same route is
 withdrawn: it was taken over about a third of the world by an instrument that could not see
 its own misses (G60), and coverage is now reported beside every result.
+
+**The same runs measured a re-mesh amplification in the established renderer, unrelated to
+the GPU work.** With the camera stationary for six minutes, 64 of 3,291 sections had
+genuinely different terrain data - verified by diffing the post-run client cache against the
+frozen seed - while the renderer published 5,057 mesh replacements and sustained 204-289 MiB
+of mesh building and 76-119 MiB of GPU upload every 15 seconds. `LodWorld.MarkChanged` marks
+all four neighbours dirty regardless of where in the section the change fell, and repeats
+that fan-out at every mip level, so one changed section can cost up to 35 rebuilds. The
+comment records it as a deliberate deferral ("change locality tracking can come later"); this
+is the first measurement of its cost. Garbage collection is not the mechanism (about 10 gen0
+per 15 seconds). The change-event count behind the 5,057 is inferred rather than counted, and
+`dev/TODO.md` owns both the fix and the counter needed to quote the factor as measured.
 3. The per-cell mask default is settled. The frame-rate question was answered in game on
 2026-08-20 - about 1.6% cost at render distance 320 and about 5.6% gain at 1024, the sign
 flip being CPU-bound against GPU-bound rather than a difference in how much is culled (G52).
