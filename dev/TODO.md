@@ -2,105 +2,49 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## Cached terrain drifts away from vanilla as the light changes — do this before the fast shader
+## Cached terrain lighting: the sky band is the only untested part left
 
-The owner reports (long-standing, restated 2026-08-22) that cached terrain matches vanilla
-well in good daylight, and the difference grows progressively worse through the day until
-sunset and night look substantially different. G50 records the same signature from 0.3.22 and
-names the rule: an error that varies with TIME OF DAY at a fixed season is lighting, not
-albedo and not tint.
+The four terrain lighting corrections are **done and human-tested** - shipped in 0.3.51, and
+the owner reported the result substantially better with nothing else regressed. The
+mechanism, the measurements and the disproved theory are in `dev/history/DONE.md` and
+session 40; G50 carries the durable rule.
 
-**Already fixed, and not the current symptom.** `flatTopLight` copies vanilla's rule that an
-up-facing surface never darkens as the sun drops (`normal.y * 0.95` floor). It is on by
-default (`LodTerrainRenderer.FlatTopLight = true`), so flat ground is already protected. That
-is precisely why the remaining error should read as growing rather than constant, and why it
-should be most visible on **hillsides**, which is most of what a distant view contains.
+**Owed: one look at the far dissolve band**, the edge where cached terrain fades into sky, at
+dusk and at night, flipping `.vhlight sky`. Shipped in 0.3.52 and not yet seen. It is
+identical in full daylight, so midday shows nothing. Measured effect: about 20% too dim
+through dusk and about 60% too bright on a moonlit night before the correction.
 
-**Three divergences found by reading both shaders side by side (2026-08-22).** Vanilla's
-`assets/game/shaders/chunkopaque.vsh:139` computes
-`nb = max(max(intensity, 0.5 + 0.5 * dot(normal, lightPosition)), normal.y * 0.95)` with
-`intensity` 0.45, and `shaderincludes/fogandlight.vsh:97` `applyLight` blends a per-vertex
-baked sun level against an ambient colour. The mod's `lodterrain.fsh:144-185` computes
-`shade = 0.55 + 0.45 * dot(normal, sunPosition)` and multiplies by
-`clamp(sunColor * dayLight, 0.02, 1.0)`.
+**Open, small, and deliberately not done here:** all five switches default on and none is
+persisted. If the owner keeps them on after testing, they can collapse into the shader
+unconditionally and the command can go. Nothing depends on that; it is cleanup.
 
-1. **Light direction.** `DefaultShaderUniforms` exposes `SunPosition3D` *and* a separate
-   `LightPosition3D`. Vanilla terrain shades by `lightPosition`; the mod shades by
-   `capi.World.Calendar.SunPositionNormalized` (`LodTerrainRenderer.cs:2348`). If
-   `LightPosition3D` does not track the real sun, vanilla's slopes hold still through the day
-   while the mod's rotate — the exact shape of the report. **Unverified:** nobody has
-   established what `LightPosition3D` actually is over a day cycle. Settle that first, by IL
-   or by logging it in game; it decides whether this is the dominant term.
-2. **Light colour.** The mod multiplies by `Calendar.SunColor * DayLightStrength`. Vanilla
-   uses an ambient colour blended with baked per-vertex light. `SunColor` swings hard toward
-   orange at sunset, so the mod pushes all cached terrain further orange than vanilla does,
-   and only at the times of day the owner reports.
-3. **Darkness floor.** Vanilla floors every surface at 0.45 and ramps `0.5 + 0.5 * dot`; the
-   mod floors at 0.55 and ramps `0.55 + 0.45 * dot`. A constant offset on away-facing
-   surfaces, smaller than the other two but free to correct.
+**Sequencing note that still applies.** The Phase 3 fast shader is a port of this fragment
+code, and its only acceptance gate is that it draws pixels identical to the established path.
+That gate is now usable: the lighting is settled, so any pixel difference is a porting bug.
 
-**Not fixable, and settled (G50).** Vanilla carries a per-vertex baked sun level and a shadow
-map. LOD sections store neither and should not. The goal is to stop the divergence *growing*
-through the day, not to reach a pixel match.
+## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
-**Approach.** Put each correction behind its own runtime switch beside `.vhtoplight`, then
-ask the owner for one sweep from afternoon through sunset into night, standing where cached
-hillsides sit beside vanilla ones, flipping them while watching. Reading the engine's shaders
-cannot settle whether vanilla's behaviour looks right when copied onto distant terrain; only
-that sweep can. This is the pattern that has worked here before — ship the toggle, not
-another build.
+The change-locality fix and the withdrawal of this section's old headline claim are recorded
+in `dev/history/DONE.md` and session 40. Short version: mesh rebuilds per content change fell
+from 5.00 to 2.00-2.03, measured over three runs; and the "90 MB every 15 seconds at a
+standstill" symptom this section used to lead with was a warm-up measurement recorded as a
+steady-state one. G62 and G63 carry the two durable lessons.
 
-**Sequencing: this must land before the Phase 3 fast shader, not inside it.** The fast path's
-only acceptance gate is that it draws pixels identical to the established path, which is how
-a buffer-indexing or record-addressing bug gets caught. Changing lighting in the same shader
-at the same time destroys that gate. The fast shader is also a port of this fragment code, so
-fixing first means porting the corrected version once instead of maintaining the fix in two
-shaders while both exist.
+**What is still open.** Warm-up is now the only large mesh cost in the profile: about
+**237 MiB per 15 seconds for the first two and a half minutes** after joining, while 781
+meshes are built for 3,291 cached sections. Nobody has asked whether that period is smooth.
+It is the obvious candidate for the join-time stutter recorded further down, and the two
+should be investigated together rather than separately.
 
-## Re-mesh amplification: 64 real terrain changes cost 5,057 mesh rebuilds
+**Also open, and cheap:** the one-edge-per-change result comes only from a frozen, warm
+profile, which produces no first-time captures. A cold or moving route should show two edges
+per change and a smaller saving; `ChangeLocalityChecks` pins both cases, but neither has been
+run in game.
 
-Measured 2026-08-22 on 0.3.49, sandbox, frozen `bodanboys` profile, camera stationary at six
-fixed viewpoints for about six minutes.
-
-**What is measured, not inferred:**
-
-- Diffing the post-run client cache against the frozen seed it started from: **64 of 3,291
-  sections had genuinely different terrain data** (40 at L0 plus 24 mip ancestors), and no
-  new sections were added. The world was effectively static.
-- The renderer published **5,057 mesh replacements** over the same window (mirror
-  `replaced` counter), against 781 live meshes.
-- Cost: **204-289 MiB of mesh data built and 76-119 MiB uploaded to the GPU every 15
-  seconds**, continuously, at a standstill. Individual uploads are 100-125 us p95, 426 us
-  max.
-- Garbage collection is **not** the mechanism here: about 10 gen0 per 15 seconds, one gen2
-  in the whole run.
-- Capture ran throughout (~30 capture batches per 15 s) but almost all were no-ops:
-  `LodSection.ReplaceColumns` compares packed runs and only reports a change when the bytes
-  differ.
-
-**The amplification is arithmetic out of the source, and it is a deliberate deferral.**
-`LodWorld.MarkChanged` marks the changed section render-dirty **and all four neighbours
-unconditionally** - the comment says "conservatively refresh all four (change locality
-tracking can come later)". A neighbour's mesh does hide faces against our edge columns, so
-the dependency is real, but nothing checks whether the change was anywhere near an edge.
-Then `LodWorld` line 580 calls `MarkChanged(parentKey)` when a mip result changes the
-parent, so the same five-way fan-out repeats at every level of the pyramid: **up to 35
-rebuilds from one changed section.**
-
-**Inferred, not measured:** ~145 change events across those 64 sections (about 2-3 each, as
-neighbouring vanilla chunks stream in and feed one section a slice at a time). 145 x 35
-matches the observed 5,057, but no counter records actual `MarkChanged` calls. Add one
-before quoting the amplification factor as measured.
-
-**The available fix.** `ReplaceColumns` already walks column by column and knows exactly
-which columns changed; it just does not report whether any were on an edge. Returning the
-touched edges would let an interior change rebuild one section instead of five, at every
-level. Unknown: what fraction of real changes are interior. The saving could be most of the
-5,057 or a fraction of it, and it is background work rather than frame work, so it may show
-up as fewer hitches rather than higher frame rates.
-
-**Next step:** add a `MarkChanged` counter and an edge-touch mask, then re-run the same
-frozen route. The route, profile and diff method above are reproducible as-is.
+**Stale claim still in the tree:** `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` says 752
+live sections were re-mirrored 5,845 times and that "each of which is a full re-upload in the
+established renderer too". The second half is the withdrawn inference. Fix it when that plan
+is next touched.
 
 ## The micro-hitches: dozens per second, and current instrumentation cannot see them
 
@@ -119,16 +63,28 @@ Nothing yet attributes them. What is known:
   the only hitch thresholds, and at 400 FPS a whole frame is 2.5 ms. A 426 us mesh upload
   is a 17% frame-time spike and is counted by nothing. The per-phase p95/p99/max
   microsecond histograms are the only instrument with the right resolution.
-- Mesh upload is the leading suspect by shape: ~10/s while stationary at 100-426 us each,
-  and far more under movement, when capture and re-meshing are at their busiest. The
-  amplification recorded above multiplies exactly this work.
-- Ruled out for the stationary case: garbage collection (about 0.7 gen0 per second).
+- **Mesh upload is no longer the leading suspect, and the section above is why.** In
+  settled steady state a standing camera does about **three mesh uploads per 15 seconds**,
+  several intervals doing none at all - not the ~10/s previously assumed, which came from
+  the warm-up period. Three uploads of 100-426 us in fifteen seconds cannot produce dozens
+  of hitches per second. It remains a candidate under movement, where capture and meshing
+  are genuinely busy, but not while standing still - and the owner's graph shows the
+  hitches while standing still too.
+- Ruled out for the stationary case: garbage collection (about 0.7 gen0 per second), and
+  now re-mesh and upload work as well.
+- **Still unattributed, and now the largest unexplained per-frame cost:** the quadtree
+  walk at 95 us average and 393 us max per frame, and the readiness shadow at 27.8 us
+  average and 710 us max, both from the 2026-08-22 stationary run. At 2.4 ms per frame a
+  single 710 us readiness spike is 30% of a frame. These run every frame and their maxima
+  are the right order of magnitude for the reported symptom, unlike mesh upload, which is
+  too rare.
 
-**Next step:** run `bench/routes/moving-rotation.txt` on the frozen `bodanboys` profile with
-GPU stats on, and compare per-phase p95/p99/max and 1% lows against the stationary baseline
-already recorded. Movement is when the suspected mechanism is loudest, and the owner's
-observation was made while playing normally, not standing still. Add a frame-time histogram
-with sub-millisecond buckets if the phase histograms cannot attribute it.
+**Next step, revised.** The stationary case is now the interesting one, because mesh work
+has been eliminated there and the hitches are still reported. Add a frame-time histogram
+with sub-millisecond buckets - the existing 25/50/100 ms thresholds are useless at 400 FPS,
+where a whole frame is 2.5 ms - and attribute against the walk and readiness phases first.
+Then run `bench/routes/moving-rotation.txt` for the moving case, where mesh upload is still
+a live candidate.
 
 ## Validate the periodic-stutter changes in game
 

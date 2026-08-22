@@ -3,8 +3,8 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-22
-**Mod version:** `0.3.50` source metadata and installed artifact (`0.2.1` is the released
-version; the next changed playable artifact must increment exactly once to `0.3.51`)
+**Mod version:** `0.3.52` source metadata and installed artifact (`0.2.1` is the released
+version; the next changed playable artifact must increment exactly once to `0.3.53`)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `56` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -280,6 +280,40 @@ Source-traced from the engine's shaders, and **human-confirmed on 2026-08-20**: 
 evaluated it across the daylight cycle and asked for it to stay as the default. What that
 covers is the look of distant ground through a day on one machine and one world; cached water
 takes the same floor and was not judged separately. See G50.
+
+Since 0.3.51 the rest of vanilla's terrain lighting is copied too, and this is what closed
+the long-standing report that cached ground matched vanilla in daylight and drifted
+further away through the day. Reducing vanilla's `applyLight` for the case a LOD section
+is always in - full sky light, no baked block light, no glow - every scale factor cancels
+against its `bMax` renormalisation except the contrast constant, so vanilla's terrain is
+simply `albedo * 1.05 * Ambient.BlendedAmbientColor * nb`. The mod had used
+`SunColor * DayLightStrength`. The difference is not brightness but hue: `calcSunColor`
+builds the ambient from the calendar's `ReflectColor`, which is explicitly floored at a
+blue `nightColor` of `(0, 0.063, 0.133)` once the sun is down, while `SunColor` has no
+such floor and stays on the orange end of the same ramp. Measured offline against the
+engine's own `sunlight.png`, the two hues invert after sundown: vanilla reaches
+`(0.30, 0.34, 0.39)` blue-grey where the mod reached `(0.54, 0.29, 0.04)` orange.
+
+Three further terms were corrected with it. Shading now uses `LightPosition3D`, the
+engine's own light vector, which tracks the sun exactly all day and swings to the moon at
+night - the earlier theory that this drifted apart through the day is DISPROVED. The shade
+ramp is vanilla's `max(0.45, 0.5 + 0.5 * dot)` rather than `0.55 + 0.45 * max(0, dot)`,
+which had left away-facing slopes 22% too bright at every hour. And vanilla's daylight
+brightening, `1 + max(0, shadowIntensity * 2 - 1.66) / 1.5`, is applied: it is worth 22.7%
+while the sun is high, fades out as it sets, and applies whether or not the player has
+shadows enabled. `lightPosition` and `shadowIntensity` cost no upload - the shader includes
+`fogandlight.fsh` and the engine pushes both into any program that does.
+
+All four are behind `.vhlight moondir | ramp | ambient | boost`, default on, not persisted.
+**Human-tested on 2026-08-22**: the owner played 0.3.51 through the reported failure window
+and called the result substantially better, with nothing else regressed.
+
+Since 0.3.52 the far dissolve band asks for sky colour with the value every engine shader
+uses, `SkyDaylight` = `1.25 * max(DayLightStrength - MoonLightStrength / 2, 0.05)`
+attenuated above 1,000 blocks over sea level, rather than plain `DayLightStrength`. It is
+`internal`, so the renderer reconstructs it from public inputs. About 20% too dim through
+dusk and 60% too bright on a moonlit night before the correction, identical in full
+daylight. Behind `.vhlight sky`; **not yet human-tested**.
 
 Since 0.3.23 a cached section edge is walled off only where the CACHE has no data beyond
 it, rather than wherever the neighbouring section is absent from RAM. The two had diverged
@@ -654,6 +688,12 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
+0. Look at the far dissolve band - the edge where cached terrain fades into sky - at dusk
+and at night, flipping `.vhlight sky`. It is the only part of the lighting work nobody has
+seen, and it is identical in full daylight so midday shows nothing. While in 0.3.52, also
+confirm no distant section looks stale or seamed: change-locality narrowing now skips
+neighbour rebuilds it judges unnecessary, and a wrong judgement would show exactly there.
+
 1. Playtest and instrument the periodic-stutter changes: compare the recurring tiny spikes
 and the reported 3-6-second spikes, watch for a new 30-second checkpoint burst, and verify
 seasonal transitions, turn-around behavior, mesh residency, and RAM residency. If a tail
@@ -821,6 +861,17 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
+- Change locality: `MarkChanged` now refreshes only the neighbours across edges the change
+  actually touched. Measured over three sandbox runs on the frozen `bodanboys` profile,
+  2026-08-22: 38-40 content changes produced 77-80 stale-mesh claims, **2.00-2.03 per**
+  **change against 5.00 before**, with all four neighbours resident every time and frame
+  rates of 367-432 FPS against 363-430 documented for the same route beforehand.
+- The same runs withdrew this document's earlier re-mesh figure. Splitting the 26 reporting
+  intervals: warm-up carried 1,827 mesh uploads and 2,131 MiB (about 237 MiB per 15 s);
+  settled steady state carried 54 uploads and 35 MiB (about 2.1 MiB per 15 s). The old
+  "76-119 MiB uploaded every 15 seconds, continuously, at a standstill" reproduces the
+  warm-up column, not the settled one. See G62 and G63.
+
 - `dev/DocCheck.ps1` passes in the current PowerShell environment; cross-shell portability
   was previously established under Windows PowerShell 5.1 and PowerShell 7.
 - The full game-backed Release tier passes 1,627 assertions, including delayed-occlusion
@@ -914,6 +965,11 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Human-tested
 
+- The owner played 0.3.51 on 2026-08-22 through the reported dusk-to-night failure window
+  and called the cached-terrain lighting substantially better, with nothing else regressed.
+  This accepts the four terrain lighting corrections and their defaults. It does not cover
+  the far sky band added in 0.3.52, which nobody has looked at.
+
 - The human observer watched the corrected warm-cache movement/rotation route and reported
   that it looked good and smooth, with no noticed transient clipping or turn-around stalls.
   This is qualitative evidence for that populated-cache scenario, not a controlled
@@ -967,6 +1023,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   on one machine, not a controlled benchmark or portable effect size.
 
 ### Not yet established
+
+- 0.3.52 is built and harness-tested only. The corrected far sky band and the absence of
+  stale sections or seams from change-locality narrowing are both unverified in game.
+- The change-locality measurement comes only from a frozen, warm profile, where every
+  change touched exactly one section edge. A cold or moving route should produce
+  first-time captures, two edges per change and a smaller saving; neither has been run.
+- Warm-up is now the only large mesh cost measured - about 237 MiB per 15 seconds for the
+  first two and a half minutes after joining - and nobody has assessed whether it is
+  smooth. It is the untested candidate for the join-time stutter recorded elsewhere.
 
 - No game process has run since the persistence checkpoint, sibling-cache blob-reader,
   rolling seasonal/eviction, or delayed-query cap changes. Their effect on the reported

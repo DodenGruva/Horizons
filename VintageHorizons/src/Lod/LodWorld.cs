@@ -114,6 +114,22 @@ public class LodWorld
 
     public int EvictedSectionsTotal { get; private set; }
 
+    /// <summary>
+    /// How many times a real content change was reported, against how many section meshes
+    /// that made stale. The amplification between them was inferred from a stationary run
+    /// (about 145 change events against 5,057 mesh replacements) and never counted, so it
+    /// could not be quoted as measured. These two count it.
+    /// </summary>
+    public long MarkChangedCalls { get; private set; }
+    public long MarkChangedRenderDirtied { get; private set; }
+
+    /// <summary>
+    /// Neighbour rebuilds an interior change did not have to ask for. This is the saving,
+    /// stated rather than estimated: a run where it stays near zero means real changes
+    /// land on section edges and the conservative refresh was never the waste.
+    /// </summary>
+    public long MarkChangedNeighborsSkipped { get; private set; }
+
     /// <summary>Sections whose mesh is stale.</summary>
     public readonly LodRenderDirtySet RenderDirty = new();
 
@@ -429,19 +445,43 @@ public class LodWorld
         }
     }
 
-    public void MarkChanged(long key)
+    /// <summary>
+    /// Record that a section's content changed.
+    ///
+    /// A neighbour's mesh hides its faces against our edge columns, so a change on a
+    /// shared edge really does make the neighbour's mesh wrong. A change in the interior
+    /// does not, and every caller used to claim all four anyway - which is where a
+    /// stationary world turned 64 changed sections into 5,057 mesh rebuilds, because the
+    /// same five-way fan-out repeats at every level of the mip pyramid.
+    ///
+    /// <paramref name="touchedEdges"/> defaults to every edge, so a caller that genuinely
+    /// does not know - a whole-section install, a palette repair - keeps the old
+    /// conservative behaviour by saying nothing. Only callers holding a real answer
+    /// narrow it.
+    /// </summary>
+    public void MarkChanged(long key, int touchedEdges = LodSection.EdgeAll)
     {
+        MarkChangedCalls++;
         contentRevisions[key] = ContentRevision(key) + 1;
         RenderDirty.Add(key);
+        MarkChangedRenderDirtied++;
         MarkSaveDirty(key);
         if (KeyLevel(key) < MaxLevel) MipDirty.Add(key);
 
-        // Neighbor meshes cull their faces against our edge columns; conservatively
-        // refresh all four (change locality tracking can come later).
         for (int d = 0; d < 4; d++)
         {
             long nk = NeighborKey(key, d == 0 ? -1 : d == 1 ? 1 : 0, d == 2 ? -1 : d == 3 ? 1 : 0);
-            if (Sections.ContainsKey(nk)) RenderDirty.Add(nk);
+            if (!Sections.ContainsKey(nk)) continue;
+
+            // Bit order matches the neighbour order above: -X, +X, -Z, +Z.
+            if ((touchedEdges & (1 << d)) == 0)
+            {
+                MarkChangedNeighborsSkipped++;
+                continue;
+            }
+
+            RenderDirty.Add(nk);
+            MarkChangedRenderDirtied++;
         }
     }
 
@@ -577,7 +617,8 @@ public class LodWorld
         MarkSaveDirty(result.ChildKey); // persist the cleared ApplyToParent flag
 
         LodSection parent = GetOrCreateSection(parentKey);
-        if (LodMip.ApplyToParent(result, parent)) MarkChanged(parentKey);
+        int parentEdges = LodMip.ApplyToParent(result, parent);
+        if (parentEdges != LodSection.EdgeNone) MarkChanged(parentKey, parentEdges);
         return true;
     }
 

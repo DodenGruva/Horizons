@@ -13,6 +13,7 @@ public static class SectionChecks
         ColumnIndexing(c);
         SetColumnPaths(c);
         ReplaceColumnsPaths(c);
+        ColumnEdgeMapping(c);
         FlagRemoval(c);
         PaletteReuse(c);
     }
@@ -112,7 +113,10 @@ public static class SectionChecks
         batch[5] = b;
         batch[Fixtures.Total - 1] = a;
 
-        c.True(s.ReplaceColumns(batch), "a batch with new content reports a change");
+        // Columns 0 and Total-1 are opposite corners, so between them this batch sits on
+        // all four edges.
+        c.Eq(LodSection.EdgeAll, s.ReplaceColumns(batch),
+            "a batch with new content on every edge reports all four");
         c.Eq(3, s.CapturedColumns, "the batch captured three columns");
         c.SeqEq(a, s.ColumnRuns(0).ToArray(), "batch column 0 reads back");
         c.SeqEq(b, s.ColumnRuns(5).ToArray(), "batch column 5 reads back");
@@ -123,7 +127,8 @@ public static class SectionChecks
         // only its own 16x16 patch of a 64x64 section.
         var partial = new ulong[]?[Fixtures.Total];
         partial[5] = a;
-        c.True(s.ReplaceColumns(partial), "a partial batch reports a change");
+        c.Eq(LodSection.EdgeMinusZ, s.ReplaceColumns(partial),
+            "a change on one edge reports only that edge");
         c.SeqEq(a, s.ColumnRuns(5).ToArray(), "the replaced column changed");
         c.SeqEq(a, s.ColumnRuns(0).ToArray(), "an untouched column kept its runs");
 
@@ -132,8 +137,46 @@ public static class SectionChecks
         // not an implementation detail.
         var identical = new ulong[]?[Fixtures.Total];
         identical[0] = (ulong[])a.Clone();
-        c.False(s.ReplaceColumns(identical), "a batch of identical content reports no change");
+        c.Eq(LodSection.EdgeNone, s.ReplaceColumns(identical),
+            "a batch of identical content reports no change");
         c.Eq(null, identical[0], "an unchanged column is nulled out in the caller's batch");
+
+        // The case the whole edge mask exists for: a change nowhere near a boundary.
+        // Four neighbouring meshes used to be rebuilt for this and none of them could see it.
+        var interior = new ulong[]?[Fixtures.Total];
+        interior[LodSection.ColumnIndex(32, 32)] = b;
+        c.Eq(LodSection.EdgeNone, s.ReplaceColumns(interior),
+            "an interior change reports no edges even though it changed content");
+        c.SeqEq(b, s.ColumnRuns(LodSection.ColumnIndex(32, 32)).ToArray(),
+            "the interior column still changed");
+    }
+
+    /// <summary>
+    /// Every column maps to the edges it actually sits on. Getting a bit backwards here
+    /// would rebuild the wrong neighbour, which shows up as a seam on one side of a
+    /// section and nothing at all on the other.
+    /// </summary>
+    static void ColumnEdgeMapping(Check c)
+    {
+        int g = LodSection.GridSize;
+        c.Eq(LodSection.EdgeMinusX | LodSection.EdgeMinusZ,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(0, 0)), "the -X/-Z corner");
+        c.Eq(LodSection.EdgePlusX | LodSection.EdgePlusZ,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(g - 1, g - 1)), "the +X/+Z corner");
+        c.Eq(LodSection.EdgeMinusX,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(0, 20)), "the -X edge alone");
+        c.Eq(LodSection.EdgePlusX,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(g - 1, 20)), "the +X edge alone");
+        c.Eq(LodSection.EdgeMinusZ,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(20, 0)), "the -Z edge alone");
+        c.Eq(LodSection.EdgePlusZ,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(20, g - 1)), "the +Z edge alone");
+        c.Eq(LodSection.EdgeNone,
+            LodSection.ColumnEdges(LodSection.ColumnIndex(1, 1)), "one column in is interior");
+
+        int interior = 0;
+        for (int col = 0; col < g * g; col++) if (LodSection.ColumnEdges(col) == 0) interior++;
+        c.Eq((g - 2) * (g - 2), interior, "only the outer ring of columns touches an edge");
     }
 
     static void FlagRemoval(Check c)

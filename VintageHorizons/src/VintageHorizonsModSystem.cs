@@ -1104,6 +1104,16 @@ public class VintageHorizonsModSystem : ModSystem
             world.MipDirty.Count, world.MipInFlightCount, world.RenderDirty.Count, world.SaveDirty.Count,
             renderer.LastTraversalCulledCount, renderer.SeamRepairsQueued);
 
+        // The amplification between real changes and mesh rebuilds, counted rather than
+        // inferred. A stationary run previously had to estimate it from 64 changed
+        // sections against 5,057 mesh replacements with nothing recording the middle term.
+        Mod.Logger.Notification(
+            "  change locality: {0} content changes made {1} meshes stale ({2:0.00} per change); " +
+            "{3} neighbour rebuilds skipped as interior",
+            world.MarkChangedCalls, world.MarkChangedRenderDirtied,
+            world.MarkChangedCalls > 0 ? (double)world.MarkChangedRenderDirtied / world.MarkChangedCalls : 0,
+            world.MarkChangedNeighborsSkipped);
+
         Mod.Logger.Notification(
             "  storage on main thread since last report: snapshot {0} calls, {1:0.00}ms avg, {2:0.00}ms max | " +
             "inline loads {3} calls, {4:0.00}ms avg, {5:0.00}ms max | storage thread: {6} write backlog, " +
@@ -1629,6 +1639,80 @@ public class VintageHorizonsModSystem : ModSystem
                     $"[VintageHorizons] flat-top lighting {(renderer.FlatTopLight ? "on" : "off")}. " +
                     "The game never darkens flat ground as the sun drops; off shades it by sun angle " +
                     "as before. Worth comparing at dawn or dusk, not at midday.");
+            });
+
+        // Four separate switches rather than one, because the point of shipping them is
+        // that a single dusk-to-night sweep can attribute what it sees. Reading both
+        // shaders settles what vanilla computes; it cannot settle whether copying it onto
+        // terrain kilometres away looks right, and only the owner flipping these while
+        // watching can.
+        capi.ChatCommands.Create("vhlight")
+            .WithDescription("Match cached terrain lighting to the game's. moondir | ramp | ambient | boost | sky | all, on or off. All on by default.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("part"),
+                      capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                string DescribeLight() =>
+                    $"moondir {(renderer.LightMoonDirection ? "on" : "off")}, " +
+                    $"ramp {(renderer.LightVanillaRamp ? "on" : "off")}, " +
+                    $"ambient {(renderer.LightAmbientColor ? "on" : "off")}, " +
+                    $"boost {(renderer.LightDayBoost ? "on" : "off")}, " +
+                    $"sky {(renderer.LightSkyDayLight ? "on" : "off")}";
+
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success($"[VintageHorizons] lighting: {DescribeLight()}.");
+
+                if (args.Parsers[1].IsMissing)
+                    return TextCommandResult.Error(
+                        "[VintageHorizons] use: .vhlight moondir | ramp | ambient | boost | sky | all, then on or off.");
+
+                string part = ((string)args[0]).ToLowerInvariant();
+                bool on = (bool)args[1];
+                string note;
+                switch (part)
+                {
+                    case "moondir":
+                        renderer.LightMoonDirection = on;
+                        note = "Shade by the game's light vector, which follows the moon at night. " +
+                               "Changes nothing while the sun is up.";
+                        break;
+                    case "ramp":
+                        renderer.LightVanillaRamp = on;
+                        note = "Use the game's shade ramp and its darker floor on slopes facing away " +
+                               "from the light. A constant difference, visible at any time of day.";
+                        break;
+                    case "ambient":
+                        renderer.LightAmbientColor = on;
+                        note = "Light by the game's own ambient colour instead of the sun colour. " +
+                               "This is the one to watch through sunset into night.";
+                        break;
+                    case "boost":
+                        renderer.LightDayBoost = on;
+                        note = "Apply the game's daylight brightening. This is the only one that " +
+                               "changes broad daylight; off is the older, dimmer look.";
+                        break;
+                    case "sky":
+                        renderer.LightSkyDayLight = on;
+                        note = "Fade the far edge of the cache into the sky the game actually " +
+                               "draws. Look at the horizon band, not the ground.";
+                        break;
+                    case "all":
+                        renderer.LightMoonDirection = on;
+                        renderer.LightVanillaRamp = on;
+                        renderer.LightAmbientColor = on;
+                        renderer.LightDayBoost = on;
+                        renderer.LightSkyDayLight = on;
+                        note = "Off is the lighting every build before this one used.";
+                        break;
+                    default:
+                        return TextCommandResult.Error(
+                            "[VintageHorizons] use: .vhlight moondir | ramp | ambient | boost | sky | all, then on or off.");
+                }
+
+                return TextCommandResult.Success($"[VintageHorizons] lighting: {DescribeLight()}. {note}");
             });
 
         // Measurement only. The shadow copies cached geometry into the regional buffers a

@@ -237,6 +237,70 @@ public class LodTerrainRenderer : IRenderer
     public bool FlatTopLight { get; set; } = true;
 
     /// <summary>
+    /// Shade by the engine's own light vector rather than by the sun. `LightPosition3D` is
+    /// the sun position lerped toward the moon as moonlight overtakes sunlight, and vanilla
+    /// terrain shades by it; without this, cached slopes are lit all night by a sun that is
+    /// below the horizon while the vanilla slopes beside them are lit by the moon. Identical
+    /// to the old behaviour while the sun is up. `.vhlight moondir off` to compare.
+    /// </summary>
+    public bool LightMoonDirection { get; set; } = true;
+
+    /// <summary>
+    /// Use vanilla's shade ramp, `max(0.45, 0.5 + 0.5 * dot)`, instead of
+    /// `0.55 + 0.45 * max(0, dot)`. The old floor left every away-facing slope 22% brighter
+    /// than the vanilla slope beside it, at every time of day. `.vhlight ramp off` compares.
+    /// </summary>
+    public bool LightVanillaRamp { get; set; } = true;
+
+    /// <summary>
+    /// Light by `Ambient.BlendedAmbientColor`, which is exactly what vanilla's terrain
+    /// shader multiplies by, instead of `SunColor * DayLightStrength`. Vanilla derives its
+    /// ambient from `ReflectColor`, floored at a blue night colour once the sun is down;
+    /// `SunColor` has no such floor and stays orange. Decoding the engine's own sunlight
+    /// ramp offline showed the two hues invert after sundown - vanilla turns blue-grey while
+    /// cached terrain turns orange - which is the reported "sunset and night look
+    /// substantially different". `.vhlight ambient off` to compare.
+    /// </summary>
+    public bool LightAmbientColor { get; set; } = true;
+
+    /// <summary>
+    /// Apply vanilla's daylight brightening, `1 + max(0, shadowIntensity * 2 - 1.66) / 1.5`.
+    /// The engine uploads `shadowIntensity` from `DropShadowIntensity`, which holds at 1
+    /// while the sun is high and falls to 0 as it sets, so vanilla terrain is 22.7% brighter
+    /// than cached terrain at midday and equal to it at dusk. This is the only one of the
+    /// four that changes broad daylight, which is the case the owner reports as already
+    /// looking right, so it has its own switch. `.vhlight boost off` to compare.
+    /// </summary>
+    public bool LightDayBoost { get; set; } = true;
+
+    /// <summary>
+    /// Fade the far edge of the cache toward the sky the engine actually draws. Every engine
+    /// shader that calls `getSkyColorAt` passes `SkyDaylight`, which is
+    /// `1.25 * max(DayLightStrength - MoonLightStrength / 2, 0.05)` attenuated above 1,000
+    /// blocks over sea level - not `DayLightStrength`, which is what this shader passed. The
+    /// band was therefore dissolving terrain into a sky a quarter too dim by day and too dark
+    /// at night, with the error moving through the day like the terrain terms above.
+    /// `.vhlight sky off` to compare.
+    /// </summary>
+    public bool LightSkyDayLight { get; set; } = true;
+
+    /// <summary>
+    /// The engine's `SkyDaylight`, reconstructed. `DefaultShaderUniforms.SkyDaylight` is
+    /// `internal`, so a mod cannot read the value the engine computed; every input to it is
+    /// public, and the formula is transcribed from `SystemRenderSky.OnRenderFrame3D`.
+    /// </summary>
+    float SkyDayLight()
+    {
+        IClientGameCalendar calendar = capi.World.Calendar;
+        float light = 1.25f * Math.Max(calendar.DayLightStrength - calendar.MoonLightStrength / 2f, 0.05f);
+        // Thin air high above the world dims the sky rather than brightening it. Sea level
+        // comes from the world, not from a constant: it moves with world configuration.
+        double above = (capi.World.Player.Entity.Pos.Y - capi.World.SeaLevel - 1000.0) / 30000.0;
+        float attenuation = 1f - (float)Math.Clamp(above, 0.0, 1.0);
+        return Math.Max(0f, light * attenuation);
+    }
+
+    /// <summary>
     /// Opaque terrain has outward counter-clockwise winding and uses hardware back-face
     /// rejection; blended water and thin cover stay two-sided. Human testing across cliffs,
     /// caves, overhangs, and high/low views found no visual difference, while a same-view
@@ -2369,6 +2433,16 @@ public class LodTerrainRenderer : IRenderer
         prog.Uniform("maskEnabled", maskOwnsPixels ? 1 : 0);
         prog.Uniform("maskDebug", MaskDebugPaint ? 1 : 0);
         prog.Uniform("flatTopLight", FlatTopLight ? 1 : 0);
+        prog.Uniform("lightMoonDir", LightMoonDirection ? 1 : 0);
+        prog.Uniform("lightVanillaRamp", LightVanillaRamp ? 1 : 0);
+        prog.Uniform("lightAmbientColor", LightAmbientColor ? 1 : 0);
+        prog.Uniform("lightDayBoost", LightDayBoost ? 1 : 0);
+        // `lightPosition` and `shadowIntensity` need no upload here: the shader includes
+        // fogandlight.fsh, and the engine's own Use() uploads both to any program that
+        // does. Only the ambient colour has no such carrier.
+        prog.Uniform("rgbaAmbientIn", capi.Ambient.BlendedAmbientColor);
+        prog.Uniform("lightSkyDayLight", LightSkyDayLight ? 1 : 0);
+        prog.Uniform("skyDayLight", SkyDayLight());
         if (maskOwnsPixels && readiness != null && readinessMaskTexture != null)
         {
             prog.Uniform("maskMinX", readiness.ActiveMinChunkX);

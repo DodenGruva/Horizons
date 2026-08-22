@@ -709,9 +709,10 @@ public class LodPipeline
         }
 
         ColumnsCaptured++;
-        if (section.ReplaceColumns(batch))
+        int touchedEdges = section.ReplaceColumns(batch);
+        if (touchedEdges != LodSection.EdgeNone)
         {
-            World.MarkChanged(result.SectionKey);
+            World.MarkChanged(result.SectionKey, touchedEdges);
         }
     }
 

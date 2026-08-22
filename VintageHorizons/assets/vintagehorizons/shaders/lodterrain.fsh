@@ -45,6 +45,44 @@ uniform int maskDebug;
 // 1 applies vanilla's own rule that an up-facing surface never darkens with the sun.
 uniform int flatTopLight;
 
+// The four terms below each close one measured gap between this shader and vanilla's
+// chunkopaque pair, and each has its own switch so a single dusk-to-night sweep can
+// attribute what it sees. See .vhlight. All default to on.
+//
+// 1 shades by the engine's own light vector, which follows the sun by day and swings
+// to the moon once moonlight beats sunlight; 0 keeps shading by the sun all night.
+// lightPosition is declared by fogandlight.fsh and uploaded by the engine on every
+// Use(), so it costs nothing to read here.
+uniform int lightMoonDir;
+
+// 1 uses vanilla's ramp and floor, max(0.45, 0.5 + 0.5 * dot); 0 keeps the mod's
+// 0.55 + 0.45 * max(0, dot), which is 22% too bright on every away-facing slope.
+uniform int lightVanillaRamp;
+
+// 1 lights by the engine's blended ambient colour, which is what vanilla's terrain
+// actually multiplies by; 0 keeps sunColor * dayLight. This is the dominant term:
+// vanilla builds its ambient from ReflectColor, which is floored at a blue night
+// colour once the sun is down, while sunColor stays on the orange end of the sunlight
+// ramp. Measured offline, the two hues invert after sundown - vanilla goes blue-grey
+// and this shader goes orange.
+uniform int lightAmbientColor;
+uniform vec3 rgbaAmbientIn;
+
+// 1 applies vanilla's daylight brightening, 1 + max(0, shadowIntensity * 2 - 1.66)/1.5.
+// shadowIntensity is the engine's DropShadowIntensity, which is 1 while the sun is high
+// and falls to 0 as it sets, so this is worth 22.7% extra brightness at midday and
+// nothing at dusk. Also declared and uploaded by fogandlight.fsh.
+uniform int lightDayBoost;
+
+// 1 mixes the far dissolve band toward the sky the engine actually draws. Every engine
+// shader that calls getSkyColorAt passes SkyDaylight, not DayLightStrength; the two
+// differ by a factor of 1.25 and by a night floor, so the band this shader fades terrain
+// into did not match the sky behind it, and the mismatch moved with the time of day.
+// SkyDaylight is internal to the engine, but every input to it is public, so the renderer
+// reconstructs it. See .vhlight sky.
+uniform int lightSkyDayLight;
+uniform float skyDayLight;
+
 // This section's origin in whole vanilla chunks. Section origins are multiples of the
 // chunk size, so this is exact, and adding a small local offset to it cannot round.
 //
@@ -141,8 +179,16 @@ void main()
 
     // sunPosition arrives as Calendar.SunPositionNormalized, so it is already a unit
     // vector. The call below passes it to getSkyColorAt unnormalized for the same reason.
-    float sunAngle = max(0.0, dot(normal, sunPosition));
-    float shade = 0.55 + 0.45 * sunAngle;
+    //
+    // lightPosition is the engine's own shading vector: the sun position lerped toward
+    // the moon as moonlight overtakes sunlight. Vanilla terrain shades by that, not by
+    // the sun, so at night vanilla lights slopes from the moon while this shader was
+    // still lighting them from a sun below the horizon.
+    vec3 lightVec = lightMoonDir == 1 ? lightPosition : sunPosition;
+    float sunAngle = dot(normal, lightVec);
+    float shade = lightVanillaRamp == 1
+        ? max(0.45, 0.5 + 0.5 * sunAngle)
+        : 0.55 + 0.45 * max(0.0, sunAngle);
 
     // Vanilla never lets an up-facing surface darken as the sun drops. Its
     // getBrightnessFromNormal floors the shade at normal.y * 0.95, with a comment in the
@@ -181,8 +227,19 @@ void main()
         albedo *= 1.0 + 0.10 * (n - 0.5);
     }
 
+    // Vanilla's light term, derived by reading applyLight in fogandlight.vsh for the
+    // case a LOD section is in: full sky light, no baked block light, no glow. Every
+    // scale factor there cancels except the contrast constant, leaving the pixel
+    // multiplied by 1.05 * ambientColor. The ambient colour already carries the sunset
+    // hue, the night blue, and the scene-brightness dimming, so nothing here has to
+    // re-derive any of them.
+    vec3 light = lightAmbientColor == 1
+        ? 1.05 * rgbaAmbientIn
+        : clamp(sunColor * dayLight, 0.02, 1.0);
+    if (lightDayBoost == 1) light *= 1.0 + max(0.0, shadowIntensity * 2.0 - 1.66) / 1.5;
+
     vec4 terraColor = vec4(albedo, outAlpha);
-    terraColor.rgb *= shade * clamp(sunColor * dayLight, 0.02, 1.0);
+    terraColor.rgb *= shade * light;
 
     terraColor = applyFog(terraColor, fogAmount);
     terraColor = applySpheresFog(terraColor, fogAmount, worldPos.xyz);
@@ -205,7 +262,12 @@ void main()
         vec4 skyColor = vec4(1.0);
         vec4 skyGlow = vec4(1.0);
         vec3 worldPosInSky = normalize(worldPos.xyz) * 250.0;
-        getSkyColorAt(worldPosInSky, sunPosition, 0.25, clamp(dayLight, 0.0, 1.0), horizonFog, skyColor, skyGlow);
+        // Only the sky colour takes the corrected value. The glow clamp below is this
+        // mod's own night dimming, not a transcription of vanilla, and its 0.05 constant
+        // is calibrated against DayLightStrength - SkyDaylight never falls below 0.0625,
+        // so feeding it here would leave a faint glow burning all night.
+        float skyLight = lightSkyDayLight == 1 ? skyDayLight : dayLight;
+        getSkyColorAt(worldPosInSky, sunPosition, 0.25, clamp(skyLight, 0.0, 1.0), horizonFog, skyColor, skyGlow);
         float murkiness = max(0.0, getSkyMurkiness() - 14.0 * fogDensityIn);
         skyColor.rgb = applyUnderwaterEffects(skyColor.rgb, murkiness);
         skyGlow.y *= clamp((dayLight - 0.05) * 2.0 - 50.0 * murkiness, 0.0, 1.0);

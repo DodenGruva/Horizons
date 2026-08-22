@@ -16,13 +16,98 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
-**Measured, not yet changed: cached terrain is re-meshed far more often than it changes.**
-With the camera standing still for six minutes, 64 of 3,291 stored sections genuinely
-changed, and the renderer rebuilt and re-uploaded meshes 5,057 times - a sustained 90 MB of
-GPU upload every fifteen seconds for a world that was not moving. When a section changes the
-mod refreshes all four of its neighbours whether or not the change was anywhere near them,
-and repeats that at every zoom level. No behaviour changed; the finding and the available fix
-are recorded in `dev/TODO.md`.
+## [0.3.52]
+
+In development, not yet human-tested.
+
+**The far edge of the cache now dissolves into the sky the game actually draws.** Every
+engine shader asks for sky colour with a daylight value that is not the plain daylight
+strength this mod was passing, so the band where cached terrain fades out did not match the
+sky behind it - about 20% too dim at dusk and about 60% too bright on a moonlit night,
+identical in full daylight. Behind `.vhlight sky`. Not yet human-tested.
+
+**Cached terrain is rebuilt less often when it changes.** When one stored section changed,
+the mod rebuilt that section's mesh and all four of its neighbours' meshes, whether or not
+the change was anywhere near them - and repeated that at every zoom level, so a single
+change could cost up to 35 rebuilds. It now checks which edges of the section actually
+moved and only rebuilds the neighbours across those edges. A change in the middle of a
+section costs one rebuild instead of five.
+
+**Measured on the frozen benchmark profile, three runs:** 38-40 real content changes
+produced 77-80 mesh rebuilds - 2.00 per change against 5.00 before, a 60% cut - with no
+frame-rate cost (367-432 FPS against 363-430 for the same route before the change).
+
+**A correction to an earlier claim recorded here.** This changelog previously said that
+standing still cost 5,057 mesh rebuilds and about 90 MB of GPU upload every fifteen
+seconds, continuously. Measuring it properly shows that was the loading period, not
+standing still: for the first two and a half minutes after joining the mod builds the 781
+meshes for 3,291 cached sections, at about 237 MB per fifteen seconds, and then it stops.
+Once settled, a standing camera costs about **2 MB and three mesh rebuilds per fifteen
+seconds**, with many fifteen-second stretches doing none at all. The original figure was a
+warm-up measurement labelled as a steady-state one.
+
+So the saving above is real but small in absolute terms, and re-meshing is no longer a
+plausible explanation for the frame-time hitches - that hunt moves elsewhere.
+
+**A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
+The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
+gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
+cached-on-cached depth strategies and packed quads before any default decision. This is a
+planning and verification artifact only; it changes no runtime rendering behavior.
+
+Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+
+## [0.3.52]
+
+In development, not yet human-tested.
+
+**The far edge of the cache now dissolves into the sky the game actually draws.** Every
+engine shader asks for sky colour with a daylight value that is not the plain daylight
+strength this mod was passing, so the band where cached terrain fades out did not match the
+sky behind it - about 20% too dim at dusk and about 60% too bright on a moonlit night,
+identical in full daylight. Behind `.vhlight sky`. Not yet human-tested.
+
+**Cached terrain is rebuilt less often when it changes.** When one stored section changed,
+the mod rebuilt that section's mesh and all four of its neighbours' meshes, whether or not
+the change was anywhere near them - and repeated that at every zoom level, so a single
+change could cost up to 35 rebuilds. It now checks which edges of the section actually
+moved and only rebuilds the neighbours across those edges. A change in the middle of a
+section costs one rebuild instead of five.
+
+How much this saves depends on what kind of change it is. Terrain streaming in for the
+first time always lands on two edges of a section, because a game chunk is exactly a
+quarter of one, so those cost three rebuilds instead of five - about 40% less. Changes in
+already-explored terrain are the ones that fall all the way to one. The stationary
+measurement that prompted this (5,057 mesh rebuilds for 64 real changes, ~90 MB of GPU
+upload every fifteen seconds while standing still) was mostly the first kind, so expect
+roughly 40% there.
+
+The stats log now prints how many mesh rebuilds each real change caused, so the
+amplification is counted rather than estimated. Built and harness-tested; the re-run of the
+stationary route that would confirm the saving has not happened yet.
+
+## [0.3.51]
+
+**Distant terrain is lit the way the game lights terrain, and sunset and night no longer
+drift away from it.** Cached ground matched vanilla in good daylight and diverged further
+and further as the day went on, ending up visibly wrong at dusk and at night. The cause was
+the light colour: the game tints terrain with an ambient colour built from its reflect
+colour, which is deliberately floored at a blue night tint once the sun goes down, while
+this mod tinted with the sun colour, which has no such floor and stays orange. After
+sundown the two ended up close to opposite hues. Human-tested and reported substantially
+better.
+
+Three smaller matching errors were found and corrected in the same pass: the game brightens
+all terrain by 22.7% while the sun is high and fades that out as it sets, which this mod did
+not do; slopes facing away from the light were 22% too bright at every hour; and at night the
+game lights from the moon while this mod still lit from a sun below the horizon.
+
+Established by decompiling the client and decoding the game's own sunlight ramp offline,
+with no game run. The earlier leading theory - that the light direction drifted apart
+through the day - was disproven by the same reading.
+
+`.vhlight` toggles each correction separately (`moondir`, `ramp`, `ambient`, `boost`,
+`sky`, or `all`), so the old lighting remains available for comparison.
 
 ## [0.3.50]
 

@@ -209,11 +209,15 @@ public class LodSection
     /// Replace many columns in one pass (one array rebuild total, not one per column) -
     /// the capture path applies a whole chunk column's worth of LOD columns at once.
     /// Entries in newRunsByCol may be null to leave that column untouched.
-    /// Returns true if any column content changed.
+    ///
+    /// Returns the edges the change touched, or <see cref="EdgeNone"/> if nothing changed.
+    /// The loop below already knows exactly which columns moved; it simply did not say so,
+    /// and every caller then had to assume all four neighbours needed rebuilding.
     /// </summary>
-    public bool ReplaceColumns(ulong[]?[] newRunsByCol)
+    public int ReplaceColumns(ulong[]?[] newRunsByCol)
     {
         int total = GridSize * GridSize;
+        int touchedEdges = EdgeNone;
         bool changed = false;
         int newLength = 0;
 
@@ -244,6 +248,7 @@ public class LodSection
             else
             {
                 changed = true;
+                touchedEdges |= ColumnEdges(col);
                 if (!Captured[col])
                 {
                     Captured[col] = true;
@@ -253,7 +258,7 @@ public class LodSection
             }
         }
 
-        if (!changed) return false;
+        if (!changed) return EdgeNone;
 
         var nextRuns = new ulong[newLength];
         var nextStart = new int[total + 1];
@@ -279,8 +284,37 @@ public class LodSection
 
         Runs = nextRuns;
         ColumnStart = nextStart;
-        return true;
+        return touchedEdges;
     }
 
     public static int ColumnIndex(int cx, int cz) => cz * GridSize + cx;
+
+    /// <summary>
+    /// Which of a section's four edges a mutation touched. A neighbour's mesh hides its
+    /// faces against our edge columns, so it only has to be rebuilt when a column on the
+    /// shared edge changed; an interior change is invisible to all four of them.
+    ///
+    /// Bit order is -X, +X, -Z, +Z, matching <see cref="LodGpuSectionFacts"/>'s open-edge
+    /// bits and the neighbour order in <see cref="LodWorld.MarkChanged"/>. One convention
+    /// for sides in this codebase, not three.
+    /// </summary>
+    public const int EdgeNone = 0;
+    public const int EdgeMinusX = 1 << 0;
+    public const int EdgePlusX = 1 << 1;
+    public const int EdgeMinusZ = 1 << 2;
+    public const int EdgePlusZ = 1 << 3;
+    public const int EdgeAll = EdgeMinusX | EdgePlusX | EdgeMinusZ | EdgePlusZ;
+
+    /// <summary>The edges a single column sits on; 0 for an interior column.</summary>
+    public static int ColumnEdges(int col)
+    {
+        int cx = col % GridSize;
+        int cz = col / GridSize;
+        int edges = EdgeNone;
+        if (cx == 0) edges |= EdgeMinusX;
+        if (cx == GridSize - 1) edges |= EdgePlusX;
+        if (cz == 0) edges |= EdgeMinusZ;
+        if (cz == GridSize - 1) edges |= EdgePlusZ;
+        return edges;
+    }
 }

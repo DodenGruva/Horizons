@@ -49,7 +49,7 @@ public static class LodMip
     public static bool DownsampleIntoParent(LodSection child, LodSection parent, int qx, int qz)
     {
         MipJob job = CreateJob(epoch: 0, childKey: 0, childRevision: 0, child, qx, qz);
-        return ApplyToParent(BuildResult(job), parent);
+        return ApplyToParent(BuildResult(job), parent) != LodSection.EdgeNone;
     }
 
     public static MipJob CreateJob(long epoch, long childKey, long childRevision,
@@ -125,8 +125,12 @@ public static class LodMip
     /// Remap worker output into the live parent's palette and publish the quadrant.
     /// This owning-thread tail is linear and allocation-bounded; the combinatorial
     /// boundary sweep has already finished on the worker.
+    ///
+    /// Returns the parent edges the quadrant moved, or <see cref="LodSection.EdgeNone"/>
+    /// if it changed nothing. A quadrant covers a quarter of the parent, so it can only
+    /// ever reach two of the parent's four edges, and often reaches none of them.
     /// </summary>
-    public static bool ApplyToParent(MipResult result, LodSection parent)
+    public static int ApplyToParent(MipResult result, LodSection parent)
     {
         ulong[]?[] batch = result.RunsByParentColumn;
         var paletteMap = new int[result.ChildPalette.Length];

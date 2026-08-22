@@ -595,3 +595,34 @@ by the owner.**
 - Completed Phase 1 source/harness verification with a warning-free Release build, 1,627
   passing assertions and 1,441 documentation checks. FPS benchmarking and runtime
   equivalence remain owner-run.
+
+
+## 2026-08-22 — vanilla lighting parity, and change locality for re-meshing
+
+- Settled the long-standing "cached terrain drifts from vanilla as the day goes on" report
+  offline, by decompiling the client and decoding the engine's own sunlight ramp. The
+  dominant term was the light colour: vanilla's terrain multiplies by
+  `Ambient.BlendedAmbientColor`, built from `ReflectColor` and floored at a blue night tint
+  once the sun is down, while the mod used `SunColor`, which has no such floor. After
+  sundown the two hues invert.
+- Disproved the plan's leading theory. `LightPosition3D` tracks the sun exactly all day; it
+  differs only at night, where vanilla lights from the moon.
+- Found a divergence the plan did not contain: vanilla brightens every terrain pixel by
+  22.7% while the sun is high and fades that out as it sets, whether or not the player has
+  shadows enabled.
+- Shipped five corrections behind `.vhlight moondir | ramp | ambient | boost | sky | all`,
+  all default on. The four terrain terms are HUMAN-TESTED and accepted in 0.3.51; the sky
+  band correction shipped in 0.3.52 and is not yet looked at.
+- Narrowed `LodWorld.MarkChanged` to the edges a change actually touched.
+  `LodSection.ReplaceColumns` now returns an edge mask, `LodMip.ApplyToParent` carries it,
+  and callers with no column-level answer keep the conservative all-edges behaviour.
+- Measured it over three benchmark runs on the frozen `bodanboys` profile: 38-40 content
+  changes produced 77-80 stale-mesh claims, 2.00-2.03 per change against 5.00 before, with
+  no frame-rate cost (367-432 FPS against 363-430 documented).
+- Added the `change locality:` counters, which had never existed; the amplification factor
+  could previously only be inferred.
+- Withdrew the re-mesh section's headline claim. "204-289 MiB built and 76-119 MiB uploaded
+  every 15 seconds, continuously, at a standstill" is a warm-up measurement: the first 2.5
+  minutes carry 237 MiB per 15 seconds, and settled steady state carries 2.1 MiB. This also
+  removes re-meshing as the leading micro-hitch suspect. G62, G63.
+- 1,892 assertions and 1,453 documentation checks pass.

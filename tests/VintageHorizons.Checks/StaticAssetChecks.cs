@@ -16,6 +16,7 @@ public static class StaticAssetChecks
         TintSlotAgreement(c);
         AlphaPacking(c);
         LodFallbackAndStableColour(c);
+        VanillaLightingWiring(c);
         ReadinessShadowWiring(c);
         ReadinessTelemetryContract(c);
         OwnershipMaskWiring(c);
@@ -235,6 +236,83 @@ public static class StaticAssetChecks
             "terrain colour noise uses the stable terrain coordinate");
         c.False(fragment.Contains("valuenoise(worldPos", StringComparison.Ordinal),
             "terrain colour noise never follows the camera-relative render position");
+    }
+
+    /// <summary>
+    /// The four lighting corrections are each an `int` uniform read by the fragment shader
+    /// and written by the renderer. A missing upload is silent: GLSL leaves the uniform at
+    /// zero, so the switch reads permanently off and the correction simply never happens,
+    /// with no compile error and nothing in the log. Same failure shape as G42.
+    ///
+    /// The formulas are pinned as literals because they are transcriptions of the engine's
+    /// own `fogandlight.fsh` and `chunkopaque.vsh`, not values of ours to tune. If a game
+    /// update changes vanilla's numbers, this check will not notice - but a silent edit on
+    /// our side, which is the likelier accident, fails here.
+    /// </summary>
+    static void VanillaLightingWiring(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string fragment = File.ReadAllText(Path.Combine(root, "VintageHorizons", "assets",
+            "vintagehorizons", "shaders", "lodterrain.fsh"));
+        string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src", "Render",
+            "LodTerrainRenderer.cs"));
+
+        foreach (string name in new[] { "flatTopLight", "lightMoonDir", "lightVanillaRamp",
+                                        "lightAmbientColor", "lightDayBoost", "lightSkyDayLight" })
+        {
+            c.True(fragment.Contains($"uniform int {name};", StringComparison.Ordinal),
+                $"the fragment shader declares the {name} switch");
+            c.True(renderer.Contains($"prog.Uniform(\"{name}\"", StringComparison.Ordinal),
+                $"the renderer uploads the {name} switch");
+        }
+
+        // The ambient colour is the only one of vanilla's lighting inputs the engine does
+        // not already push into any program including fogandlight.fsh.
+        c.True(fragment.Contains("uniform vec3 rgbaAmbientIn;", StringComparison.Ordinal),
+            "the fragment shader declares vanilla's ambient colour");
+        c.True(renderer.Contains("prog.Uniform(\"rgbaAmbientIn\", capi.Ambient.BlendedAmbientColor)",
+                StringComparison.Ordinal),
+            "the renderer uploads the engine's blended ambient colour unaltered");
+
+        // chunkopaque.vsh: nb = max(max(intensity, 0.5 + 0.5 * dot(normal, lightPosition)),
+        // normal.y * 0.95), with intensity 0.45 when shadows are off - which is the case a
+        // LOD section is always in, having no shadow map.
+        c.True(fragment.Contains("max(0.45, 0.5 + 0.5 * sunAngle)", StringComparison.Ordinal),
+            "the shade ramp and floor are vanilla's");
+        c.True(fragment.Contains("clamp(normal.y, 0.0, 1.0) * 0.95", StringComparison.Ordinal),
+            "the up-facing floor is vanilla's");
+
+        // fogandlight.vsh applyLight, reduced for full sky light and no block light: every
+        // scale cancels against the bMax renormalisation except the contrast constant.
+        c.True(fragment.Contains("1.05 * rgbaAmbientIn", StringComparison.Ordinal),
+            "the light colour is vanilla's ambient times its contrast constant");
+
+        // fogandlight.fsh applyFogAndShadowFromBrightness, verbatim.
+        c.True(fragment.Contains("1.0 + max(0.0, shadowIntensity * 2.0 - 1.66) / 1.5",
+                StringComparison.Ordinal),
+            "the daylight brightening matches vanilla's");
+
+        // SystemRenderSky.OnRenderFrame3D, transcribed. DefaultShaderUniforms.SkyDaylight is
+        // internal, so the value the engine computed cannot be read; only rebuilt. Every
+        // engine shader that calls getSkyColorAt passes this, never DayLightStrength.
+        c.True(renderer.Contains("1.25f * Math.Max(calendar.DayLightStrength - calendar.MoonLightStrength / 2f, 0.05f)",
+                StringComparison.Ordinal),
+            "the sky daylight reconstruction matches the engine's formula");
+        c.True(renderer.Contains("capi.World.Player.Entity.Pos.Y - capi.World.SeaLevel - 1000.0) / 30000.0",
+                StringComparison.Ordinal),
+            "the sky daylight reconstruction keeps the engine's high-altitude attenuation");
+        c.True(fragment.Contains("clamp(skyLight, 0.0, 1.0), horizonFog", StringComparison.Ordinal),
+            "the far sky fade uses the corrected sky daylight");
+        // The mod's own night glow dimming is calibrated against DayLightStrength, which
+        // reaches zero; sky daylight floors at 0.0625 and would leave a glow burning.
+        c.True(fragment.Contains("skyGlow.y *= clamp((dayLight - 0.05)", StringComparison.Ordinal),
+            "the glow clamp keeps the daylight strength it was calibrated against");
+
+        // These two arrive free with the fogandlight.fsh include; uploading them again
+        // would be harmless but would hide the fact that the engine already owns them.
+        c.False(renderer.Contains("prog.Uniform(\"lightPosition\"", StringComparison.Ordinal)
+            || renderer.Contains("prog.Uniform(\"shadowIntensity\"", StringComparison.Ordinal),
+            "the light vector and shadow intensity are left to the engine's own upload");
     }
 
     static void ReadinessShadowWiring(Check c)

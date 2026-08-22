@@ -1281,6 +1281,67 @@ restored from git.
 
 **Found:** 2026-08-22, while adding G59 and G60.
 
+### G62 — A per-interval rate from a benchmark log means nothing without its period
+
+**Trigger:** quoting MiB/s, uploads/s, or any per-interval figure from a run's telemetry.
+
+**Trap:** a benchmark run is two populations. Warm-up builds every mesh the world needs;
+settled steady state builds almost none. Averaging them, or sampling one and describing it
+as the other, produces a number that is real but answers a different question.
+
+Measured 2026-08-22 on the frozen `bodanboys` route: warm-up intervals 1-9 carried 1,827
+mesh uploads and 2,131 MiB, about **237 MiB per 15 seconds**; settled intervals 10-26
+carried 54 uploads and 35 MiB, about **2.1 MiB per 15 seconds**, several doing nothing at
+all. A 113x difference between two halves of one run.
+
+`dev/TODO.md` had carried "204-289 MiB built and 76-119 MiB uploaded every 15 seconds,
+continuously, at a standstill" as the lead symptom of a re-mesh amplification bug. That
+figure reproduces the warm-up column almost exactly: it was a loading measurement recorded
+as a steady-state one, and it made re-meshing the leading suspect for micro-hitches it
+cannot cause. The same mistake was then made in the opposite direction while investigating
+it, by reading the quiet tail intervals and concluding the cost was a measurement artefact.
+
+**Do:** print or total the whole interval series, split it at the point the rate collapses,
+and say which period a quoted number belongs to. A single tail sample and a whole-run
+average are both wrong.
+
+**Found:** 2026-08-22, session 40, while confirming the change-locality saving.
+
+### G63 — An arithmetic identity is not a mechanism
+
+**Trigger:** an estimate that multiplies out to the observed number.
+
+**Trap:** `dev/TODO.md` explained 5,057 mesh replacements as "~145 change events x a 35-way
+fan-out", and the product matched. Neither factor was measured: nothing counted
+`MarkChanged` calls at all, and the 35 assumed the neighbour fan-out repeated at every mip
+level unconditionally. Adding the counter gave **38-40** change events for the same route
+and profile - a number that cannot reach 5,057 even at the old five-way fan-out.
+
+The identity survived review for a whole session because it matched. The document even said
+"no counter records actual `MarkChanged` calls; add one before quoting the amplification
+factor as measured" - and the factor was then quoted anyway.
+
+**Do:** add the counter before the explanation, not after it. When a document names a term
+as unmeasured, that term may not appear in a derivation that is presented as measured.
+
+**Found:** 2026-08-22, session 40.
+
+### G64 — Repository text files carry mixed line endings, sometimes within one file
+
+**Trigger:** editing `.md` or `.cs` files with a script rather than by hand.
+
+**Trap:** `LodWorld.cs` and `LodMip.cs` hold both CRLF and LF lines; `dev/TODO.md` is CRLF
+and the shaders are LF. A multi-line pattern written with `
+` silently fails to match a
+CRLF file, and a fix-up that normalises the whole file rewrites every line, burying the
+real change in an unreviewable diff.
+
+**Do:** match and splice whole lines, taking the ending from the line already there. Never
+normalise a whole file to make a patch apply. See also G61 on encoding, which has the same
+shape: the round trip preserves what it does not touch, so only newly typed text breaks.
+
+**Found:** 2026-08-22, session 40.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
