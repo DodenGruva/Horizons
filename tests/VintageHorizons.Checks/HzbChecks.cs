@@ -1,0 +1,182 @@
+namespace VintageHorizons.Checks;
+
+/// <summary>
+/// The depth pyramid's shape and its reduction rule.
+///
+/// This is the one part of Phase 4 that can be proved without a GPU, and it is also the
+/// part whose failure mode is worst: a pyramid that reports a depth even slightly nearer
+/// than the true farthest sample lets the occlusion test conclude "hidden" about terrain
+/// the player can see. That does not look like a bug in the pyramid. It looks like terrain
+/// randomly missing in some views, which is precisely the symptom that took two sessions to
+/// track down the last time this renderer lost ground.
+///
+/// So the checks below are one-directional throughout: every claim is that the reduction
+/// never returns anything NEARER than the samples beneath it.
+/// </summary>
+public static class HzbChecks
+{
+    public static void Run(Check c)
+    {
+        LevelShape(c);
+        FarthestWins(c);
+        OddDimensionsKeepTheEdge(c);
+        NeverNearerThanItsSources(c);
+        DownToOneTexel(c);
+    }
+
+    /// <summary>
+    /// Level sizes must match what `TexStorage2D` allocates, because the framebuffer
+    /// attachment and the viewport are both derived from them. A disagreement here writes
+    /// part of a level and leaves the rest holding the previous frame.
+    /// </summary>
+    static void LevelShape(Check c)
+    {
+        c.Eq(11, LodHzbReference.LevelCount(1920, 1080), "1920x1080 reduces in eleven levels");
+        c.Eq(1, LodHzbReference.LevelCount(1, 1), "a single texel is already the whole pyramid");
+        c.Eq(0, LodHzbReference.LevelCount(0, 0), "an empty target has no pyramid");
+
+        c.Eq((1920, 1080), LodHzbReference.LevelSize(1920, 1080, 0), "level zero is full size");
+        c.Eq((960, 540), LodHzbReference.LevelSize(1920, 1080, 1), "each level halves");
+        c.Eq((15, 8), LodHzbReference.LevelSize(1920, 1080, 7), "and keeps halving with floor");
+
+        // The short side bottoms out first and then stays at one while the long side keeps
+        // halving. A level size of zero would make an empty viewport and a silent no-op.
+        c.Eq((1, 1), LodHzbReference.LevelSize(1920, 1080, 10), "the last level is one texel");
+        for (int level = 0; level < LodHzbReference.LevelCount(1920, 1080); level++)
+        {
+            (int w, int h) = LodHzbReference.LevelSize(1920, 1080, level);
+            c.True(w >= 1 && h >= 1, $"level {level} has at least one texel in each axis");
+        }
+    }
+
+    /// <summary>
+    /// The rule itself. The driver's own mipmap generation would average these four and
+    /// return 0.4, which is nearer than three of the four samples under it - and a test
+    /// against 0.4 hides anything between 0.4 and 0.9.
+    /// </summary>
+    static void FarthestWins(Check c)
+    {
+        float[] source = { 0.1f, 0.2f, 0.3f, 0.9f };
+        float[] reduced = LodHzbReference.Reduce(source, 2, 2);
+
+        c.Eq(1, reduced.Length, "a 2x2 source reduces to one texel");
+        c.Eq(0.9f, reduced[0], "the texel holds the farthest of its four, not their average");
+
+        // Order must not matter: the same four samples in any arrangement give the same
+        // answer, or the pyramid would depend on where geometry happened to land.
+        c.Eq(0.9f, LodHzbReference.Reduce(new[] { 0.9f, 0.1f, 0.2f, 0.3f }, 2, 2)[0],
+            "the farthest sample wins wherever it sits");
+    }
+
+    /// <summary>
+    /// Halving an odd width leaves a column that belongs to no target texel. Dropped, it is
+    /// a depth the level never learned about - and it is always the column at the screen
+    /// edge, so the pyramid would stop being conservative exactly where terrain runs off the
+    /// side of the view.
+    /// </summary>
+    static void OddDimensionsKeepTheEdge(Check c)
+    {
+        // 3x1: two source texels fold into one target, and the third is the leftover. It
+        // holds the farthest depth in the row, so a reduction that drops it is unsafe.
+        float[] reduced = LodHzbReference.Reduce(new[] { 0.1f, 0.2f, 0.95f }, 3, 1);
+        c.Eq(1, reduced.Length, "three texels reduce to one");
+        c.Eq(0.95f, reduced[0], "the dropped odd column is folded in, not lost");
+
+        // Same on the other axis.
+        c.Eq(0.95f, LodHzbReference.Reduce(new[] { 0.1f, 0.2f, 0.95f }, 1, 3)[0],
+            "and the dropped odd row is folded in too");
+
+        // Both axes odd: the corner texel belongs to neither fold and needs its own.
+        float[] corner = { 0.1f, 0.1f, 0.1f,
+                           0.1f, 0.1f, 0.1f,
+                           0.1f, 0.1f, 0.99f };
+        c.Eq(0.99f, LodHzbReference.Reduce(corner, 3, 3)[0],
+            "the far corner of an odd-by-odd source survives the fold");
+    }
+
+    /// <summary>
+    /// The general form of the same claim, over shapes chosen to hit every combination of
+    /// odd and even. One arrangement could be folded correctly by a rule that happens to
+    /// suit it; nothing satisfies all of these except actually taking the maximum.
+    /// </summary>
+    static void NeverNearerThanItsSources(Check c)
+    {
+        foreach ((int w, int h) in new[] { (2, 2), (3, 2), (2, 3), (3, 3), (7, 5), (16, 9), (1, 5) })
+        {
+            var rnd = new Random(w * 31 + h);
+            var source = new float[w * h];
+            for (int i = 0; i < source.Length; i++) source[i] = (float)rnd.NextDouble();
+
+            float[] reduced = LodHzbReference.Reduce(source, w, h);
+            (int tw, int th) = (Math.Max(1, w >> 1), Math.Max(1, h >> 1));
+            c.Eq(tw * th, reduced.Length, $"{w}x{h} reduces to {tw}x{th}");
+
+            // Nothing in the level may be nearer than the farthest thing it stands for.
+            // Checked against the whole source rather than per-texel neighbourhoods: the
+            // maximum of the level can never exceed the maximum of what produced it, and
+            // every source texel must be represented by at least one target texel that is
+            // at least as far.
+            float sourceMax = source.Max();
+            float reducedMax = reduced.Max();
+            c.Eq(sourceMax, reducedMax, $"{w}x{h}: the farthest sample survives the reduction");
+            c.True(reduced.All(value => value <= sourceMax),
+                $"{w}x{h}: no texel invents a depth farther than anything beneath it");
+
+            // Per texel, the conservative claim in full: every target is at least as far as
+            // each of the four samples it nominally covers.
+            for (int y = 0; y < th; y++)
+            {
+                for (int x = 0; x < tw; x++)
+                {
+                    float target = reduced[y * tw + x];
+                    for (int dy = 0; dy <= 1; dy++)
+                    {
+                        for (int dx = 0; dx <= 1; dx++)
+                        {
+                            int sx = Math.Min(x * 2 + dx, w - 1);
+                            int sy = Math.Min(y * 2 + dy, h - 1);
+                            c.True(target >= source[sy * w + sx],
+                                $"{w}x{h}: target ({x},{y}) is never nearer than source ({sx},{sy})");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Reducing repeatedly must terminate at one texel holding the farthest depth in the
+    /// whole image. That final texel is what a test against a section covering the entire
+    /// screen would read, and if the chain lost anything on the way down it would read as
+    /// nearer than the true scene and hide everything.
+    /// </summary>
+    static void DownToOneTexel(Check c)
+    {
+        const int width = 37;
+        const int height = 21;
+        var rnd = new Random(4242);
+        var level = new float[width * height];
+        for (int i = 0; i < level.Length; i++) level[i] = (float)rnd.NextDouble();
+        // A deliberate farthest sample in an awkward place: the last texel of an odd row of
+        // an odd image, which is the one every naive fold drops.
+        level[^1] = 0.999f;
+        float farthestAnywhere = level.Max();
+
+        int w = width, h = height;
+        int steps = 0;
+        while (w > 1 || h > 1)
+        {
+            level = LodHzbReference.Reduce(level, w, h);
+            (w, h) = (Math.Max(1, w >> 1), Math.Max(1, h >> 1));
+            steps++;
+            c.True(steps <= 32, "the reduction terminates rather than looping");
+        }
+
+        c.Eq(1, level.Length, "the chain ends at a single texel");
+        c.Eq(farthestAnywhere, level[0], "which holds the farthest depth anywhere in the image");
+        c.True(level[0] >= 0.999f,
+            "including the sample planted in the corner every naive fold drops");
+        c.Eq(LodHzbReference.LevelCount(width, height) - 1, steps,
+            "and takes exactly the number of steps the level count promised");
+    }
+}

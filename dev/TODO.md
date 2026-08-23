@@ -32,14 +32,20 @@ Phase 3 of `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` is complete in source
 page set instead of one call per section. It is off by default and needs `.vhgpu on` first.
 The plan carries the design, the two deliberate departures from it, and what was built.
 
-**Everything that matters about it is unverified**, because none of it can be checked
+**Question 1 is answered: the indirect shader variant compiles.** The 2026-08-22 client
+log on an RX 9070 XT (GL 4.3 core, GLSL 4.60) shows `Loaded Shaderprogramm for render pass
+lodterrainindirect` with no error following, on the reload that carries mod assets. The
+errors earlier in the same log are the mod's own first, pre-asset attempt and are expected;
+see G68, fixed in 0.3.59. The rest is still unverified, because none of it can be checked
 without a GPU. In order of what a single session in game would settle:
 
-1. **Does the indirect shader variant compile at all?** There is no GLSL validator on this
-   machine. The include splice and both preprocessor branches were simulated offline and
-   are coherent, and `LoadShader` logs an explicit line if the engine's include table does
-   not hold the body. First evidence is the client log: an error naming `lodterrain` or
-   `lodterrainindirect` means it did not.
+1. **Was `.vhindirect on` ever actually run?** The 0.3.58 session enabled `.vhgpu on` at
+   two points - the log records the arena shadow attaching both times - but `.vhgpu` alone
+   draws nothing differently by design, and command results go to chat rather than the log,
+   so nothing establishes that the visible path was ever switched on. The owner reported no
+   visual difference, which is consistent with the batches never having drawn. Re-run it
+   as `.vhgpu on` then `.vhindirect on`, and confirm from `.vhgpu` that batches are being
+   issued before reading the picture.
 2. **Is the picture identical?** `.vhindirect off` against `on` in the same settled view,
    then again while moving. Geometry, colour, fog, the ownership seam with vanilla, the
    open-edge dissolve, snow line and tint. This is the phase's visual gate and only a
@@ -97,9 +103,116 @@ cache blob, protocol or schema change; an old cache derives them on load like an
 renderer would immediately stop keeping sections that a real box rejects when looking up or
 down. That makes it testable on its own, with the fast path off.
 
-Not started. See the plan's Phase 3b for the work list and its gate, including the reported
-height distribution - if an ordinary section really does occupy most of the world height,
-Phase 4's expected saving needs revisiting before it is built.
+**Built in 0.3.58 and unseen.** The mesher tracks minimum and maximum emitted Y per pass,
+the bounds ride with the mesh into the live section record, and the established renderer's
+frustum box uses them instead of the world height. 157 mesher assertions pin the
+one-directional gate: the reported span is exactly the range of the vertices the mesher
+emitted, over every face direction, both passes, LODs 0-3, the bedrock and build-limit
+limits, an empty mesh and a single flat quad. Unset bounds fall back to the full-height
+box, so a missing measurement can only draw too much.
+
+The GPU section record was deliberately left alone; the reason is in the plan's Phase 3b.
+
+**The visual gate is closed.** The owner played 0.3.58 and reported nothing vanished when
+looking up or down. The established renderer's share is real but small: 50,339 section-draws
+over 12,217 frames were rejected by the real box that the full-height box would have kept -
+about 4 per frame against 272 selected sections, worst frame 26.
+
+**The distribution is measured, and the conclusion first drawn from it was wrong.** From
+the 2026-08-22 join, over 1,473 meshes in a 256-block world: mean height 146.0 blocks
+(57.0% of the world), tallest 245, and **not one section under 64 blocks tall** - 100% in
+the 64-256 band, no low tail at all.
+
+Session 42 read that as a reason to hold Phase 4. **The owner vetoed it, correctly.** The
+error was judging a screen-space question with a world-space statistic. A box is hidden
+when it is small and far, not when it is short: apparent height is world height divided by
+distance, so the same 146-block section is about 258 px tall at 500 blocks, 65 px at 2,000,
+13 px at 10,000 and 4 px at 32,000. Past a few thousand blocks an entire section is a
+handful of pixels and one foreground ridge buries hundreds of them. Meanwhile the
+population scales as area, so a 32k cache distance holds roughly 256x the sections of a 2k
+one. **The value of depth rejection scales with the draw distance the mod exists to
+provide, and the height histogram does not measure it.**
+
+Two corrections follow from the same mistake:
+
+- **The plan's "Phase 4 requires Phase 3b" is overstated.** At 20 km a full 256-block box
+  subtends ~11 px against a real box's ~7 px; both are trivially rejected. Phase 3b's value
+  is concentrated at near and mid range where boxes are large on screen, Phase 4's far out.
+  They are complementary, not sequential. 3b still pays - it closed its own visual gate and
+  skips about 4 section-draws per frame - but it was never the thing standing between here
+  and depth rejection.
+- **The frontier curtain is a separate concern, not a Phase 4 blocker.**
+  `MesherChecks.FrontierWallsSetTheFloor` measures it: one section, surface at y=110 over a
+  run to bedrock, meshed with all four neighbours present is a single quad spanning y=110 to
+  y=110; with none present it is five quads spanning y=0 to y=110, and **one open side out
+  of four is enough** to drop the floor to bedrock. The mod draws a 110-block wall down to
+  bedrock at every edge of explored space. That is honest geometry and the bound is honest
+  about it, but it is wasted drawing in its own right and deserves its own look.
+
+**Still worth reading when it lands:** 0.3.59 adds `mean floor y=` and `mean ceiling y=` to
+the same line, and a settled-play reading needs `VINTAGEHORIZONS_STATS=1` - the figures
+above are the 30-second join report, when a large share of sections are at the frontier and
+so carry the curtain.
+
+## Phase 4: built and measured, and its correctness gate is NOT closed
+
+Everything below is in 0.3.65. **The owner last played 0.3.63**, so the two most important
+fixes have never run on hardware. Nothing the pyramid decides is allowed to affect drawing,
+and there is no code path from a verdict to a draw call.
+
+### What is established
+
+**Cost passes the gate.** 27.4 us of GPU time per frame at 1440x1440p/12 levels, stable over
+twelve intervals, against 218.6 us of cached-terrain draw submission - about an eighth of the
+work it could remove. A frame-time A/B agrees at +0.023 ms, at the noise floor per view but
+consistent in sign across 5 of 6 views where an off-vs-off pair flips sign three times.
+
+**Benefit, at two ground-level locations, 16 million section-tests:**
+
+| distance | location 1 | location 2 |
+|---|---:|---:|
+| 0-1k | 88% | 46-48% |
+| 1-2k | 99% | 62-65% |
+| 2-4k | 100% | 78-90% |
+| 4-8k | 98-100% | 98% |
+
+The absolute share depends on what is in front of the camera; the SHAPE replicates, and it
+is the owner's scaling argument. The aerial `bodanboys-gpu-baseline` route finds 0.0% and is
+the wrong instrument for this - it is a draw baseline, with the camera above the terrain.
+
+**Whole sections are too coarse a unit, and this is measured.** Every not-hidden verdict -
+7.5 million of them - was refused because the section's screen rectangle overlaps sky, where
+nothing was drawn and the depth clear value stands. Only 25,316 sections were ever genuinely
+in view. A section is 64 blocks across at L0 and 1,024 at L4, so its box is either fully
+buried or it pokes into open sky. **Cluster subdivision (plan Phase 8) is what unlocks the
+rest of this, not a later optimisation**, and that is a plan-ordering decision for the owner.
+
+### What is owed, in order
+
+1. **The correctness gate. 1,215 sections were called hidden that an occlusion query had
+   positively seen** - on 0.3.63, which compares a verdict one frame old against whatever the
+   query says now. Those are different views whenever the camera moves, and the count grew
+   only while moving: zero across 2,944,821 stationary checks, then 46 immediately after a
+   turn. 0.3.64 refuses to compare across a view change and counts those separately. **Until
+   that has run, this gate is open and nothing may act on a pyramid verdict.**
+2. **What the pyramid adds over the delayed occlusion already running.** The overlap is large
+   - millions of verdicts where the query hid what the pyramid did not - so the headline share
+   flatters it by an unknown amount. 0.3.65 counts sections hidden that no query had measured,
+   which is the only figure that represents a new saving. Never read.
+3. **An open-view control.** All three benefit samples face terrain; the owner confirmed the
+   intended control was still facing a mountain. Without it, 46-100% is a favourable-case
+   number of unknown typicality.
+4. **`.vhhzb why` has never produced a useful answer.** It searched coarsest-first and kept
+   reporting the 2,048-block section containing the camera. Fixed in 0.3.64, never run.
+
+**How to run it:** install 0.3.65, `.vhhzb on`, face terrain, wait about fifteen seconds,
+`.vhhzb`, then `.vhhzb why` at a distant ridge. Both write to the client log. Alt-tabbing is
+safe - those frames are skipped and counted separately (G72 and the minimised-window fix).
+
+**Known limits of the current evidence:** the owner's cache reaches about 4 km, so the 8-16k
+and 16k+ bands are empty and the far case is inferred from the 2-8k trend. GPU timers only
+arm under the benchmark harness, so a normal session reports 0.0 us for GPU cost. One
+machine, one resolution.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 

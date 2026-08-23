@@ -8,15 +8,6 @@ first.
 
 ## [Unreleased]
 
-**The render plan gained a step that pays off whether or not the GPU work is ever adopted.**
-The mod culls each piece of distant terrain using a box that runs from bedrock to sky,
-because it never recorded how tall the terrain in that piece actually is. For deciding "is
-this off to the side of my view" that costs nothing. For deciding "is this hidden behind a
-mountain" - which is what the next stage of the plan is built on - it is close to useless,
-since a floor-to-ceiling column is only hidden when something covers the whole column.
-Recording the real top and bottom is nearly free, changes no cache file, and would sharpen
-the culling the mod already does today when you look up or down. Planned, not built.
-
 **A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
 The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
 gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
@@ -24,6 +15,119 @@ cached-on-cached depth strategies and packed quads before any default decision. 
 planning and verification artifact only; it changes no runtime rendering behavior.
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+
+## [0.3.65]
+
+In development. Nothing is hidden yet; the picture is unchanged.
+
+**The mod can now find terrain hidden behind hills, and it says how much there is.** After
+the game draws its own nearby world, the card holds a picture of how far away everything on
+screen is. The mod copies that, shrinks it into a stack where each step remembers the
+farthest thing it covers, and then asks - for every piece of distant terrain at once -
+whether the whole piece sits behind what is already drawn. Turn it on with `.vhhzb on`, play
+for a few seconds, and run `.vhhzb` to see what it found.
+
+**It hides nothing.** This whole stage exists to measure, because the idea only pays if
+finding the hidden terrain is cheaper than drawing it. On the test machine the stack costs
+about 27 microseconds of card time per frame, against roughly 219 microseconds spent
+submitting the distant terrain it could remove - about an eighth.
+
+**What it found, standing on the ground in front of terrain:** a bit under half of distant
+pieces hidden within 1 km, rising to essentially all of them past 2 km, across sixteen
+million checks at two locations. Standing above the landscape looking at open horizons it
+found nothing at all, which is the honest answer for that view.
+
+**One limitation is now measured rather than suspected.** A piece of terrain is only
+counted as hidden if every pixel it covers is already drawn over - and sky counts as
+"nothing drawn". Since a piece is 64 to 1,024 blocks across, it nearly always pokes into
+open sky somewhere, and that makes it unhideable however buried its ground is. Every single
+piece that was not hidden failed for exactly this reason. Testing smaller pieces is what
+unlocks the rest.
+
+**`.vhhzb why`** points at whatever you are looking at and explains its verdict in words.
+Both commands write to the log as well as the screen.
+
+**Also:** `.vhheight` was printing nothing, because the game reads chat as markup and the
+`<=4` labels looked like an unclosed tag. And the mod stopped claiming its shaders had
+failed on every startup - the first attempt happens before the game has read the mod's
+shader files and could never work, which made a real failure indistinguishable from noise.
+
+## [0.3.60]
+
+In development, not yet human-tested. Nothing looks different; nothing is hidden.
+
+**The mod can now build the thing that finds terrain hidden behind hills.** After the game
+finishes drawing its own nearby world, the graphics card is holding a picture of how far
+away everything on screen is. The mod now takes a private copy of that picture and shrinks
+it repeatedly into a stack of smaller and smaller versions, where each pixel of a smaller
+one remembers the FARTHEST thing in the patch it stands for. That stack is what lets a
+later step ask, about a whole piece of distant terrain at once, "is all of this behind the
+hill in front of it?" - cheaply, and without drawing it to find out.
+
+**It decides nothing yet, on purpose.** This step exists to measure what the stack costs,
+because the whole idea only pays if building it is cheaper than the drawing it saves, and
+no amount of reading the code answers that. It is off by default: `.vhhzb on` turns it on
+for a session, `.vhhzb` alone reports its state, and the log grows an `hzb:` line with the
+graphics-card time it takes.
+
+Two choices in it are worth knowing about, because both are the difference between working
+and quietly deleting scenery. Each smaller pixel takes the farthest of what it covers, never
+the average the graphics card would give for free - an average reads as nearer than some of
+what is under it, which would hide ground you can actually see through a gap. And the whole
+thing refuses to run at all if the game is ever found measuring depth backwards, rather than
+guessing and inverting every comparison.
+
+## [0.3.59]
+
+In development, not yet human-tested. Fixes two things the 0.3.58 playtest exposed.
+
+**`.vhheight` printed nothing in chat, and that was a bug in the reply, not the feature.**
+The height buckets were labelled `<=4`, `<=16` and so on. The game reads chat text as
+markup, so a leading `<` opened a tag it could never close and it refused the whole reply.
+The labels are ranges now - `0-4`, `4-16`, `64-256` - and the same line always worked in
+the log, which is where the 0.3.58 numbers came from.
+
+**The mod cried wolf about its own shaders on every single start.** It asks the game for
+its shaders once when it loads, which is before the game has read the mod's own shader
+files - so that first attempt could never work, and the mod logged "shader failed to
+compile; LOD rendering disabled" and a matching warning about the batched-drawing variant.
+The game then reloads shaders with mod files present and the second attempt succeeds, which
+is why terrain drew perfectly well regardless. The errors were noise, and the kind that
+matters: reading them in a log is what made batched drawing look broken on this machine
+when it is not. The first attempt is quiet now and says what it is waiting for; anything
+after it is reported at full volume. The mod also says once, out loud, when the batched
+variant compiled - so the log can answer "did it work" rather than only "did it complain".
+
+**And the height report now says where a piece of terrain starts and ends, not just how
+tall it is.** 146 blocks tall means something quite different if it runs from y=5 to y=151
+than if it runs from y=60 to y=206, and only the first of those is worth acting on.
+
+## [0.3.58]
+
+In development, not yet human-tested.
+
+**Distant terrain is now bounded by how tall it actually is.** Until now the mod judged
+every piece of cached terrain against a box running from bedrock to sky, because a piece
+never recorded the height of the ground inside it. Sideways that costs nothing - the left
+and right edges of your view do the work. Looking up at the sky or down at your feet, it
+meant the mod kept working on pieces of ground nowhere near the screen. It now measures
+the real top and bottom of what it draws, which it gets for free from work it already does,
+and uses that instead. Nothing changes in your cache files; an existing world derives the
+new measurement as its terrain loads, like any other.
+
+Solid ground and water are measured separately, since a lake surface sits nowhere near the
+lakebed under it and one box round both would give most of the saving straight back.
+
+**And the mod now says out loud how tall your terrain is.** The periodic log line reports
+the distribution - the average height of a piece of drawn terrain as a share of the whole
+world, and how many pieces the new box rejected that the old one would have kept. That
+number decides whether the next stage of the render plan is worth building at all: the
+stage after this one hides terrain behind mountains, and it cannot hide a piece that
+reaches from bedrock to sky. Nobody knew which of those an ordinary piece of terrain was.
+
+`.vhheight off` puts the old bedrock-to-sky box back for an immediate side-by-side, and
+`.vhheight` on its own prints the distribution. If terrain ever vanishes while you look up
+or down, that switch is the one to reach for, and the answer is worth reporting.
 
 ## [0.3.57]
 

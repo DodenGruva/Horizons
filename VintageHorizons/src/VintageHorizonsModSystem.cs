@@ -152,6 +152,13 @@ public class VintageHorizonsModSystem : ModSystem
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_FRONT_TO_BACK") != "0",
             OcclusionCullingEnabled =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_OCCLUSION_CULLING") != "0",
+            SectionHeightCulling =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_SECTION_HEIGHT_CULLING") != "0",
+            // Off unless asked for, matching the command's default. Pinned by the harness
+            // rather than typed in game, because its whole gate is a controlled A/B and a
+            // comparison whose switches were set by hand is how session 40 lost a run.
+            DepthPyramidEnabled =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_DEPTH_PYRAMID") == "1",
         };
 
         // The saved setting applies unless the environment variable has taken a side, which
@@ -1245,6 +1252,60 @@ public class VintageHorizonsModSystem : ModSystem
             // actually experiences, and how much of it was us.
             Mod.Logger.Notification("  frame timeline: {0}", renderer.FrameTimeline.Describe());
 
+            // How tall sections actually are, and what that already buys. The distribution
+            // is the evidence Phase 4 of the GPU plan has to be argued from: a pyramid can
+            // only reject a section that does not span the world, and until this line
+            // nobody knew whether an ordinary section does.
+            Mod.Logger.Notification(
+                "  section heights: {0} | vertical cull: {1} section-draws skipped this interval "
+                + "that a full-height box would have kept, worst frame {2}",
+                renderer.SectionHeights.Describe(renderer.WorldHeight),
+                renderer.VerticalCulledSections,
+                renderer.VerticalCulledMax);
+
+            // The pyramid's own cost, apart from everything else. Phase 4 lives or dies on
+            // whether the GPU figure here is smaller than the drawing a depth test could
+            // remove, and CPU time cannot see it because none of the work is on the CPU.
+            if (renderer.HzbCost.Calls > 0)
+            {
+                Mod.Logger.Notification(
+                    "  hzb: {0} | cpu {1:0.0}us avg / {2:0.0}us max, p95 {3:0}/p99 {4:0} | "
+                    + "gpu {5:0.0}us avg / {6:0.0}us max over {7} timed builds",
+                    renderer.DescribeDepthPyramid(),
+                    renderer.HzbCost.AvgUs, renderer.HzbCost.MaxUs,
+                    renderer.HzbCost.P95Us, renderer.HzbCost.P99Us,
+                    renderer.GpuHzbCost.AvgUs, renderer.GpuHzbCost.MaxUs,
+                    renderer.GpuHzbCost.Calls);
+
+                // Per distance band, because the case for this phase is that the amount of
+                // hidden terrain scales with draw distance. One overall average mixes 500
+                // blocks with 32,000 and cannot show that either way.
+                string byDistance = renderer.DescribeDepthPyramidByDistance();
+                if (byDistance.Length > 0)
+                    Mod.Logger.Notification("  hzb hidden by distance: {0}", byDistance);
+
+                // The correctness gate. The left-hand figure must be zero: it counts
+                // sections the pyramid called hidden that a query had actually seen pixels
+                // of, and every one of those is terrain a player could see. Warning rather
+                // than notification when it is not zero, so it cannot scroll past.
+                if (renderer.HzbVerdictsChecked > 0)
+                {
+                    string line = "  hzb against occlusion queries: {0} checked | "
+                        + "{1} called hidden that a query SAW (must be zero) | "
+                        + "{2} the query hid and the pyramid did not";
+                    if (renderer.HzbHiddenButQuerySawIt > 0)
+                    {
+                        Mod.Logger.Warning(line, renderer.HzbVerdictsChecked,
+                            renderer.HzbHiddenButQuerySawIt, renderer.HzbMissedWhatQueryHid);
+                    }
+                    else
+                    {
+                        Mod.Logger.Notification(line, renderer.HzbVerdictsChecked,
+                            renderer.HzbHiddenButQuerySawIt, renderer.HzbMissedWhatQueryHid);
+                    }
+                }
+            }
+
             Mod.Logger.Notification("  vanilla readiness: {0}", renderer.DescribeReadiness());
 
             // Why a coarser parent is covering ground its children could cover. Each cause
@@ -1482,6 +1543,20 @@ public class VintageHorizonsModSystem : ModSystem
         pipeline.Close();
         while (pipeline.Worker.MeshResults.TryDequeue(out _)) { }
         renderer.ClearMeshes();
+    }
+
+    /// <summary>
+    /// Writes a chat report into the log as well, one line at a time so each carries its
+    /// own timestamp and stays greppable. Game chat cannot be selected or copied, so
+    /// without this every diagnostic has to be read off the screen and retyped.
+    /// </summary>
+    void LogReportLines(string label, string report)
+    {
+        foreach (string line in report.Split('\n'))
+        {
+            if (line.Trim().Length == 0) continue;
+            Mod.Logger.Notification("  {0}: {1}", label, line.Trim());
+        }
     }
 
     void RegisterCommands()
@@ -1841,6 +1916,77 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success(
                     $"[VintageHorizons] opaque back-face culling {(renderer.OpaqueBackfaceCulling ? "on" : "off")} (on by default, not saved). " +
                     "Applies on the next frame; water and thin cover remain two-sided.");
+            });
+
+        // The one switch that makes this phase's gate answerable by looking: with it off,
+        // sections are bounded bedrock-to-sky exactly as before, so anything that vanishes
+        // while looking up or down comes straight back.
+        // Phase 4 shadow work. It builds the depth pyramid and measures it, and hides
+        // nothing at all - so the only thing to look for while it is on is whether the
+        // frame rate moves, which is the number that decides whether the phase continues.
+        capi.ChatCommands.Create("vhhzb")
+            .WithDescription("Build the depth pyramid used to find terrain hidden behind hills. Measurement only; hides nothing. Off by default and not saved. `.vhhzb why` explains the piece you are looking at.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                {
+                    // Logged as well as shown. Game chat cannot be copied out, so a report
+                    // that exists only on screen has to be transcribed by hand or
+                    // photographed - and these are long lines of digits, which is the worst
+                    // possible thing to ask someone to retype. The log is the copy that can
+                    // actually be handed to somebody.
+                    string report = renderer.ReportDepthPyramid();
+                    LogReportLines("hzb", report);
+                    return TextCommandResult.Success("[VintageHorizons] " + report);
+                }
+
+                string word = ((string)args[0]).ToLowerInvariant();
+
+                // Look at a piece of far terrain and ask about that one. A counter says how
+                // often something happens; only this can be checked against what is on the
+                // screen in front of the person running it.
+                if (word == "why")
+                {
+                    Vec3f look = capi.World.Player.Entity.Pos.GetViewVector();
+                    var camera = capi.World.Player.Entity.CameraPos;
+                    int range = GameMath.Clamp((int)renderer.EffectiveFarDistance, 512, 32768);
+                    string why = renderer.ExplainDepthPyramid(
+                        camera.X, camera.Y, camera.Z, look.X, look.Y, look.Z, range);
+                    LogReportLines("hzb why", why);
+                    return TextCommandResult.Success("[VintageHorizons] " + why);
+                }
+
+                if (word != "on" && word != "off")
+                    return TextCommandResult.Error("[VintageHorizons] use: .vhhzb on | off | why");
+
+                renderer.DepthPyramidEnabled = word == "on";
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] depth pyramid {(renderer.DepthPyramidEnabled ? "on" : "off")} "
+                    + "(off by default, not saved). It copies the depth buffer and reduces it every "
+                    + "frame, and nothing reads the result yet. Turn it on, play, and read the "
+                    + "hzb line in the log: the question is what it costs, not what it hides.");
+            });
+
+        capi.ChatCommands.Create("vhheight")
+            .WithDescription("Cull cached sections by how tall their terrain actually is. On by default and not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] section height culling {(renderer.SectionHeightCulling ? "on" : "off")} "
+                        + $"(on by default, not saved). {renderer.SectionHeights.Describe(renderer.WorldHeight)}");
+
+                renderer.SectionHeightCulling = (bool)args[0];
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] section height culling {(renderer.SectionHeightCulling ? "on" : "off")} "
+                    + "(on by default, not saved). Applies on the next frame. With it off, every section is "
+                    + "bounded from bedrock to sky again, which is what the renderer did before.");
             });
 
         capi.ChatCommands.Create("vhfront")

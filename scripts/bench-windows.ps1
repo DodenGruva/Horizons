@@ -28,6 +28,10 @@ param(
     # switches were set by hand is how session 40 lost a run.
     [ValidateSet('0', '1')]
     [string]$GpuIndirect,
+    # Build the private depth pyramid every frame. It hides nothing, so an A/B over this
+    # measures the mechanism's cost alone - which is exactly the Phase 4 gate.
+    [ValidateSet('0', '1')]
+    [string]$Hzb,
     [string]$AutoCommand,
     [ValidatePattern('^[A-Za-z0-9_-]+$')]
     [string]$SandboxProfile,
@@ -1028,6 +1032,9 @@ if ($GpuArenaPageMb) {
 if ($GpuIndirect) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_INDIRECT = $GpuIndirect
 }
+if ($Hzb) {
+    $clientEnvironment.VINTAGEHORIZONS_DEPTH_PYRAMID = $Hzb
+}
 if ($AutoCommand) {
     $clientEnvironment.VINTAGEHORIZONS_AUTOCMD = $AutoCommand
     $clientEnvironment.VINTAGEHORIZONS_CREATIVE = '1'
@@ -1185,6 +1192,7 @@ try {
         gpuArenaMb = if ($GpuArenaMb) { $GpuArenaMb } else { $null }
         gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
         gpuIndirect = if ($GpuIndirect) { $GpuIndirect } else { $null }
+        hzb = if ($Hzb) { $Hzb } else { $null }
         gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')
     }

@@ -3,11 +3,11 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-22
-**Mod version:** `0.3.57` source metadata and packaged artifact; `0.3.51` is what is
-installed and human-tested (`0.2.1` is the released version; the next changed playable
-artifact must increment exactly once to `0.3.58`)
+**Mod version:** `0.3.65` source metadata and packaged artifact; `0.3.63` is what the
+owner last played and `0.3.58` the last played through fully (`0.2.1` is the released version; the next changed playable
+artifact must increment exactly once to `0.3.66`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `59` C# files under `VintageHorizons/src`
+**Source files:** `64` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -18,10 +18,20 @@ artifact must increment exactly once to `0.3.58`)
 source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
 `d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
-tracking `origin/render-overhaul`. The current 0.3.50 work comprises the Phase 0
-telemetry/capability slice, Phase 1's legacy-only renderer boundary, Phase 2's regional
-arenas, and Phase 3 complete in source: the measured draw-call gate, and since 0.3.53 the
-visible multi-draw behind `.vhindirect`, which has never run on hardware.
+tracking `origin/render-overhaul`. The work now comprises the Phase 0 telemetry/capability
+slice, Phase 1's legacy-only renderer boundary, Phase 2's regional arenas, Phase 3 complete
+in source (the measured draw-call gate and, since 0.3.53, the visible multi-draw behind
+`.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
+and **Phase 4 built through shadow classification** (0.3.60-0.3.65): a private depth pyramid,
+a conservative projection and test, GPU classification, and a comparison against the delayed
+occlusion queries. Nothing in Phase 4 can affect drawing; its cost gate passes and its
+correctness gate is open.
+
+The indirect shader variant **does compile on the owner's hardware** - the 2026-08-22 client
+log shows `lodterrainindirect` loading cleanly on the reload that carries mod assets. The
+errors earlier in that log are the mod's own pre-asset first attempt and are expected (G68,
+fixed in 0.3.59). Whether `.vhindirect on` was ever actually enabled is not established;
+`.vhgpu on` alone draws nothing differently.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 

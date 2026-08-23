@@ -121,6 +121,14 @@ public class MeshResult
     public int[]? WaterIndices;
     public int WaterVertexCount;
     public int WaterIndexCount;
+
+    /// <summary>
+    /// How tall the emitted geometry actually is, per pass. Derived in RAM from work the
+    /// mesher already does, so it costs no cache blob, protocol or schema change and an
+    /// old cache produces it on load like any other. See <see cref="LodHeightSpan"/>.
+    /// </summary>
+    public LodSectionHeights Heights;
+
     public long ReadyAtMilliseconds;
 
     /// <summary>

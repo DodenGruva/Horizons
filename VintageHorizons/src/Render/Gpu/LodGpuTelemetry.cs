@@ -160,6 +160,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     readonly Action<string> warn;
     readonly LodGpuTimerRing opaqueTimer;
     readonly LodGpuTimerRing waterTimer;
+    readonly LodGpuTimerRing hzbTimer;
     bool probeAttempted;
     bool timingFailureReported;
 
@@ -174,9 +175,19 @@ internal sealed class LodGpuTelemetry : IDisposable
     public LodGpuPathDecision Decision { get; private set; }
     public LodPhaseCost OpaqueCost;
     public LodPhaseCost WaterCost;
-    public int PendingResults => opaqueTimer.PendingCount + waterTimer.PendingCount;
-    public int UnavailableSlots => opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots;
-    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy;
+
+    /// <summary>
+    /// GPU time to copy the depth buffer and reduce the whole pyramid. This is the number
+    /// Phase 4's gate is written against: the pyramid has to cost less than the drawing it
+    /// removes, and CPU time cannot answer that because none of the work is on the CPU.
+    /// </summary>
+    public LodPhaseCost HzbGpuCost;
+
+    public int PendingResults =>
+        opaqueTimer.PendingCount + waterTimer.PendingCount + hzbTimer.PendingCount;
+    public int UnavailableSlots =>
+        opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots;
+    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy;
 
     public LodGpuTelemetry(
         bool timingRequested,
@@ -192,6 +203,7 @@ internal sealed class LodGpuTelemetry : IDisposable
         timerApi ??= new LodOpenGlTimerApi();
         opaqueTimer = new LodGpuTimerRing(timerApi);
         waterTimer = new LodGpuTimerRing(timerApi);
+        hzbTimer = new LodGpuTimerRing(timerApi);
     }
 
     /// <summary>
@@ -215,6 +227,7 @@ internal sealed class LodGpuTelemetry : IDisposable
         {
             opaqueTimer.Poll(ref OpaqueCost);
             waterTimer.Poll(ref WaterCost);
+            hzbTimer.Poll(ref HzbGpuCost);
         }
         catch (Exception e)
         {
@@ -226,13 +239,17 @@ internal sealed class LodGpuTelemetry : IDisposable
     public void EndOpaque() => End(opaqueTimer);
     public bool BeginWater() => Begin(waterTimer);
     public void EndWater() => End(waterTimer);
+    public bool BeginHzb() => Begin(hzbTimer);
+    public void EndHzb() => End(hzbTimer);
 
     public void ResetInterval()
     {
         OpaqueCost.Reset();
         WaterCost.Reset();
+        HzbGpuCost.Reset();
         opaqueTimer.ResetInterval();
         waterTimer.ResetInterval();
+        hzbTimer.ResetInterval();
     }
 
     void ProbeAndReport()
@@ -327,6 +344,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     {
         opaqueTimer.Dispose();
         waterTimer.Dispose();
+        hzbTimer.Dispose();
         TimingActive = false;
     }
 }

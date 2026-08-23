@@ -159,6 +159,9 @@ public class LodTerrainRenderer : IRenderer
     public bool GpuTimingActive => gpuTelemetry.TimingActive;
     public bool GpuTimingRequested => gpuTelemetry.TimingRequested;
     public LodPhaseCost GpuOpaqueCost => gpuTelemetry.OpaqueCost;
+
+    /// <summary>GPU time to copy the depth buffer and reduce every pyramid level.</summary>
+    public LodPhaseCost GpuHzbCost => gpuTelemetry.HzbGpuCost;
     public LodPhaseCost GpuWaterCost => gpuTelemetry.WaterCost;
     public int GpuTimerPendingResults => gpuTelemetry.PendingResults;
     public int GpuTimerUnavailableSlots => gpuTelemetry.UnavailableSlots;
@@ -308,6 +311,15 @@ public class LodTerrainRenderer : IRenderer
     /// compatibility fallback.
     /// </summary>
     public bool OpaqueBackfaceCulling { get; set; } = true;
+
+    /// <summary>
+    /// Cull each section with the vertical extent of its own mesh rather than a
+    /// bedrock-to-sky box. Sections never recorded how tall the terrain inside them was,
+    /// so looking up or down kept every section the side planes did not reject. The gate
+    /// is one-sided - a bound that is too tight deletes terrain a player can see - so
+    /// `.vhheight off` restores the full-height box for an immediate same-view comparison.
+    /// </summary>
+    public bool SectionHeightCulling { get; set; } = true;
 
     /// <summary>
     /// Submit opaque cached sections nearest-first so mountain depth can reject farther
@@ -492,6 +504,19 @@ public class LodTerrainRenderer : IRenderer
         CoarseWaitingSchedule = 0;
         CoarseWaitingOther = 0;
         SeamRepairsQueued = 0;
+        VerticalCulledSections = 0;
+        VerticalCulledMax = 0;
+        HzbCost.Reset();
+        depthPyramid?.ResetInterval();
+        hzbClassifier?.ResetInterval();
+        HzbHiddenButQuerySawIt = 0;
+        HzbMissedWhatQueryHid = 0;
+        HzbVerdictsChecked = 0;
+        HzbHiddenBeyondQueries = 0;
+        HzbAgreedHidden = 0;
+        HzbVerdictsAcrossViewChange = 0;
+        hzbLastVerdict.Clear();
+        sectionHeightStats.Reset();
         readiness?.ResetTelemetry();
         readinessMask?.ResetTelemetry();
     }
@@ -501,7 +526,8 @@ public class LodTerrainRenderer : IRenderer
     readonly Dictionary<long, LodLiveMeshStats> liveMeshStats = new();
 
     readonly record struct LodLiveMeshStats(
-        int OpaqueVertices, int OpaqueIndices, int WaterVertices, int WaterIndices)
+        int OpaqueVertices, int OpaqueIndices, int WaterVertices, int WaterIndices,
+        LodSectionHeights Heights)
     {
         public long Bytes => OpaqueVertices * 16L + OpaqueIndices * sizeof(int)
             + WaterVertices * 16L + WaterIndices * sizeof(int);
@@ -616,6 +642,48 @@ public class LodTerrainRenderer : IRenderer
     IShaderProgram? indirectProg;
     bool shaderOk;
     bool indirectShaderOk;
+    bool reportedIndirectShaderOk;
+    IShaderProgram? hzbProg;
+    bool hzbShaderOk;
+
+    /// <summary>
+    /// Build the private depth pyramid each frame. Phase 4 shadow work: it copies, reduces
+    /// and times itself, and decides nothing. Off by default because it costs GPU time for
+    /// no picture change, and because its cost against the drawing it could remove is
+    /// exactly what has to be measured before anything is allowed to act on it.
+    /// `.vhhzb on` turns it on for a session.
+    /// </summary>
+    public bool DepthPyramidEnabled
+    {
+        get => depthPyramidEnabled;
+        set
+        {
+            // Switching it on restarts the counts. Otherwise the first reading a person
+            // takes is diluted by however long the interval had already been running with
+            // the feature off, and reads as a much smaller hidden share than it is.
+            if (value && !depthPyramidEnabled) ResetDepthPyramidCounters();
+            depthPyramidEnabled = value;
+        }
+    }
+
+    bool depthPyramidEnabled;
+
+    void ResetDepthPyramidCounters()
+    {
+        HzbCost.Reset();
+        depthPyramid?.ResetInterval();
+        hzbClassifier?.ResetInterval();
+        HzbHiddenButQuerySawIt = 0;
+        HzbMissedWhatQueryHid = 0;
+        HzbVerdictsChecked = 0;
+        hzbLastVerdict.Clear();
+    }
+
+    LodGpuDepthPyramid? depthPyramid;
+
+    /// <summary>CPU time spent asking for the pyramid, separate from the GPU time it takes.</summary>
+    public LodPhaseCost HzbCost;
+    internal LodHzbBuildResult LastHzbBuild { get; private set; }
 
     /// <summary>Owns the vertex array and the per-frame command and record buffers.</summary>
     LodGpuIndirectDrawer? indirectDrawer;
@@ -680,6 +748,9 @@ public class LodTerrainRenderer : IRenderer
 
     readonly LodFrustum frustum = new();
     int worldHeight = 1024;
+
+    /// <summary>Blocks from bedrock to build limit, as the block accessor reports it.</summary>
+    public int WorldHeight => worldHeight;
 
 
     /// <summary>
@@ -797,8 +868,26 @@ public class LodTerrainRenderer : IRenderer
             engineEvent: true);
     }
 
+    /// <summary>
+    /// How many times shaders have been asked for. The first ask is ours, from mod start,
+    /// and it happens BEFORE the engine has filled its shader-include table from mod
+    /// assets - so it always fails to splice, always fails to compile, and used to log two
+    /// errors saying cached terrain would not draw. The engine then fires ReloadShader
+    /// ("Reloaded shaders now with mod assets") and the second attempt succeeds.
+    ///
+    /// That noise is worse than useless: it is indistinguishable from the genuine failure
+    /// it was written to report, and a session that read it concluded the indirect variant
+    /// does not compile on hardware when in fact it does. The first attempt is therefore
+    /// provisional - it says what it is waiting for, at notification level - and every
+    /// later attempt reports at full volume.
+    /// </summary>
+    int shaderLoadAttempts;
+
+    bool ShaderLoadIsProvisional => shaderLoadAttempts <= 1;
+
     public bool LoadShader()
     {
+        shaderLoadAttempts++;
         prog = capi.Shader.NewShaderProgram();
         prog.AssetDomain = "vintagehorizons";
 
@@ -819,7 +908,8 @@ public class LodTerrainRenderer : IRenderer
         uploadedIndirectTintVersion = -1;
         WarnIfIncludeMissing(prog, "lodterrain");
         shaderOk = prog.Compile();
-        if (!shaderOk) capi.Logger.Error("[VintageHorizons] lodterrain shader failed to compile; LOD rendering disabled");
+        if (!shaderOk && !ShaderLoadIsProvisional)
+            capi.Logger.Error("[VintageHorizons] lodterrain shader failed to compile; LOD rendering disabled");
 
         // The indirect variant. Its .vsh and .fsh are three lines each: a version, a
         // define, and an include of the same body this program compiled. A driver that
@@ -831,11 +921,38 @@ public class LodTerrainRenderer : IRenderer
         indirectProg.FragmentShader = capi.Shader.NewShader(EnumShaderType.FragmentShader);
         capi.Shader.RegisterFileShaderProgram("lodterrainindirect", indirectProg);
         WarnIfIncludeMissing(indirectProg, "lodterrainindirect");
+        // The depth-pyramid reduction. It shares nothing with the terrain shaders - no
+        // include, no tint constant, no vertex format - because it draws one attributeless
+        // triangle and writes depth. A driver that refuses it costs the pyramid and
+        // nothing else, and the established renderer never learns it existed.
+        hzbProg = capi.Shader.NewShaderProgram();
+        hzbProg.AssetDomain = "vintagehorizons";
+        hzbProg.VertexShader = capi.Shader.NewShader(EnumShaderType.VertexShader);
+        hzbProg.FragmentShader = capi.Shader.NewShader(EnumShaderType.FragmentShader);
+        capi.Shader.RegisterFileShaderProgram("hzbreduce", hzbProg);
+        hzbShaderOk = hzbProg.Compile();
+        if (!hzbShaderOk && !ShaderLoadIsProvisional)
+            capi.Logger.Warning(
+                "[VintageHorizons] the hzbreduce shader failed to compile; depth-pyramid "
+                + "occlusion is unavailable and nothing else changes");
+
         indirectShaderOk = indirectProg.Compile();
-        if (!indirectShaderOk)
+        if (!indirectShaderOk && !ShaderLoadIsProvisional)
             capi.Logger.Warning(
                 "[VintageHorizons] the indirect lodterrain variant failed to compile; "
                 + "cached terrain keeps drawing through the established path");
+
+        // Said once, when it actually worked, so the log carries positive evidence rather
+        // than only the absence of a complaint. This line is the answer to "does the
+        // indirect variant compile on this driver at all".
+        if (indirectShaderOk && !reportedIndirectShaderOk)
+        {
+            reportedIndirectShaderOk = true;
+            capi.Logger.Notification(
+                "[VintageHorizons] the indirect lodterrain variant compiled after {0} "
+                + "attempt(s); batched drawing is available behind .vhgpu on and .vhindirect on",
+                shaderLoadAttempts);
+        }
 
         return shaderOk;
     }
@@ -857,6 +974,18 @@ public class LodTerrainRenderer : IRenderer
         bool spliced = vertex != null && vertex.Contains("TINT_SLOTS", StringComparison.Ordinal)
             && fragment != null && fragment.Contains("TINT_SLOTS", StringComparison.Ordinal);
         if (spliced) return;
+
+        // The first ask runs before the engine has read mod assets, so a missing body
+        // there is the expected order of events rather than a fault. Saying so is still
+        // worth one line: if the reload never arrives, this is the only trace of why.
+        if (ShaderLoadIsProvisional)
+        {
+            capi.Logger.Notification(
+                "[VintageHorizons] {0}: the engine has not registered mod shader includes "
+                + "yet. The reload that follows mod asset loading is the one that matters.",
+                name);
+            return;
+        }
 
         capi.Logger.Error(
             "[VintageHorizons] the {0} shader body was not spliced in: the engine did not "
@@ -1349,7 +1478,8 @@ public class LodTerrainRenderer : IRenderer
                 result.AssumedCoveredSides,
                 // Borrowed for the call only. The shadow arenas copy what they need before
                 // this returns; nothing may retain the mesher's arrays.
-                new LodRenderGeometry(result.Xyz, result.Rgba, result.Indices));
+                new LodRenderGeometry(result.Xyz, result.Rgba, result.Indices),
+                result.Heights);
         }
 
         MeshUploadItems += uploadBudget.Items;
@@ -1411,10 +1541,12 @@ public class LodTerrainRenderer : IRenderer
             Math.Max(0, publication.OpaqueVertices),
             Math.Max(0, publication.OpaqueIndices),
             Math.Max(0, publication.WaterVertices),
-            Math.Max(0, publication.WaterIndices));
+            Math.Max(0, publication.WaterIndices),
+            publication.Heights);
         if (stats.OpaqueIndices == 0 && stats.WaterIndices == 0) return;
 
         liveMeshStats[key] = stats;
+        NoteSectionHeights(stats.Heights);
         LiveOpaqueVertices += stats.OpaqueVertices;
         LiveOpaqueIndices += stats.OpaqueIndices;
         LiveWaterVertices += stats.WaterVertices;
@@ -2506,8 +2638,20 @@ public class LodTerrainRenderer : IRenderer
             camPos.X, camPos.Y, camPos.Z);
         ResolveTemporalOcclusionQueries();
         PrepareTemporalOcclusionQueries();
+
+        // Here, and not later, because "after vanilla terrain" is what makes the depth
+        // buffer worth copying: this renderer runs in the opaque stage after the engine has
+        // drawn its own world, so what sits in the depth attachment right now is exactly
+        // the set of near occluders a distant section would have to be behind. Copied
+        // before we draw a single cached section, so cached terrain cannot occlude itself
+        // by accident - that is Phase 6 and it is a separate decision.
+        BuildDepthPyramid();
+        hzbBoxes.Clear();
+        hzbCollecting = DepthPyramidEnabled;
+
         traversalCulledThisFrame = 0;
         culledThisFrame = 0;
+        verticalCulledThisFrame = 0;
         LastTemporalOcclusionDrawsSkipped = 0;
         LastTemporalOcclusionSeamDraws = 0;
         LastTemporalOcclusionEdgeDraws = 0;
@@ -2521,6 +2665,7 @@ public class LodTerrainRenderer : IRenderer
         if (drawList.Count == 0)
         {
             LastCulledCount = 0;
+            LastVerticalCulledCount = 0;
             return;
         }
 
@@ -2564,6 +2709,16 @@ public class LodTerrainRenderer : IRenderer
         // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
         // and a plant mat has no opposite face to take over when the camera is underneath.
         renderPaths.DrawWater();
+
+        hzbCollecting = false;
+        ClassifyAgainstDepthPyramid();
+
+        // Both passes cull, so this is summed after the second one rather than beside
+        // LastCulledCount, which is deliberately opaque-only.
+        LastVerticalCulledCount = verticalCulledThisFrame;
+        VerticalCulledSections += verticalCulledThisFrame;
+        if (verticalCulledThisFrame > VerticalCulledMax)
+            VerticalCulledMax = verticalCulledThisFrame;
 
         // Submission only. RenderMesh queues work for the GPU and returns, so this
         // measures the CPU cost of the draw loop -- the uniform uploads, the culling and
@@ -2995,7 +3150,7 @@ public class LodTerrainRenderer : IRenderer
             {
                 if (!waterMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
                 if (SkipVanillaOwnedSection(key)) continue;
-                if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
+                if (!SetupSectionTransform(key, renderCullDistanceSquared, waterPass: true)) continue;
                 SubmitWaterMesh(key, mesh);
             }
         }
@@ -3426,7 +3581,7 @@ public class LodTerrainRenderer : IRenderer
         catch { /* eviction must not fail over an optional driver object */ }
     }
 
-    bool SetupSectionTransform(long key, float cullDistSq)
+    bool SetupSectionTransform(long key, float cullDistSq, bool waterPass = false)
     {
         int footprint = LodWorld.KeyFootprintBlocks(key);
         double originX = LodWorld.KeySx(key) * (double)footprint;
@@ -3436,15 +3591,53 @@ public class LodTerrainRenderer : IRenderer
         double dz = originZ + footprint / 2.0 - camPos.Z;
         if (dx * dx + dz * dz > cullDistSq) return false;
 
-        // Camera-relative box, matching the model matrix below. Y spans the whole
-        // world: sections don't track their vertical extent, and the wins that matter
-        // (sections behind or beside the camera) come from the side planes anyway.
+        // Camera-relative box, matching the model matrix below. The Y range is the mesh's
+        // own, from the pass being drawn: opaque and water are submitted separately and a
+        // shoreline's water surface sits nowhere near the seabed under it. A section whose
+        // bounds are unknown - anything published without them - keeps the old
+        // bedrock-to-sky box, so a missing measurement can only ever draw too much.
         double relX = originX - camPos.X;
         double relZ = originZ - camPos.Z;
-        if (!frustum.BoxInView(relX, -camPos.Y, relZ, relX + footprint, worldHeight - camPos.Y, relZ + footprint))
+        double boxMinY = -camPos.Y;
+        double boxMaxY = worldHeight - camPos.Y;
+        LodHeightSpan span = SectionSpan(key, waterPass);
+        if (span.HasGeometry)
+        {
+            boxMinY = span.MinY - camPos.Y;
+            boxMaxY = span.MaxY - camPos.Y;
+        }
+
+        if (!frustum.BoxInView(relX, boxMinY, relZ, relX + footprint, boxMaxY, relZ + footprint))
         {
             culledThisFrame++;
+
+            // Only for sections the real box rejected: how many of them the old
+            // full-height box would have kept. That figure is the whole justification for
+            // this work, and inferring it from a frame rate is not available.
+            if (span.HasGeometry
+                && frustum.BoxInView(relX, -camPos.Y, relZ,
+                    relX + footprint, worldHeight - camPos.Y, relZ + footprint))
+            {
+                verticalCulledThisFrame++;
+            }
             return false;
+        }
+
+        // Recorded once the section has survived every cheaper rejection - distance and
+        // frustum - so the population is exactly the sections this renderer would draw.
+        // Collected before the ownership skip and the occlusion skip further down, because
+        // the question being measured is what DEPTH alone would remove, and mixing in
+        // sections another rule already dropped would flatter the answer.
+        //
+        // Opaque only: the water pass walks a subset of the same sections and would count
+        // them twice, and water is not an occluder.
+        if (hzbCollecting && !waterPass)
+        {
+            hzbBoxes.Add(new LodHzbSectionBox(
+                key,
+                (float)relX, (float)boxMinY, (float)relZ,
+                (float)(relX + footprint), (float)boxMaxY, (float)(relZ + footprint),
+                (float)Math.Sqrt(dx * dx + dz * dz)));
         }
 
         // Sides that border on never-captured area, so the shader can dissolve them
@@ -3544,6 +3737,479 @@ public class LodTerrainRenderer : IRenderer
 
     int culledThisFrame;
     int traversalCulledThisFrame;
+    int verticalCulledThisFrame;
+
+    /// <summary>
+    /// Sections rejected this interval by the mesh's own height that the old
+    /// bedrock-to-sky box would have kept, summed over frames, and the worst single frame.
+    /// This is the established renderer's share of Phase 3b, and it is a saving whether or
+    /// not the GPU fast path is ever adopted.
+    /// </summary>
+    public long VerticalCulledSections { get; private set; }
+    public int VerticalCulledMax { get; private set; }
+    public int LastVerticalCulledCount { get; private set; }
+
+    public LodSectionHeightStats SectionHeights => sectionHeightStats;
+    readonly LodSectionHeightStats sectionHeightStats = new();
+
+    void NoteSectionHeights(LodSectionHeights heights) =>
+        sectionHeightStats.Add(heights.Either);
+
+    /// <summary>
+    /// The vertical extent of the geometry this pass would draw for the section, or an
+    /// empty span when nothing recorded it. Read from the live mesh record the publication
+    /// already maintains, so no second dictionary has to be kept in step with residency.
+    /// </summary>
+    /// <summary>
+    /// Copies this frame's depth and reduces it into the pyramid. Nothing reads the result
+    /// yet: this phase exists to establish what the pyramid COSTS, because Phase 4's gate is
+    /// that copy and build time stay under the drawing they could remove, and no amount of
+    /// source reading answers that.
+    ///
+    /// Failure is not an error state. A frame that could not build one simply has no
+    /// pyramid, and a later phase with no pyramid must draw everything - the same direction
+    /// every other fallback in this renderer fails in.
+    /// </summary>
+    void BuildDepthPyramid()
+    {
+        if (!DepthPyramidEnabled || !hzbShaderOk) return;
+
+        LodPhaseStart phase = LodPhaseCost.Start(TrackPhaseAllocations);
+        bool timing = false;
+        try
+        {
+            depthPyramid ??= new LodGpuDepthPyramid(capi, () => hzbShaderOk ? hzbProg : null);
+
+            // Probed per frame rather than cached: the engine is free to change which
+            // framebuffer it draws into, and a pyramid copied out of last frame's
+            // attachment would be wrong in exactly the way nobody would notice.
+            LodGpuDepthFacts depth = LodGpuCapabilities.ProbeActiveDepth();
+
+            timing = gpuTelemetry.BeginHzb();
+            LastHzbBuild = depthPyramid.Build(depth);
+
+            if (!LastHzbBuild.Built && !reportedHzbFailure)
+            {
+                reportedHzbFailure = true;
+                capi.Logger.Warning(
+                    "[VintageHorizons] the depth pyramid could not be built and nothing "
+                    + "depends on it yet: {0}", LastHzbBuild.FailureReason);
+            }
+            else if (LastHzbBuild.Built && !reportedHzbBuilt)
+            {
+                reportedHzbBuilt = true;
+                capi.Logger.Notification(
+                    "[VintageHorizons] depth pyramid built: {0}x{1}, {2} levels. Nothing is "
+                    + "hidden by it; this phase measures what it costs.",
+                    LastHzbBuild.Width, LastHzbBuild.Height, LastHzbBuild.Levels);
+            }
+        }
+        catch (Exception e)
+        {
+            DepthPyramidEnabled = false;
+            capi.Logger.Warning(
+                "[VintageHorizons] depth pyramid disabled for this session; rendering is "
+                + "unchanged: {0}", e.Message);
+        }
+        finally
+        {
+            if (timing) gpuTelemetry.EndHzb();
+            HzbCost.Add(phase);
+        }
+    }
+
+    bool reportedHzbFailure;
+    bool reportedHzbBuilt;
+    bool reportedHzbClassifier;
+
+    LodHzbClassifier? hzbClassifier;
+    Action<long, uint>? hzbVerdictObserver;
+    long hzbDispatchEpoch = -1;
+    long hzbVerdictEpoch = -1;
+    bool hzbCollecting;
+
+    /// <summary>
+    /// Sections the pyramid called hidden that a completed occlusion query had positively
+    /// SEEN. This is the number Phase 4's correctness gate is about, and it must be zero:
+    /// every one of these is terrain a player could see that a depth test would have
+    /// deleted. Counted rather than trusted, because the shader cannot be reasoned into
+    /// being right about this and the symptom - terrain missing in some views - is exactly
+    /// what this renderer has already lost sessions to.
+    /// </summary>
+    public long HzbHiddenButQuerySawIt { get; private set; }
+
+    /// <summary>
+    /// The safe disagreement: the query proved it hidden and the pyramid did not. Nothing
+    /// is wrong with these, and their count is the honest measure of how much the pyramid
+    /// is leaving on the table against a test that observes real pixels.
+    /// </summary>
+    public long HzbMissedWhatQueryHid { get; private set; }
+
+    /// <summary>Verdicts that could be checked against a current query result at all.</summary>
+    public long HzbVerdictsChecked { get; private set; }
+
+    /// <summary>
+    /// Sections the pyramid hid that the existing delayed occlusion had no opinion on.
+    /// THIS is the phase's real prize: the renderer already skips much of what the pyramid
+    /// finds, so an overall hidden percentage flatters it badly. What is genuinely new is
+    /// only what nothing else had measured.
+    /// </summary>
+    public long HzbHiddenBeyondQueries { get; private set; }
+
+    /// <summary>Both agreed it was hidden - correct, but not a new saving.</summary>
+    public long HzbAgreedHidden { get; private set; }
+
+    /// <summary>Comparisons refused because the two answers came from different views.</summary>
+    public long HzbVerdictsAcrossViewChange { get; private set; }
+
+    /// <summary>
+    /// Checks one verdict against the delayed occlusion query for the same section.
+    ///
+    /// Only current, completed query results count as evidence. A query that is still
+    /// pending, or whose answer was thrown away by a view change or a mesh replacement,
+    /// says nothing - and treating its silence as "visible" would invent disagreements
+    /// that are really just missing data.
+    /// </summary>
+    // Last verdict per section, kept only so a person can ask about one. Cleared with the
+    // interval, so it can never grow past the sections a single reporting window touched.
+    readonly Dictionary<long, uint> hzbLastVerdict = new();
+
+    void ObserveHzbVerdict(long key, uint verdict)
+    {
+        hzbLastVerdict[key] = verdict;
+
+        if (!temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query)) return;
+
+        // Both answers have to describe the same view. A verdict computed one frame ago
+        // says nothing about a query answered after the camera moved, and comparing them
+        // across a turn is what produced every unsafe-looking disagreement so far.
+        if (hzbVerdictEpoch != temporalOcclusionEpoch)
+        {
+            HzbVerdictsAcrossViewChange++;
+            return;
+        }
+
+        bool queryKnowsVisible = query.State.KnownVisible;
+        bool queryKnowsHidden = query.State.Occluded;
+        if (!queryKnowsVisible && !queryKnowsHidden)
+        {
+            // No query opinion at all. This is where the pyramid earns its keep over the
+            // existing delayed occlusion: a section it can hide that nothing has measured
+            // yet is a saving the current renderer does not already have.
+            if (verdict == LodHzbClassifier.VerdictOccluded) HzbHiddenBeyondQueries++;
+            return;
+        }
+
+        HzbVerdictsChecked++;
+
+        if (verdict == LodHzbClassifier.VerdictOccluded && queryKnowsVisible)
+        {
+            HzbHiddenButQuerySawIt++;
+            return;
+        }
+        if (verdict == LodHzbClassifier.VerdictOccluded && queryKnowsHidden)
+        {
+            HzbAgreedHidden++;
+            return;
+        }
+        if (verdict != LodHzbClassifier.VerdictOccluded && queryKnowsHidden)
+        {
+            HzbMissedWhatQueryHid++;
+        }
+    }
+    readonly List<LodHzbSectionBox> hzbBoxes = new(1024);
+    readonly float[] hzbViewProjection = new float[16];
+
+    /// <summary>Shadow-mode verdicts for the interval. Nothing drawn depends on them.</summary>
+    internal LodHzbVerdicts HzbVerdicts => hzbClassifier?.Interval ?? default;
+
+    /// <summary>
+    /// Hands this frame's section boxes to the card and collects last frame's verdicts.
+    ///
+    /// Runs after the opaque walk, so the boxes are the ones the renderer actually decided
+    /// on rather than a second walk's reconstruction of them, and after the pyramid exists.
+    /// The verdicts are counted and nothing else: the established path has already drawn
+    /// every one of these sections by the time the answer arrives.
+    /// </summary>
+    void ClassifyAgainstDepthPyramid()
+    {
+        if (!DepthPyramidEnabled || depthPyramid == null || !depthPyramid.Allocated) return;
+        if (!LastHzbBuild.Built) return;
+
+        LodPhaseStart phase = LodPhaseCost.Start(TrackPhaseAllocations);
+        try
+        {
+            if (hzbClassifier == null)
+            {
+                hzbClassifier = new LodHzbClassifier(
+                    message => capi.Logger.Warning("{0}", message));
+                hzbVerdictObserver ??= ObserveHzbVerdict;
+                hzbClassifier.VerdictObserver = hzbVerdictObserver;
+            }
+
+            if (!hzbClassifier.Available && !hzbClassifier.TryCreate())
+            {
+                if (!reportedHzbClassifier)
+                {
+                    reportedHzbClassifier = true;
+                    capi.Logger.Warning(
+                        "[VintageHorizons] depth-pyramid classification is unavailable and "
+                        + "nothing that draws depends on it: {0}", hzbClassifier.LastFailure);
+                }
+                return;
+            }
+
+            if (!reportedHzbClassifier)
+            {
+                reportedHzbClassifier = true;
+                capi.Logger.Notification(
+                    "[VintageHorizons] depth-pyramid classification running in shadow: it "
+                    + "counts what a depth test would hide and hides nothing.");
+            }
+
+            // The epoch these boxes were projected under. Verdicts arrive a frame later and
+            // are compared against occlusion queries whose answers carry their own epoch;
+            // without this the two can be from different views, and a camera turn between
+            // them manufactures disagreements that are really just a mismatch. Measured:
+            // zero unsafe disagreements over 2.9 million stationary checks, then 46 the
+            // moment the camera turned.
+            // The batch about to be READ was dispatched under the previous epoch; the one
+            // about to be dispatched belongs to this one. Swapped in that order because
+            // Classify reads before it dispatches.
+            hzbVerdictEpoch = hzbDispatchEpoch;
+            hzbDispatchEpoch = temporalOcclusionEpoch;
+            frustum.CopyViewProjection(hzbViewProjection);
+            hzbClassifier.Classify(
+                hzbBoxes,
+                hzbViewProjection,
+                depthPyramid.TextureName,
+                depthPyramid.Width,
+                depthPyramid.Height,
+                depthPyramid.Levels);
+        }
+        catch (Exception e)
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] depth-pyramid classification stopped; rendering is "
+                + "unchanged: {0}", e.Message);
+            hzbClassifier?.Dispose();
+            hzbClassifier = null;
+        }
+        finally
+        {
+            HzbCost.Add(phase);
+        }
+    }
+
+
+    /// <summary>
+    /// Look at a piece of distant terrain and ask why the depth test did or did not hide
+    /// it.
+    ///
+    /// The counters say how often something happens; this says why it happened HERE, which
+    /// is the only form a person can check against what is on their screen. It reports the
+    /// card's verdict beside the CPU's own projection of the same box - and because the two
+    /// implement the same rules, the CPU half can name the specific reason the card could
+    /// only encode as a number.
+    /// </summary>
+    public string ExplainDepthPyramid(double startX, double startY, double startZ,
+        float lookX, float lookY, float lookZ, int maxBlocks)
+    {
+        if (!hzbShaderOk) return "the hzbreduce shader is not available, so no pyramid exists";
+        if (!DepthPyramidEnabled) return "the depth pyramid is off. Turn it on with .vhhzb on";
+        if (depthPyramid == null || !depthPyramid.Allocated) return "no pyramid has been built yet";
+
+        long key = 0;
+        bool found = false;
+        double hitDistance = 0;
+
+        for (int distance = 32; distance <= maxBlocks && !found; distance += 32)
+        {
+            double x = startX + lookX * distance;
+            double y = startY + lookY * distance;
+            double z = startZ + lookZ * distance;
+            if (y < 0 || y >= worldHeight) break;
+
+            // Finest first. A point sits inside sections at every level at once, and the
+            // one being drawn there is the finest that holds a mesh - coarser parents exist
+            // over the same ground and stop being drawn once their children are ready.
+            // Searching coarsest-first reported a 2048-block L5 section 32 blocks away,
+            // which was simply the largest box containing the camera and told nobody
+            // anything about what they were looking at.
+            for (int level = 0; level <= LodWorld.MaxLevel && !found; level++)
+            {
+                int footprint = LodSection.SectionBlocks << level;
+                long candidate = LodWorld.SectionKey(
+                    level, (int)Math.Floor(x / footprint), (int)Math.Floor(z / footprint));
+                if (!liveMeshStats.ContainsKey(candidate)) continue;
+
+                // Never the section the camera is standing in: its box encloses the near
+                // plane, so the only thing it can ever report is that the test declined.
+                double sectionOriginX = LodWorld.KeySx(candidate) * (double)footprint;
+                double sectionOriginZ = LodWorld.KeySz(candidate) * (double)footprint;
+                if (camPos.X >= sectionOriginX && camPos.X < sectionOriginX + footprint
+                    && camPos.Z >= sectionOriginZ && camPos.Z < sectionOriginZ + footprint)
+                {
+                    continue;
+                }
+
+                key = candidate;
+                hitDistance = distance;
+                found = true;
+            }
+        }
+
+        if (!found)
+            return $"nothing cached is drawn along that line within {maxBlocks} blocks";
+
+        int size = LodWorld.KeyFootprintBlocks(key);
+        double originX = LodWorld.KeySx(key) * (double)size;
+        double originZ = LodWorld.KeySz(key) * (double)size;
+        double relX = originX - camPos.X;
+        double relZ = originZ - camPos.Z;
+
+        LodHeightSpan span = SectionSpan(key, waterPass: false);
+        double boxMinY = span.HasGeometry ? span.MinY - camPos.Y : -camPos.Y;
+        double boxMaxY = span.HasGeometry ? span.MaxY - camPos.Y : worldHeight - camPos.Y;
+
+        frustum.CopyViewProjection(hzbViewProjection);
+        LodHzbScreenBounds bounds = LodHzbProjection.Project(
+            hzbViewProjection, relX, boxMinY, relZ, relX + size, boxMaxY, relZ + size);
+
+        var report = new System.Text.StringBuilder();
+        report.Append($"L{LodWorld.KeyLevel(key)} section at {originX:0},{originZ:0}, ");
+        report.Append($"{size} blocks across, about {hitDistance:0} blocks away. ");
+        report.Append(span.HasGeometry
+            ? $"Its terrain runs from y={span.MinY:0} to y={span.MaxY:0} ({span.Height:0} tall). "
+            : "It has no recorded height, so it is bounded bedrock to sky. ");
+
+        if (!bounds.Usable)
+        {
+            report.Append($"The test declined to judge it: {bounds.Reason}. ");
+            report.Append("That always means draw it.");
+            return report.ToString();
+        }
+
+        int levelUsed = LodHzbProjection.LevelFor(
+            bounds.WidthPixels(depthPyramid.Width),
+            bounds.HeightPixels(depthPyramid.Height),
+            depthPyramid.Levels);
+        report.Append($"On screen it covers about {bounds.WidthPixels(depthPyramid.Width):0} by ");
+        report.Append($"{bounds.HeightPixels(depthPyramid.Height):0} pixels, which is read at ");
+        report.Append($"pyramid level {levelUsed} of {depthPyramid.Levels - 1}. ");
+
+        if (hzbLastVerdict.TryGetValue(key, out uint verdict))
+        {
+            report.Append(verdict switch
+            {
+                LodHzbClassifier.VerdictOccluded =>
+                    "The card found everything in front of it nearer, so a depth test would hide it. ",
+                LodHzbClassifier.VerdictBackground =>
+                    "The card refused it because its rectangle includes sky, where nothing was "
+                    + "drawn. No box overlapping open sky can ever be hidden, however buried its "
+                    + "terrain is - which is a sign the box is too big rather than that the "
+                    + "terrain is in view. ",
+                LodHzbClassifier.VerdictFailedOpen =>
+                    "The card declined to judge it and it is drawn. ",
+                _ => "The card found something behind the scene here, so it is genuinely in view. ",
+            });
+        }
+        else
+        {
+            report.Append("The card has not returned a verdict for it in this reporting window. ");
+        }
+
+        if (temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query))
+        {
+            report.Append(query.State.KnownVisible
+                ? "An occlusion query has actually seen pixels of it, so it is really visible."
+                : query.State.Occluded
+                    ? "An occlusion query found it hidden too."
+                    : "No current occlusion query result exists to check that against.");
+        }
+        else
+        {
+            report.Append("No occlusion query is tracking it.");
+        }
+
+        return report.ToString();
+    }
+
+
+    /// <summary>
+    /// The whole depth-pyramid measurement, on demand.
+    ///
+    /// It exists because the periodic report fires once, thirty seconds after joining -
+    /// which is before anyone has had a chance to turn this on, so in an ordinary session
+    /// every figure below was collected and never shown. A measurement that can only be
+    /// read by restarting with an environment variable set is not one a person will use.
+    ///
+    /// No angle brackets anywhere in here: this reaches the chat window, which parses its
+    /// text as VTML, and a leading one silently swallows the whole reply (G67).
+    /// </summary>
+    public string ReportDepthPyramid()
+    {
+        if (!hzbShaderOk) return "the hzbreduce shader is not available, so no pyramid exists";
+        if (!DepthPyramidEnabled)
+            return "depth pyramid off. Turn it on with .vhhzb on, play for a few seconds, then run .vhhzb again";
+
+        var report = new System.Text.StringBuilder();
+        report.Append("depth pyramid: ").Append(DescribeDepthPyramid());
+
+        report.AppendLine();
+        report.Append($"cost: gpu {GpuHzbCost.AvgUs:0.0}us avg / {GpuHzbCost.MaxUs:0.0}us max");
+        report.Append($" over {GpuHzbCost.Calls} timed builds");
+        report.Append($" | cpu {HzbCost.AvgUs:0.0}us avg / {HzbCost.MaxUs:0.0}us max");
+
+        string byDistance = DescribeDepthPyramidByDistance();
+        if (byDistance.Length > 0)
+        {
+            report.AppendLine();
+            report.Append("hidden by distance: ").Append(byDistance);
+        }
+
+        if (HzbVerdictsChecked > 0)
+        {
+            report.AppendLine();
+            report.Append($"against occlusion queries: {HzbVerdictsChecked} checked, ");
+            report.Append($"{HzbHiddenButQuerySawIt} called hidden that a query SAW ");
+            report.Append(HzbHiddenButQuerySawIt == 0 ? "(good, must be zero)" : "(BAD, must be zero)");
+            report.Append($", {HzbAgreedHidden} both hid");
+            report.Append($", {HzbMissedWhatQueryHid} the query hid and the pyramid did not");
+            report.AppendLine();
+            report.Append($"new saving: {HzbHiddenBeyondQueries} hidden that no query had measured");
+            report.Append(" - this is what the pyramid adds over the occlusion already running");
+            report.Append($" | {HzbVerdictsAcrossViewChange} comparisons refused across a view change");
+        }
+        else
+        {
+            report.AppendLine();
+            report.Append("against occlusion queries: nothing checked yet - no section has both ");
+            report.Append("a pyramid verdict and a current query result");
+        }
+
+        return report.ToString();
+    }
+
+    /// <summary>Hidden share per distance band; empty until something has been classified.</summary>
+    public string DescribeDepthPyramidByDistance() => hzbClassifier?.DescribeByDistance() ?? "";
+
+    /// <summary>One line for the periodic report and for `.vhhzb`.</summary>
+    public string DescribeDepthPyramid()
+    {
+        if (!hzbShaderOk) return "the hzbreduce shader is not available";
+        if (!DepthPyramidEnabled) return "off (.vhhzb on)";
+        if (depthPyramid == null) return "on, not yet built";
+        string classifier = hzbClassifier == null
+            ? "classification not started"
+            : hzbClassifier.Describe();
+        return depthPyramid.Describe() + " || " + classifier;
+    }
+
+    LodHeightSpan SectionSpan(long key, bool waterPass) =>
+        SectionHeightCulling && liveMeshStats.TryGetValue(key, out LodLiveMeshStats stats)
+            ? (waterPass ? stats.Heights.Water : stats.Heights.Opaque)
+            : LodHeightSpan.Empty;
 
     /// <summary>
     /// Whether the neighbouring section holds (or covers) data. Checked at the drawn
@@ -3603,6 +4269,10 @@ public class LodTerrainRenderer : IRenderer
         renderPaths.Dispose();
         indirectDrawer?.Dispose();
         indirectDrawer = null;
+        depthPyramid?.Dispose();
+        depthPyramid = null;
+        hzbClassifier?.Dispose();
+        hzbClassifier = null;
         gpuTelemetry.Dispose();
         // Same reason as the meshes: the mask texture is ours, and a shutdown that never
         // reaches the engine call must still not leak it.

@@ -14,6 +14,61 @@ public static class TraversalChecks
         ResidencyUsesTheColdSectionGraceBand(c);
         OpaqueSubmissionOrdersNearestFirst(c);
         TemporalOcclusionFailsTowardDrawing(c);
+        KnownVisibleIsEvidenceNotAbsenceOfEvidence(c);
+    }
+
+    /// <summary>
+    /// `KnownVisible` is the ground truth the depth pyramid is checked against, so what it
+    /// must NOT do is say yes when nothing was measured.
+    ///
+    /// The trap it exists to avoid: `!Occluded` reads as "visible" but is equally true of a
+    /// section whose answer was thrown away by a view change, a mesh replacement, or a query
+    /// that never completed. Comparing pyramid verdicts against that would manufacture
+    /// disagreements out of missing data - and since the whole point of the comparison is a
+    /// count that must stay at zero, a false alarm there is as damaging as a missed one.
+    /// </summary>
+    static void KnownVisibleIsEvidenceNotAbsenceOfEvidence(Check c)
+    {
+        var fresh = new LodTemporalOcclusionState();
+        c.False(fresh.KnownVisible, "a section nobody has measured is not known visible");
+        c.False(fresh.Occluded, "nor known hidden");
+
+        // A completed query that saw pixels is the only thing that establishes it.
+        var seen = new LodTemporalOcclusionState();
+        seen.BeginQuery(frame: 10, epoch: 1);
+        c.False(seen.KnownVisible, "a query in flight establishes nothing yet");
+        c.True(seen.CompleteQuery(anySamplesPassed: true, currentEpoch: 1), "the result lands");
+        c.True(seen.KnownVisible, "and a query that saw pixels establishes visibility");
+        c.False(seen.Occluded, "which is not hidden");
+
+        var hidden = new LodTemporalOcclusionState();
+        hidden.BeginQuery(frame: 10, epoch: 1);
+        hidden.CompleteQuery(anySamplesPassed: false, currentEpoch: 1);
+        c.True(hidden.Occluded, "a query that saw nothing establishes hidden");
+        c.False(hidden.KnownVisible, "and is not known visible");
+
+        // A result from an older view is consumed and must establish nothing at all - this
+        // is the case that would otherwise read as "visible" forever after a camera move.
+        var stale = new LodTemporalOcclusionState();
+        stale.BeginQuery(frame: 10, epoch: 1);
+        c.False(stale.CompleteQuery(anySamplesPassed: true, currentEpoch: 2), "a stale result is refused");
+        c.False(stale.KnownVisible, "and establishes nothing");
+        c.False(stale.Occluded, "in either direction");
+
+        // Invalidation throws the evidence away, not just the hidden flag.
+        var invalidated = new LodTemporalOcclusionState();
+        invalidated.BeginQuery(frame: 10, epoch: 1);
+        invalidated.CompleteQuery(anySamplesPassed: true, currentEpoch: 1);
+        c.True(invalidated.KnownVisible, "established first");
+        invalidated.Invalidate(epoch: 1);
+        c.False(invalidated.KnownVisible, "a section-local change discards the evidence");
+
+        // And so does the view moving on, which is checked lazily on the next read.
+        var moved = new LodTemporalOcclusionState();
+        moved.BeginQuery(frame: 10, epoch: 1);
+        moved.CompleteQuery(anySamplesPassed: true, currentEpoch: 1);
+        moved.ShouldDraw(frame: 11, epoch: 2, hiddenProbeIntervalFrames: 8);
+        c.False(moved.KnownVisible, "a new view epoch discards the evidence");
     }
 
     static void TemporalOcclusionFailsTowardDrawing(Check c)

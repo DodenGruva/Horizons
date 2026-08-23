@@ -33,6 +33,17 @@ public class LodFrustum
         SetPlane(5, m[3] - m[2], m[7] - m[6], m[11] - m[10], m[15] - m[14]);  // far
     }
 
+    /// <summary>
+    /// The same view-projection the planes were extracted from, for code that needs to
+    /// project a point rather than test a half-space. Copied rather than handed out, so no
+    /// caller can retain a reference into this object's per-frame state.
+    /// </summary>
+    public void CopyViewProjection(float[] destination)
+    {
+        if (destination == null || destination.Length < 16) return;
+        Array.Copy(viewProj, destination, 16);
+    }
+
     void SetPlane(int i, float a, float b, float c, float d)
     {
         float len = MathF.Sqrt(a * a + b * b + c * c);

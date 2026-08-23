@@ -23,6 +23,240 @@ public static class MesherChecks
         CoverageRules(c);
         Frontier(c);
         UnloadedNeighbourIsNotTheFrontier(c);
+        HeightBounds(c);
+        HeightSpanAlgebra(c);
+        HeightDistribution(c);
+        FrontierWallsSetTheFloor(c);
+    }
+
+    /// <summary>
+    /// Every mesh reports the vertical extent of what it emitted, and the renderer culls
+    /// with that instead of a bedrock-to-sky box. The gate is one-directional: a bound
+    /// that is too LOOSE costs a little culling, and a bound that is too TIGHT deletes
+    /// terrain the player can see. So the shape of this check is to build the mesh, read
+    /// every vertex the mesher actually emitted, and require the reported span to contain
+    /// all of them - across every face direction, both passes, and every LOD scale.
+    /// </summary>
+    static void HeightBounds(Check c)
+    {
+        // The degenerate case first: nothing emitted is not a span of zero height at y=0,
+        // which would put a box on the bedrock of a section that draws nothing.
+        MeshResult empty = LodMesher.BuildMesh(Fixtures.Job(new LodSection()));
+        c.False(empty.Heights.Opaque.HasGeometry, "an empty section reports no opaque span");
+        c.False(empty.Heights.Water.HasGeometry, "an empty section reports no water span");
+        c.False(empty.Heights.HasGeometry, "an empty section has no span at all");
+
+        // A single flat quad IS a real span, and a zero-height one. This is the case the
+        // flag exists for: a plain at y=10 must bound at 10, not read as "unknown".
+        var allFour = new SectionSnapshot?[4];
+        LodSection plain = Solid(yTop: 10, yBottom: 0);
+        for (int i = 0; i < 4; i++) allFour[i] = Fixtures.Snap(plain);
+        MeshResult surface = LodMesher.BuildMesh(Fixtures.Job(plain, 0, allFour));
+        c.Eq(1, Quads(surface.VertexCount), "the fully surrounded plain is a single quad");
+        c.True(surface.Heights.Opaque.HasGeometry, "a single flat quad still reports a span");
+        c.Eq(10f, surface.Heights.Opaque.MinY, "the flat span sits at the surface");
+        c.Eq(10f, surface.Heights.Opaque.MaxY, "a flat quad's span has no height");
+        c.Eq(0f, surface.Heights.Opaque.Height, "a flat quad's span measures zero blocks tall");
+
+        // And the point of measuring the mesh rather than the section: that plain stores
+        // ten blocks of ground and draws one plane. Bounding what is stored would give
+        // back a box eleven times too tall for the geometry inside it.
+        c.True(surface.Heights.Opaque.MinY > 0f,
+            "the span describes what is drawn, not what is stored");
+
+        // Every face direction, both passes, and coarse levels where X/Z scale but Y does
+        // not. Each case is checked against its own emitted vertices rather than against a
+        // number written here, so a change to the mesher cannot silently invalidate it.
+        AssertBoundsContainGeometry(c, Fixtures.Job(Column(yTop: 10, yBottom: 4)),
+            "an isolated run exposing all six faces");
+        AssertBoundsContainGeometry(c, Fixtures.Job(Ocean()), "an ocean over a bumpy seabed");
+        AssertBoundsContainGeometry(c, Fixtures.Job(Ocean(), 0, AllNeighbours(Ocean())),
+            "an ocean with every neighbour present");
+        AssertBoundsContainGeometry(c, Fixtures.Job(Column(LodPaletteEntry.FlagThin, yTop: 40, yBottom: 4)),
+            "a mip-merged thin mat");
+        AssertBoundsContainGeometry(c, Fixtures.Job(plain, 0, allFour), "a fully surrounded plain");
+        for (int level = 0; level <= 3; level++)
+        {
+            AssertBoundsContainGeometry(c, Fixtures.Job(Ocean(), LodWorld.SectionKey(level, 0, 0)),
+                $"an ocean section at L{level}");
+        }
+
+        // The coordinate limits: a run at the very bottom of the world and one at the top.
+        AssertBoundsContainGeometry(c, Fixtures.Job(Column(yTop: 1, yBottom: 0)),
+            "a run on the bedrock floor");
+        AssertBoundsContainGeometry(c, Fixtures.Job(Column(yTop: 0x3FFF, yBottom: 0x3FFE)),
+            "a run at the top of the world");
+
+        // Y does not scale with level, so neither may the span - a scaled bound would sink
+        // coarse terrain's box into the ground, further at every level out.
+        MeshResult l0 = LodMesher.BuildMesh(Fixtures.Job(plain, LodWorld.SectionKey(0, 0, 0)));
+        MeshResult l3 = LodMesher.BuildMesh(Fixtures.Job(plain, LodWorld.SectionKey(3, 0, 0)));
+        c.Eq(l0.Heights.Opaque.MaxY, l3.Heights.Opaque.MaxY, "the span is absolute blocks at every level");
+        c.Eq(l0.Heights.Opaque.MinY, l3.Heights.Opaque.MinY, "including its floor");
+
+        // Per pass, because the two are submitted separately. The water surface sits a
+        // hundred blocks above the seabed, and one box round both would be most of the
+        // difference this work exists to remove.
+        MeshResult sea = LodMesher.BuildMesh(Fixtures.Job(Ocean()));
+        c.True(sea.Heights.Water.MinY > sea.Heights.Opaque.MinY,
+            "the water span starts above the seabed's");
+        c.True(sea.Heights.Water.MaxY > sea.Heights.Opaque.MaxY,
+            "and reaches higher than any solid geometry in the section");
+        c.True(sea.Heights.Either.Height > sea.Heights.Opaque.Height,
+            "the combined span is taller than either pass alone");
+
+        // The thin-mat lift is drawn geometry, so the span has to include it. Bounding the
+        // stored run instead would leave the mat a quarter block outside its own box.
+        MeshResult mat = LodMesher.BuildMesh(Fixtures.Job(Column(LodPaletteEntry.FlagThin, yTop: 10, yBottom: 4)));
+        c.Eq(4.25f, mat.Heights.Water.MaxY, "the mat's span follows the quarter-block lift");
+        c.False(mat.Heights.Opaque.HasGeometry, "and contributes nothing to the opaque span");
+    }
+
+    /// <summary>
+    /// The span type's own rules. Two matter to the renderer: an unset span must read as
+    /// unknown so a missing measurement falls back to the full-height box, and a union
+    /// with an empty side must not be dragged down to zero.
+    /// </summary>
+    static void HeightSpanAlgebra(Check c)
+    {
+        c.False(default(LodHeightSpan).HasGeometry, "an unset span is unknown, not a box at y=0");
+        c.False(LodHeightSpan.Empty.HasGeometry, "and so is the named empty span");
+        c.Eq(0f, LodHeightSpan.Empty.Height, "an empty span measures nothing");
+
+        LodHeightSpan low = LodHeightSpan.Of(10f, 20f);
+        LodHeightSpan high = LodHeightSpan.Of(90f, 110f);
+        c.Eq(10f, low.Union(high).MinY, "a union takes the lower floor");
+        c.Eq(110f, low.Union(high).MaxY, "and the higher ceiling");
+        c.Eq(low, low.Union(LodHeightSpan.Empty), "an empty side contributes nothing to a union");
+        c.Eq(low, LodHeightSpan.Empty.Union(low), "in either order");
+        c.False(LodHeightSpan.Empty.Union(LodHeightSpan.Empty).HasGeometry,
+            "two empty spans stay empty");
+
+        // Inverted input is a bug in the caller, and must fail open rather than produce a
+        // box that rejects everything inside it.
+        c.False(LodHeightSpan.Of(20f, 10f).HasGeometry, "an inverted span is refused");
+        c.True(LodHeightSpan.Of(10f, 10f).HasGeometry, "a zero-height span is legitimate");
+    }
+
+    /// <summary>
+    /// The distribution reported once per interval. It exists to answer one question
+    /// before Phase 4 of the GPU plan is built: how much of the world height does an
+    /// ordinary section really occupy? If the answer is "most of it", a depth pyramid
+    /// cannot reject anything and the phase needs revisiting first.
+    /// </summary>
+    static void HeightDistribution(Check c)
+    {
+        var stats = new LodSectionHeightStats();
+        c.Eq(0L, stats.Samples, "a fresh distribution has no samples");
+
+        stats.Add(LodHeightSpan.Empty);
+        c.Eq(0L, stats.Samples, "a section that drew nothing is not a section of height zero");
+
+        stats.Add(LodHeightSpan.Of(60f, 62f));   // 2 blocks
+        stats.Add(LodHeightSpan.Of(10f, 110f));  // 100 blocks
+        c.Eq(2L, stats.Samples, "both real spans are counted");
+        c.Near(51.0, stats.MeanBlocks, 0.001, "the mean is over drawn heights");
+        c.Eq(100f, stats.MaxBlocks, "the tallest section is kept");
+        c.True(stats.Describe(256).Contains("0-4: 50%"), "the buckets are reported as shares");
+        c.False(stats.Describe(256).Contains("<"), "no bucket label opens a VTML tag in chat");
+
+        // Floor and ceiling apart, because the height alone cannot tell a genuinely tall
+        // mountain from a low surface whose bound is dragged down to bedrock, and those
+        // two want opposite responses.
+        c.Near(35.0, stats.MeanFloor, 0.001, "the mean floor is over the spans' own minima");
+        c.Near(86.0, stats.MeanCeiling, 0.001, "and the mean ceiling over their maxima");
+
+        stats.Reset();
+        c.Eq(0L, stats.Samples, "a reset distribution starts the next interval clean");
+        c.Eq(0f, stats.MaxBlocks, "including its maximum");
+    }
+
+    /// <summary>
+    /// Why a real section reads as most of the world tall, measured rather than assumed.
+    ///
+    /// The owner's 2026-08-22 log reported a mean span of 146 blocks in a 256-block world
+    /// with NOT ONE section under 64 blocks. His own reading is the start of the answer:
+    /// ground level sits near y=100 and the world continues down to bedrock, so a surface
+    /// column is one run from 0 to about 110 - the stored data really is that tall.
+    ///
+    /// But the span measures what is DRAWN, and a surface is one plane. What reaches
+    /// bedrock is the frontier wall: a section whose neighbour is missing walls its whole
+    /// edge, and that wall is as tall as the run behind it, which is the entire column.
+    /// One such edge sets the section's floor to 0 however shallow the visible ground is.
+    ///
+    /// The two cases below differ in nothing except whether the neighbours are present,
+    /// and the span goes from the full column to a single plane. That is the mechanism,
+    /// and it says the fix is not a tighter bound - the bound is honest - but that the
+    /// frontier curtain and the surface want separate boxes.
+    /// </summary>
+    static void FrontierWallsSetTheFloor(Check c)
+    {
+        // One run per column from bedrock to a surface at the owner's stated ground level.
+        var ground = new LodSection();
+        ground.FindOrAddPaletteEntry(blockId: 1, color: 0x00405060, flags: 0);
+        for (int col = 0; col < Fixtures.Total; col++)
+        {
+            ground.SetColumn(col, new[] { LodSection.PackRun(0, 110, 0) });
+        }
+
+        MeshResult frontier = LodMesher.BuildMesh(Fixtures.Job(ground));
+        MeshResult interior = LodMesher.BuildMesh(Fixtures.Job(ground, 0, AllNeighbours(ground)));
+
+        c.Eq(110f, interior.Heights.Opaque.MinY, "with neighbours, only the surface is drawn");
+        c.Eq(110f, interior.Heights.Opaque.MaxY, "so the section's box is one plane");
+        c.Eq(0f, interior.Heights.Opaque.Height, "and has no vertical extent at all");
+
+        c.Eq(0f, frontier.Heights.Opaque.MinY, "one missing neighbour walls the edge to bedrock");
+        c.Eq(110f, frontier.Heights.Opaque.MaxY, "up to the surface it is holding back");
+        c.Eq(110f, frontier.Heights.Opaque.Height,
+            "so an identical section reads as the whole column purely because it is at the frontier");
+
+        // The cause is the wall and nothing else: the same terrain, meshed both ways, is
+        // one quad against five, and the four extra are the curtain.
+        c.Eq(1, Quads(interior.VertexCount), "the interior section is a single surface quad");
+        c.Eq(5, Quads(frontier.VertexCount), "the frontier section adds four full-height walls");
+
+        // A single open side is enough. This is what makes the measurement so lopsided at
+        // join: a growing frontier means a large share of sections have at least one.
+        var oneOpen = AllNeighbours(ground);
+        oneOpen[0] = null;
+        MeshResult single = LodMesher.BuildMesh(Fixtures.Job(ground, 0, oneOpen));
+        c.Eq(0f, single.Heights.Opaque.MinY,
+            "one open side out of four still drops the whole section's floor to bedrock");
+    }
+
+    /// <summary>
+    /// Reads back every vertex the mesher emitted and requires the reported span to be
+    /// exactly its range. Exactly, not merely containing: a loose bound is safe but silent,
+    /// and a bound that drifts loose over time gives back the culling this phase exists for.
+    /// </summary>
+    static void AssertBoundsContainGeometry(Check c, MeshJob job, string what)
+    {
+        MeshResult mesh = LodMesher.BuildMesh(job);
+        AssertPassBounds(c, mesh.Xyz, mesh.VertexCount, mesh.Heights.Opaque, what + ", opaque");
+        AssertPassBounds(c, mesh.WaterXyz, mesh.WaterVertexCount, mesh.Heights.Water, what + ", water");
+    }
+
+    static void AssertPassBounds(Check c, float[]? xyz, int vertexCount, LodHeightSpan span, string what)
+    {
+        if (xyz == null || vertexCount == 0)
+        {
+            c.False(span.HasGeometry, what + ": a pass that emitted nothing reports no span");
+            return;
+        }
+
+        float min = float.PositiveInfinity;
+        float max = float.NegativeInfinity;
+        for (int v = 0; v < vertexCount; v++)
+        {
+            float y = xyz[v * 3 + 1];
+            if (y < min) min = y;
+            if (y > max) max = y;
+        }
+
+        c.True(span.HasGeometry, what + ": a pass that emitted geometry reports a span");
+        c.Eq(min, span.MinY, what + ": the span's floor is the lowest emitted vertex");
+        c.Eq(max, span.MaxY, what + ": the span's ceiling is the highest emitted vertex");
     }
 
     /// <summary>

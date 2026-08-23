@@ -11,9 +11,11 @@ multi-draw behind `.vhindirect` - landed the same day. **It has never drawn a fr
 hardware.** Legacy remains the default and the complete fallback; Phase 3's own gates are
 unmet until a person compares the two in game. No HZB or other fast path exists.
 **Phase 3b was added on 2026-08-22** after the owner asked how hidden terrain could be
-eliminated most cheaply: real section vertical bounds, without which Phase 4's depth test
-would reject almost nothing. It is the cheapest step in the plan and the only one that
-improves the established renderer regardless of the fast path's fate.
+eliminated most cheaply, and shipped the same day in 0.3.58: real section vertical bounds,
+measured from the mesh rather than assumed from the world height. It is the cheapest step in
+the plan and the only one that improves the established renderer regardless of the fast
+path's fate. It was originally justified as a prerequisite for Phase 4; that justification
+was withdrawn on 2026-08-22 and Phase 4 is not gated on it.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -927,21 +929,63 @@ Gate:
   section actually occupies. If that number is close to the whole world height, Phase 4's
   expected saving needs revisiting before it is built rather than after.
 
-**Why before Phase 4 rather than inside it.** Phase 4's gate is that depth-copy and HZB
-build time stay below the saving opportunity. Run with full-height boxes, that gate is
-measuring a crippled version of the thing being judged, and a negative result would be
-indistinguishable from "HZB is not worth it here". This is also the cheapest step in the
-plan by some distance, and the only one that improves the established renderer whether or
-not the fast path is ever adopted.
+**Built in 0.3.58, with one deliberate departure.** The bounds are NOT carried into the
+GPU section record. That record is a byte layout GLSL reads under std430, its only
+consumer is the indirect path, and that path has never run on hardware - so widening it
+now would alter an unvalidated layout to serve a shader that does not read the field.
+Nothing on the GPU needs the bounds until Phase 5 culls there, and Phase 5 changes the
+record anyway. The CPU section record carries them, which is what the established
+renderer's frustum box uses. `.vhheight off` restores the full-height box for a same-view
+comparison; the distribution and the count of section-draws the real box rejected are on
+the periodic `section heights:` line.
+
+**Also unchanged, and worth a later look:** `LodTraversalPolicy.NodeInView` still bounds
+whole quadtree SUBTREES from bedrock to sky. A subtree bound needs an aggregate over its
+descendants rather than one mesh's own extent, so it is a different piece of work - but
+the quadtree walk is the largest unattributed per-frame cost in the profile, and rejecting
+a coarse node rejects everything under it.
+
+**Why before Phase 4 rather than inside it.** Because it is the cheapest step in the plan
+by some distance, and the only one that improves the established renderer whether or not
+the fast path is ever adopted. The original justification here also claimed Phase 4 could
+not be judged without it; that claim was withdrawn on 2026-08-22 and the reason is recorded
+under Phase 4 above. Tighter boxes help most where sections are large on screen, which is
+near and mid range, and that is a different regime from the one HZB serves.
 
 ### Phase 4 - HZB construction and shadow classification
 
 **Purpose:** Prove conservative depth logic before it can suppress terrain.
 
+**Started 2026-08-22 after the owner overruled the hold recorded under Phase 3b.** 0.3.60
+carries the first slice: a persistent private depth copy, the full mip pyramid reduced with
+`max`, GPU timing per build, and `.vhhzb`. It classifies nothing. Design notes worth
+keeping:
+
+- The pyramid is one depth texture, not a colour texture, so level zero arrives by the
+  framebuffer blit Phase 0 already validated on the owner's hardware rather than through an
+  extra conversion pass.
+- Levels above zero are reduced by a fragment pass writing `gl_FragDepth`, with
+  `TEXTURE_BASE_LEVEL`/`MAX_LEVEL` pinned to the single level being read. Reading and
+  writing one texture object in a draw is defined only because those levels are disjoint
+  and the clamp says so; this is also why no compute shader is required, which keeps the
+  pyramid off the compute capability gate the arenas sit behind.
+- The odd-dimension fold is not an optimisation. Halving an odd width drops the column at
+  the screen edge, and a dropped column is a depth the level never learned about - the
+  pyramid stops being conservative exactly where geometry leaves the view.
+- `LodHzbReference` mirrors the shader on the CPU so the reduction is testable without a
+  GPU; `HzbChecks` holds 231 assertions over it, all one-directional.
+
 Work:
 
-- Requires Phase 3b: with full-world-height section boxes this phase cannot succeed, and
-  its failure would look like a verdict on HZB rather than on its input.
+- Benefits from Phase 3b, but is NOT gated on it. The original wording here - "with
+  full-world-height section boxes this phase cannot succeed" - was wrong, and wrong in a way
+  that nearly cost the phase: it judged a screen-space question with a world-space number.
+  A box is rejected when it is small and far, and apparent height is world height over
+  distance. At 20 km a full 256-block box subtends about 11 px and a measured 146-block one
+  about 7 px; both are buried by any foreground ridge. Tight boxes matter at near and mid
+  range, where a section is hundreds of pixels tall. Depth rejection matters far out, where
+  the section count scales as the square of draw distance and each section is a few pixels.
+  The two are complementary. See the corrected reasoning in `dev/TODO.md`.
 - Copy/resolve current vanilla depth into a private texture after vanilla terrain.
 - Build every HZB mip with delayed GPU timing.
 - Implement conservative section-AABB projection and sampling.

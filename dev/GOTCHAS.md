@@ -1374,6 +1374,104 @@ relaxing it.
 
 **Found:** 2026-08-22, session 41, by review before the build was run.
 
+### G67 — Player-visible text is parsed as VTML, so a leading "<" is a markup tag
+
+`.vhheight` reported its buckets as `<=4: 0%, <=16: 0%, ...`. The periodic log line was
+fine, but the same string returned as a chat command result was refused outright by the
+game's text renderer: `Found closing tag <font> at position 1536 but <=4:> should be closed
+first`. The engine parses chat and dialog text as VTML, so `<=4:` opened an element that
+was never closed and took the rest of the reply down with it. The command appeared to do
+nothing.
+
+**Do:** never let a string that can reach chat or a dialog contain a bare `<`. Write ranges
+(`0-4`, `4-16`) rather than comparisons. A check pins it: the distribution's own
+`Describe` output must contain no `<` at all.
+
+**Found:** 2026-08-22, session 42, from the owner's client log after a playtest.
+
+### G68 — The first shader load always fails, and saying so as an error hides the real one
+
+`LodTerrainRenderer` calls `LoadShader()` from mod start, which runs before the engine has
+filled its shader-include table from mod assets. The body is therefore never spliced, both
+programs fail to link, and the mod logged `lodterrain shader failed to compile; LOD
+rendering disabled` plus the indirect variant's warning - on every single start. The engine
+then fires `ReloadShader` and the second attempt succeeds, which is why terrain drew
+anyway.
+
+The cost was not cosmetic. A session read those errors in a client log, concluded the
+indirect variant does not compile on the owner's hardware, and would have spent its time on
+a shader that was working. The engine's own startup-issue summary replays the same two
+errors seconds later, which makes them look like two independent failures rather than one
+expected one.
+
+**Do:** treat the first shader attempt as provisional - notification level, naming what it
+is waiting for - and report at full volume from the second attempt on. Log the SUCCESS once
+too: a log that only ever complains cannot answer "did this work".
+
+**Found:** 2026-08-22, session 42, while reading the owner's playtest log.
+
+### G69 - The engine's shader bookkeeping is separate from the GL binding
+
+**Trigger:** using `IShaderProgram.Use()` anywhere outside the ordinary draw path.
+
+**Trap:** `ShaderProgramBase` records which program is in use in its own static state. A GL
+state guard restores `glUseProgram` and leaves that record untouched, so the next
+`prog.Use()` throws `Already a different shader (hzbreduce) in use!` and the client dies.
+The depth pyramid did exactly this on its first frame on real hardware; every other shader
+in the renderer already pairs `Use()` with `Stop()`.
+
+**Do:** pair every `Use()` with a `Stop()` in a `finally`. Restoring raw GL state is not a
+substitute. For programs the engine does not need to know about - a compute program, for
+instance - create them through raw GL and never enter its bookkeeping at all.
+
+**Found:** 2026-08-22, session 42, on the first benchmark run of the code.
+
+### G70 - `sample` is a reserved word in GLSL 4.x
+
+**Trigger:** naming a local in a shader.
+
+**Trap:** `float sample = texelFetch(...)` fails with `syntax error, unexpected SAMPLE`.
+It is an interpolation/storage qualifier. No offline check can catch this: the C# twin that
+mirrors the shader logic carries the tests, and C# is perfectly happy with the identifier.
+
+**Do:** avoid `sample`, `filter`, `input`, `output`, `active` and the other qualifier words
+as identifiers. Treat a shader compile as something only a run can verify, and make the
+failure path warn once and keep rendering rather than throw.
+
+**Found:** 2026-08-22, session 42.
+
+### G71 - Reading an SSBO stalls the render thread unless a fence says otherwise
+
+**Trigger:** `GetBufferSubData` or any map-for-read on a buffer the GPU writes.
+
+**Trap:** "it was written a frame ago" is not a guarantee the driver honours. Reading
+per-section classification results every frame turned a 20 us phase into 686 us - 28% of a
+2.4 ms frame - because the call blocks until the work lands. The CPU runs several frames
+ahead at high frame rates, so one frame of latency is not enough either.
+
+**Do:** fence after the dispatch (`FenceSync`), then `ClientWaitSync` with a **zero
+timeout** and skip the sample when it is not ready. Never wait. Note that the skip rate is
+load-dependent: the same code skipped 99.8% of frames in a light scene and 2% in a heavy
+one, so report reads and skips or the statistics silently rest on a handful of frames.
+
+**Found:** 2026-08-22, session 42.
+
+### G72 - A diagnostic the owner cannot read is not a diagnostic
+
+**Trigger:** adding any telemetry a person is expected to report back.
+
+**Trap:** two owner playtests were spent producing correct numbers that could not be
+retrieved. The first put them in the periodic stats block, which fires **once, thirty
+seconds after joining** - before anyone has had time to enable the feature it measures. The
+second put them in a chat command reply, and **game chat cannot be selected or copied**, so
+the only options were retyping long digit strings or a photograph.
+
+**Do:** write every diagnostic into the client log, line by line so each carries a timestamp
+and stays greppable, in addition to whatever it shows on screen. Make it available on demand
+rather than on an interval. Assume the reader will hand the log to someone else.
+
+**Found:** 2026-08-22, session 42, twice in one session.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

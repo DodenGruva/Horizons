@@ -13,6 +13,19 @@ internal sealed class LodTemporalOcclusionState
     public bool Occluded { get; private set; }
     public long LastQueryFrame { get; private set; } = long.MinValue;
 
+    /// <summary>
+    /// True only when a completed query for the CURRENT view actually observed pixels of
+    /// this section. Read-only, and deliberately distinct from <c>!Occluded</c>: that is
+    /// false both for a section proven visible and for one whose answer was thrown away,
+    /// and only the first of those is evidence of anything.
+    ///
+    /// This exists so the depth pyramid can be checked against something that measured
+    /// real pixels. A pyramid verdict of "hidden" for a section that a query positively
+    /// saw is the one failure mode that deletes terrain a player can see, and no amount of
+    /// reading the shader establishes its absence.
+    /// </summary>
+    public bool KnownVisible { get; private set; }
+
     long resultEpoch = long.MinValue;
     long pendingEpoch = long.MinValue;
 
@@ -50,18 +63,21 @@ internal sealed class LodTemporalOcclusionState
         if (pendingEpoch != currentEpoch)
         {
             Occluded = false;
+            KnownVisible = false;
             resultEpoch = currentEpoch;
             return false;
         }
 
         resultEpoch = currentEpoch;
         Occluded = !anySamplesPassed;
+        KnownVisible = anySamplesPassed;
         return true;
     }
 
     public void Invalidate(long epoch)
     {
         Occluded = false;
+        KnownVisible = false;
         resultEpoch = epoch;
         // A section-local change (mesh replacement, mixed seam, turning edge) does not
         // advance the global view epoch. Mark an already-issued answer stale explicitly,
@@ -79,6 +95,7 @@ internal sealed class LodTemporalOcclusionState
     {
         if (resultEpoch == epoch) return;
         Occluded = false;
+        KnownVisible = false;
         resultEpoch = epoch;
     }
 }

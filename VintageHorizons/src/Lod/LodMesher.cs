@@ -45,11 +45,21 @@ public static class LodMesher
         public readonly List<byte> Rgba = new(8192);
         public readonly List<int> Indices = new(12288);
 
+        // Running vertical extent of everything emitted into this pass. Free: every Y
+        // here was computed anyway, and AddVert is the single funnel every vertex passes
+        // through, so no emission path can forget to contribute.
+        public float MinY = float.PositiveInfinity;
+        public float MaxY = float.NegativeInfinity;
+
+        public LodHeightSpan Span => LodHeightSpan.Of(MinY, MaxY);
+
         public void Clear()
         {
             Xyz.Clear();
             Rgba.Clear();
             Indices.Clear();
+            MinY = float.PositiveInfinity;
+            MaxY = float.NegativeInfinity;
         }
     }
 
@@ -165,6 +175,7 @@ public static class LodMesher
             WaterIndices = water.Xyz.Count > 0 ? water.Indices.ToArray() : null,
             WaterVertexCount = water.Xyz.Count / 3,
             WaterIndexCount = water.Indices.Count,
+            Heights = new LodSectionHeights(opaque.Span, water.Span),
             ReadyAtMilliseconds = Environment.TickCount64,
             AssumedCoveredSides = job.AssumedCoveredSides,
         };
@@ -489,6 +500,8 @@ public static class LodMesher
 
     static void AddVert(Buffers buf, int color, byte alpha, float x, float y, float z)
     {
+        if (y < buf.MinY) buf.MinY = y;
+        if (y > buf.MaxY) buf.MaxY = y;
         buf.Xyz.Add(x);
         buf.Xyz.Add(y);
         buf.Xyz.Add(z);
