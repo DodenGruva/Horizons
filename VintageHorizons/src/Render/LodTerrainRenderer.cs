@@ -4168,6 +4168,13 @@ public class LodTerrainRenderer : IRenderer
             report.Append("hidden by distance: ").Append(byDistance);
         }
 
+        string subdivision = DescribeDepthPyramidSubdivision();
+        if (subdivision.Length > 0)
+        {
+            report.AppendLine();
+            report.Append("headroom: ").Append(subdivision);
+        }
+
         if (HzbVerdictsChecked > 0)
         {
             report.AppendLine();
@@ -4193,6 +4200,13 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Hidden share per distance band; empty until something has been classified.</summary>
     public string DescribeDepthPyramidByDistance() => hzbClassifier?.DescribeByDistance() ?? "";
+
+    /// <summary>
+    /// What a finer draw unit would add. Measured, not argued: the question of whether
+    /// cluster subdivision should move ahead of the rest of the plan is the owner's, and
+    /// this is the evidence it should be decided on.
+    /// </summary>
+    public string DescribeDepthPyramidSubdivision() => hzbClassifier?.DescribeSubdivision() ?? "";
 
     /// <summary>One line for the periodic report and for `.vhhzb`.</summary>
     public string DescribeDepthPyramid()

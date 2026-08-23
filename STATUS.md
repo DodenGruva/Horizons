@@ -3,9 +3,9 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-22
-**Mod version:** `0.3.65` source metadata and packaged artifact; `0.3.63` is what the
+**Mod version:** `0.3.66` source metadata and packaged artifact; `0.3.63` is what the
 owner last played and `0.3.58` the last played through fully (`0.2.1` is the released version; the next changed playable
-artifact must increment exactly once to `0.3.66`)
+artifact must increment exactly once to `0.3.67`)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `64` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`

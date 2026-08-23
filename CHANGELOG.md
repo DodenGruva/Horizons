@@ -16,6 +16,25 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+## [0.3.66]
+
+In development, not yet run. Measurement only; nothing is hidden and the picture is unchanged.
+
+**The mod now measures how much it would gain from testing smaller pieces.** Every distant
+piece it could not hide gets its footprint split into a 4x4 grid, and each of the sixteen
+cells is tested on exactly the same terms as the whole. The share that comes back hidden is
+what the mod would save if it drew terrain in smaller units than it does today - reported by
+`.vhhzb` as a headroom figure, over precisely the pieces that currently save nothing.
+
+This exists because of what 0.3.65 measured: every piece that was not hidden failed for the
+same reason, that its rectangle overlaps open sky. A piece is 64 to 1,024 blocks across, so
+part of it reaches past whatever ridge is hiding the rest. The question of whether to build
+smaller draw units is a real one, and it should be answered with a number rather than an
+argument.
+
+The height is deliberately not split - only the footprint. A piece is refused for being too
+wide, not too tall.
+
 ## [0.3.65]
 
 In development. Nothing is hidden yet; the picture is unchanged.

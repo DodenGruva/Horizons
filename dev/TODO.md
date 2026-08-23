@@ -204,6 +204,13 @@ rest of this, not a later optimisation**, and that is a plan-ordering decision f
    number of unknown typicality.
 4. **`.vhhzb why` has never produced a useful answer.** It searched coarsest-first and kept
    reporting the 2,048-block section containing the camera. Fixed in 0.3.64, never run.
+5. **The headroom figure (0.3.66), which is the evidence for the cluster decision.** Every
+   section the whole-box test could not hide is split 4x4 across its footprint - height
+   untouched, since the refusal is about width - and each cell tested on identical terms.
+   The share of cells hidden is what a finer draw unit would win on exactly the population
+   that currently wins nothing. Never read. If it comes back high, cluster subdivision moves
+   ahead of the rest of the plan; if it comes back low, the sky refusals are not about
+   granularity and the phase needs rethinking rather than subdividing.
 
 **How to run it:** install 0.3.65, `.vhhzb on`, face terrain, wait about fifteen seconds,
 `.vhhzb`, then `.vhhzb why` at a distant ridge. Both write to the client log. Alt-tabbing is

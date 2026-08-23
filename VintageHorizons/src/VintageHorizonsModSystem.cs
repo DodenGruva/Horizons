@@ -1284,6 +1284,10 @@ public class VintageHorizonsModSystem : ModSystem
                 if (byDistance.Length > 0)
                     Mod.Logger.Notification("  hzb hidden by distance: {0}", byDistance);
 
+                string subdivision = renderer.DescribeDepthPyramidSubdivision();
+                if (subdivision.Length > 0)
+                    Mod.Logger.Notification("  hzb headroom: {0}", subdivision);
+
                 // The correctness gate. The left-hand figure must be zero: it counts
                 // sections the pyramid called hidden that a query had actually seen pixels
                 // of, and every one of those is terrain a player could see. Warning rather

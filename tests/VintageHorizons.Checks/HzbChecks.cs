@@ -22,6 +22,93 @@ public static class HzbChecks
         OddDimensionsKeepTheEdge(c);
         NeverNearerThanItsSources(c);
         DownToOneTexel(c);
+        ResultPacking(c);
+        ShaderMirrorsItsTwin(c);
+    }
+
+    /// <summary>
+    /// The card returns one word per section carrying two different things. A packing slip
+    /// here does not fail loudly - it reports a plausible verdict with a plausible sub-cell
+    /// count, both wrong, and the measurement they feed is a decision about what to build
+    /// next.
+    /// </summary>
+    static void ResultPacking(Check c)
+    {
+        c.Eq(LodHzbClassifier.VerdictOccluded,
+            LodHzbClassifier.VerdictOf(LodHzbClassifier.VerdictOccluded), "a bare verdict decodes");
+        c.Eq(0, LodHzbClassifier.HiddenSubCellsOf(LodHzbClassifier.VerdictOccluded),
+            "and carries no sub-cells");
+
+        // Every verdict against every legal cell count, which is the only way to be sure the
+        // two fields cannot bleed into each other at any value.
+        for (uint verdict = 0; verdict <= 3; verdict++)
+        {
+            for (int cells = 0; cells <= LodHzbProjection.SubCellCount; cells++)
+            {
+                uint packed = verdict | ((uint)cells << 8);
+                c.Eq(verdict, LodHzbClassifier.VerdictOf(packed),
+                    $"verdict {verdict} survives {cells} packed cells");
+                c.Eq(cells, LodHzbClassifier.HiddenSubCellsOf(packed),
+                    $"{cells} cells survive verdict {verdict}");
+            }
+        }
+
+        // The four verdicts must be distinct, or two different outcomes count as one.
+        var codes = new[]
+        {
+            LodHzbClassifier.VerdictVisible, LodHzbClassifier.VerdictOccluded,
+            LodHzbClassifier.VerdictFailedOpen, LodHzbClassifier.VerdictBackground,
+        };
+        c.Eq(4, codes.Distinct().Count(), "the four verdicts are distinct");
+        c.True(codes.All(code => code <= 0xF), "and all fit in the low nibble");
+    }
+
+    /// <summary>
+    /// The compute shader cannot be compiled without a GPU, so the constants it shares with
+    /// the C# side are pinned here instead. Both of these have already cost a run: a
+    /// reserved word stopped the shader compiling at all, and a mismatched constant would be
+    /// worse, because it would compile and quietly measure a different thing.
+    /// </summary>
+    static void ShaderMirrorsItsTwin(Check c)
+    {
+        string source = LodHzbClassifier.ComputeSource;
+
+        c.True(source.Contains("#version 430"), "the shader declares the version compute needs");
+        c.True(source.Contains($"SUBDIVISIONS_PER_AXIS = {LodHzbProjection.SubdivisionsPerAxis}"),
+            "the shader subdivides by the same factor the C# side reports against");
+        c.True(source.Contains($"VERDICT_OCCLUDED = {LodHzbClassifier.VerdictOccluded}u"),
+            "the occluded verdict matches");
+        c.True(source.Contains($"VERDICT_FAILED_OPEN = {LodHzbClassifier.VerdictFailedOpen}u"),
+            "the fail-open verdict matches");
+        c.True(source.Contains($"VERDICT_BACKGROUND = {LodHzbClassifier.VerdictBackground}u"),
+            "the background verdict matches");
+        c.True(source.Contains("hiddenCells << 8"), "and the sub-cell count is packed where C# reads it");
+
+        // GLSL reserved qualifiers used as identifiers. `sample` reached hardware once and
+        // failed the compile with a message naming SAMPLE; the C# twin could never catch it
+        // because C# is perfectly happy with the name.
+        foreach (string reserved in new[] { "sample", "filter", "active", "partition", "resource" })
+        {
+            c.False(System.Text.RegularExpressions.Regex.IsMatch(
+                    source, @"\b(float|int|uint|vec[234]|bool)\s+" + reserved + @"\b"),
+                $"the shader does not declare a variable named '{reserved}'");
+        }
+
+        // G10: shader bytes stay ASCII, or OpenTK marshaling can truncate the source.
+        c.True(source.All(ch => ch < 128), "the shader source is pure ASCII");
+
+        // The uniforms C# sets by name must exist, or they silently bind to nothing.
+        foreach (string uniform in new[]
+            { "viewProjection", "screenWidth", "screenHeight", "levelCount", "sectionCount", "hzb" })
+        {
+            c.True(source.Contains("uniform ") && source.Contains(uniform),
+                $"the shader declares the '{uniform}' uniform C# sets");
+        }
+
+        // Scalar sizes, never an ivec2: the engine's vector overload reaches glUniform2f and
+        // an integer uniform rejects it, leaving zero. G42.
+        c.False(source.Contains("uniform ivec2 screenSize"),
+            "screen size is two scalar ints rather than an ivec2");
     }
 
     /// <summary>

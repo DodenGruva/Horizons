@@ -62,6 +62,10 @@ internal sealed class LodHzbClassifier : IDisposable
     public const uint VerdictFailedOpen = 2u;
     public const uint VerdictBackground = 3u;
 
+    /// <summary>The verdict occupies the low nibble; the hidden sub-cell count the next byte.</summary>
+    public static uint VerdictOf(uint packed) => packed & 0xFu;
+    public static int HiddenSubCellsOf(uint packed) => (int)((packed >> 8) & 0xFFu);
+
     const int LocalSize = 64;
     const int BytesPerBox = 32;     // two vec4: camera-relative min, max
     const int BytesPerResult = 4;
@@ -70,15 +74,22 @@ internal sealed class LodHzbClassifier : IDisposable
     // everything under assets/.../shaders and compiles it as a draw program; a compute
     // program does not fit that shape, and the capability probe already creates one
     // through raw GL. Keeping the source here also keeps it beside the C# it mirrors.
-    const string ComputeSource = @"#version 430
+    // Internal rather than private so the check tier can hold it to the constants and
+    // reserved words its C# twin cannot express. A GLSL compile is otherwise only
+    // verifiable by running the game, which is how G70 reached hardware.
+    internal const string ComputeSource = @"#version 430
 
 layout(local_size_x = 64) in;
 
 layout(std430, binding = 0) readonly buffer Boxes { vec4 boxes[]; };
 layout(std430, binding = 1) writeonly buffer Results { uint results[]; };
 
+// Sizes arrive as four scalar ints, never as two ivec2. The engine Vec2i uniform overload
+// reaches glUniform2f, which an integer uniform rejects outright with GL_INVALID_OPERATION,
+// leaving the value silently at zero. That cost a whole session once already; gotcha G42.
 uniform mat4 viewProjection;
-uniform ivec2 screenSize;
+uniform int screenWidth;
+uniform int screenHeight;
 uniform int levelCount;
 uniform int sectionCount;
 uniform sampler2D hzb;
@@ -86,33 +97,28 @@ uniform sampler2D hzb;
 const uint VERDICT_VISIBLE = 0u;
 const uint VERDICT_OCCLUDED = 1u;
 const uint VERDICT_FAILED_OPEN = 2u;
-// Not hidden, and specifically because the screen region this box covers includes
-// background - sky, or anything else nothing was drawn over. The depth buffer holds the
-// clear value there, the pyramid takes the farthest of what it covers, and nothing can be
-// farther than that. So one sky pixel anywhere in the rectangle makes the box unhideable,
-// however deeply buried its terrain actually is. Counted apart from an ordinary visible
-// verdict because the two want completely different responses: this one says the box is
-// too big, not that the terrain is in view.
+// Not hidden, and specifically because the region includes background - sky, or anything
+// nothing was drawn over. The depth buffer holds the clear value there, the pyramid takes
+// the farthest of what it covers, and nothing can be farther. So one sky pixel anywhere in
+// the rectangle makes the box unhideable however deeply buried its terrain is. Counted
+// apart from an ordinary visible verdict because the two want completely different
+// responses: this one says the box is too big, not that the terrain is in view.
 const uint VERDICT_BACKGROUND = 3u;
 
-// Matches LodHzbProjection.MinimumW. A corner at or behind the camera plane divides
-// through infinity, and the rectangle that comes out is not merely inaccurate - it can be
-// small and in the wrong place, which is the one failure mode that hides visible terrain.
+// Matches LodHzbProjection.MinimumW. A corner at or behind the camera plane divides through
+// infinity, and the rectangle that comes out is not merely inaccurate - it can be small and
+// in the wrong place, which is the one failure mode that hides visible terrain.
 const float MINIMUM_W = 1e-4;
 
-void main()
+// Matches LodHzbProjection.SubdivisionsPerAxis.
+const int SUBDIVISIONS_PER_AXIS = 4;
+
+// One box, one verdict. Shared by the section and by each of its sub-cells so a cell can
+// never be judged by looser rules than the whole - the measurement would be meaningless if
+// the two disagreed about what hidden means.
+uint TestBox(vec3 lo, vec3 hi)
 {
-    uint index = gl_GlobalInvocationID.x;
-    if (index >= uint(sectionCount)) return;
-
-    vec3 lo = boxes[index * 2u].xyz;
-    vec3 hi = boxes[index * 2u + 1u].xyz;
-
-    if (hi.x < lo.x || hi.y < lo.y || hi.z < lo.z)
-    {
-        results[index] = VERDICT_FAILED_OPEN;
-        return;
-    }
+    if (hi.x < lo.x || hi.y < lo.y || hi.z < lo.z) return VERDICT_FAILED_OPEN;
 
     float minU = 1.0 / 0.0;
     float minV = 1.0 / 0.0;
@@ -132,14 +138,9 @@ void main()
         if (isinf(clip.x) || isnan(clip.x) || isinf(clip.y) || isnan(clip.y)
             || isinf(clip.z) || isnan(clip.z) || isinf(clip.w) || isnan(clip.w))
         {
-            results[index] = VERDICT_FAILED_OPEN;
-            return;
+            return VERDICT_FAILED_OPEN;
         }
-        if (clip.w <= MINIMUM_W)
-        {
-            results[index] = VERDICT_FAILED_OPEN;
-            return;
-        }
+        if (clip.w <= MINIMUM_W) return VERDICT_FAILED_OPEN;
 
         vec3 ndc = clip.xyz / clip.w;
         float u = ndc.x * 0.5 + 0.5;
@@ -148,8 +149,7 @@ void main()
 
         if (isinf(u) || isnan(u) || isinf(v) || isnan(v) || isinf(depth) || isnan(depth))
         {
-            results[index] = VERDICT_FAILED_OPEN;
-            return;
+            return VERDICT_FAILED_OPEN;
         }
 
         minU = min(minU, u);
@@ -159,39 +159,27 @@ void main()
         nearestDepth = min(nearestDepth, depth);
     }
 
-    // Off screen is the frustum test's business, not ours.
-    if (maxU < 0.0 || minU > 1.0 || maxV < 0.0 || minV > 1.0)
-    {
-        results[index] = VERDICT_FAILED_OPEN;
-        return;
-    }
-    if (nearestDepth <= 0.0 || nearestDepth >= 1.0)
-    {
-        results[index] = VERDICT_FAILED_OPEN;
-        return;
-    }
+    // Off screen is the frustum test business, not ours.
+    if (maxU < 0.0 || minU > 1.0 || maxV < 0.0 || minV > 1.0) return VERDICT_FAILED_OPEN;
+    if (nearestDepth <= 0.0 || nearestDepth >= 1.0) return VERDICT_FAILED_OPEN;
 
     minU = clamp(minU, 0.0, 1.0);
     maxU = clamp(maxU, 0.0, 1.0);
     minV = clamp(minV, 0.0, 1.0);
     maxV = clamp(maxV, 0.0, 1.0);
 
-    // Round the level UP. A coarser level pools more pixels into one texel, and pooling
-    // with max can only push the farthest depth farther away, which makes the box harder
-    // to declare hidden. Rounding down would do the opposite.
-    float widthPixels = (maxU - minU) * float(screenSize.x);
-    float heightPixels = (maxV - minV) * float(screenSize.y);
+    // Round the level UP. A coarser level pools more pixels into one texel, and pooling with
+    // max can only push the farthest depth farther away, which makes the box harder to
+    // declare hidden. Rounding down would do the opposite.
+    float widthPixels = (maxU - minU) * float(screenWidth);
+    float heightPixels = (maxV - minV) * float(screenHeight);
     float longest = max(widthPixels, heightPixels);
     int level = 0;
     if (longest > 2.0) level = int(ceil(log2(longest / 2.0)));
     level = clamp(level, 0, levelCount - 1);
 
     ivec2 levelSize = textureSize(hzb, level);
-    if (levelSize.x <= 0 || levelSize.y <= 0)
-    {
-        results[index] = VERDICT_FAILED_OPEN;
-        return;
-    }
+    if (levelSize.x <= 0 || levelSize.y <= 0) return VERDICT_FAILED_OPEN;
 
     // Outward on both edges: a rectangle covering a sliver of a texel must include it, or
     // the box could be called hidden on the strength of pixels it does not sit behind.
@@ -205,42 +193,71 @@ void main()
     x1 = clamp(x1, x0, levelSize.x - 1);
     y1 = clamp(y1, y0, levelSize.y - 1);
 
-    if ((x1 - x0) > 2 || (y1 - y0) > 2)
-    {
-        results[index] = VERDICT_FAILED_OPEN;
-        return;
-    }
+    if ((x1 - x0) > 2 || (y1 - y0) > 2) return VERDICT_FAILED_OPEN;
 
     float farthest = -1.0 / 0.0;
     for (int y = y0; y <= y1; y++)
     {
         for (int x = x0; x <= x1; x++)
         {
-            // Not named `sample`: that is a reserved qualifier in GLSL 4.x and the
-            // compiler rejects the declaration with a syntax error naming SAMPLE.
+            // Not named sample: that is a reserved qualifier in GLSL 4.x and the compiler
+            // rejects the declaration with a syntax error naming SAMPLE.
             float texel = texelFetch(hzb, ivec2(x, y), level).r;
-            if (isinf(texel) || isnan(texel))
-            {
-                results[index] = VERDICT_FAILED_OPEN;
-                return;
-            }
+            if (isinf(texel) || isnan(texel)) return VERDICT_FAILED_OPEN;
             farthest = max(farthest, texel);
         }
     }
 
     // Strictly greater. Equality is the coplanar case and must draw.
-    if (nearestDepth > farthest)
+    if (nearestDepth > farthest) return VERDICT_OCCLUDED;
+    if (farthest >= 1.0) return VERDICT_BACKGROUND;
+    return VERDICT_VISIBLE;
+}
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uint(sectionCount)) return;
+
+    vec3 lo = boxes[index * 2u].xyz;
+    vec3 hi = boxes[index * 2u + 1u].xyz;
+
+    uint verdict = TestBox(lo, hi);
+    uint hiddenCells = 0u;
+
+    // How much a finer draw unit would buy, measured rather than argued. Every section that
+    // is NOT hidden as a whole gets its footprint split into a 4x4 grid - height untouched,
+    // because a section is refused for being too WIDE - and each cell tested on its own
+    // terms. The count is the share of this section a cluster scheme could have skipped.
+    //
+    // Only for sections that survived: one already hidden has nothing left to win, and
+    // including them would inflate the answer with ground the current unit already handles.
+    if (verdict != VERDICT_OCCLUDED)
     {
-        results[index] = VERDICT_OCCLUDED;
+        float spanX = (hi.x - lo.x) / float(SUBDIVISIONS_PER_AXIS);
+        float spanZ = (hi.z - lo.z) / float(SUBDIVISIONS_PER_AXIS);
+
+        for (int cz = 0; cz < SUBDIVISIONS_PER_AXIS; cz++)
+        {
+            for (int cx = 0; cx < SUBDIVISIONS_PER_AXIS; cx++)
+            {
+                // Far edges taken from the parent directly on the last row and column, so
+                // drift cannot leave a sliver of the section untested.
+                float x0 = lo.x + spanX * float(cx);
+                float z0 = lo.z + spanZ * float(cz);
+                float x1 = cx == SUBDIVISIONS_PER_AXIS - 1 ? hi.x : lo.x + spanX * float(cx + 1);
+                float z1 = cz == SUBDIVISIONS_PER_AXIS - 1 ? hi.z : lo.z + spanZ * float(cz + 1);
+
+                if (TestBox(vec3(x0, lo.y, z0), vec3(x1, hi.y, z1)) == VERDICT_OCCLUDED)
+                {
+                    hiddenCells++;
+                }
+            }
+        }
     }
-    else if (farthest >= 1.0)
-    {
-        results[index] = VERDICT_BACKGROUND;
-    }
-    else
-    {
-        results[index] = VERDICT_VISIBLE;
-    }
+
+    // Verdict in the low nibble, hidden sub-cell count in the second byte.
+    results[index] = verdict | (hiddenCells << 8);
 }
 ";
 
@@ -284,6 +301,19 @@ void main()
     static readonly string[] BandNames = { "0-1k", "1-2k", "2-4k", "4-8k", "8-16k", "16k+" };
     readonly int[] bandTested = new int[BandCeilings.Length];
     readonly int[] bandOccluded = new int[BandCeilings.Length];
+
+    // The headroom a finer draw unit would open. Every section the whole-box test could not
+    // hide is split into a 4x4 grid of its own footprint and each cell tested on identical
+    // terms; the share of cells that come back hidden is what cluster subdivision would win
+    // on exactly the sections that currently win nothing.
+    long subCellsTested;
+    long subCellsHidden;
+    long sectionsFullyCellHidden;
+
+    public long SubCellsTested => subCellsTested;
+    public long SubCellsHidden => subCellsHidden;
+    public double SubCellHiddenFraction =>
+        subCellsTested > 0 ? subCellsHidden / (double)subCellsTested : 0.0;
 
     public bool Available => program != 0;
     public string LastFailure { get; private set; } = "";
@@ -478,8 +508,21 @@ void main()
         int occluded = 0, visible = 0, failedOpen = 0, background = 0;
         for (int i = 0; i < pendingCount; i++)
         {
+            uint packed = resultData[i];
+            uint code = VerdictOf(packed);
+
+            // Sub-cells are only counted for sections that survived the whole-box test, and
+            // the shader only fills them in for those, so the denominator here is exactly
+            // the population a finer draw unit could still win something on.
+            if (code != VerdictOccluded)
+            {
+                subCellsTested += LodHzbProjection.SubCellCount;
+                subCellsHidden += HiddenSubCellsOf(packed);
+                if (HiddenSubCellsOf(packed) == LodHzbProjection.SubCellCount) sectionsFullyCellHidden++;
+            }
+
             bool wasOccluded = false;
-            switch (resultData[i])
+            switch (code)
             {
                 case VerdictOccluded: occluded++; wasOccluded = true; break;
                 case VerdictFailedOpen: failedOpen++; break;
@@ -491,9 +534,9 @@ void main()
             // as visible: they say nothing about how much depth rejection is available at
             // that range, and folding them in would drag every band's fraction down.
             if (VerdictObserver != null && i < pendingKeys.Length)
-                VerdictObserver(pendingKeys[i], resultData[i]);
+                VerdictObserver(pendingKeys[i], code);
 
-            if (resultData[i] == VerdictFailedOpen) continue;
+            if (code == VerdictFailedOpen) continue;
             if (i >= pendingDistances.Length) continue;
             int band = BandFor(pendingDistances[i]);
             bandTested[band]++;
@@ -568,7 +611,8 @@ void main()
     void SetUniforms(float[] viewProjection, int width, int height, int levels, int count)
     {
         GL.UniformMatrix4(GL.GetUniformLocation(program, "viewProjection"), 1, false, viewProjection);
-        GL.Uniform2(GL.GetUniformLocation(program, "screenSize"), width, height);
+        GL.Uniform1(GL.GetUniformLocation(program, "screenWidth"), width);
+        GL.Uniform1(GL.GetUniformLocation(program, "screenHeight"), height);
         GL.Uniform1(GL.GetUniformLocation(program, "levelCount"), levels);
         GL.Uniform1(GL.GetUniformLocation(program, "sectionCount"), count);
         GL.Uniform1(GL.GetUniformLocation(program, "hzb"), 0);
@@ -597,8 +641,24 @@ void main()
         Dispatches = 0;
         Reads = 0;
         ReadsSkipped = 0;
+        subCellsTested = 0;
+        subCellsHidden = 0;
+        sectionsFullyCellHidden = 0;
         Array.Clear(bandTested);
         Array.Clear(bandOccluded);
+    }
+
+    /// <summary>
+    /// What a finer draw unit would add, over the sections the current one cannot hide.
+    /// Empty until something has been measured.
+    /// </summary>
+    public string DescribeSubdivision()
+    {
+        if (subCellsTested == 0) return "";
+        int n = LodHzbProjection.SubdivisionsPerAxis;
+        return $"splitting each not-hidden section {n}x{n}: {SubCellHiddenFraction:P1} of its "
+            + $"{subCellsTested} pieces would be hidden, and {sectionsFullyCellHidden} sections "
+            + "would go entirely";
     }
 
     /// <summary>Hidden share per distance band, or an empty string when nothing was tested.</summary>

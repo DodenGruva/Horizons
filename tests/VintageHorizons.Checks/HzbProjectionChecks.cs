@@ -22,6 +22,7 @@ public static class HzbProjectionChecks
         InvalidValuesFailOpen(c);
         LevelChoiceRoundsUp(c);
         CoarserLevelsNeverHideMore(c);
+        SubCellsTileTheParentExactly(c);
     }
 
     /// <summary>
@@ -239,6 +240,66 @@ public static class HzbProjectionChecks
         c.Eq(10, LodHzbProjection.LevelFor(100000f, 100000f, 11), "a huge box clamps to the last level");
         c.Eq(0, LodHzbProjection.LevelFor(float.NaN, float.NaN, 11), "a non-finite size reads level zero");
         c.Eq(0, LodHzbProjection.LevelFor(64f, 64f, 0), "a pyramid with no levels reads zero");
+    }
+
+    /// <summary>
+    /// The sub-cell split used to measure how much a finer draw unit would buy.
+    ///
+    /// It has to tile the parent exactly. A gap would let a cell claim ground nothing tests,
+    /// an overlap would count the same ground twice, and either turns "how much could a
+    /// finer unit skip" into a different question with a plausible-looking answer. Since the
+    /// whole point of the measurement is to inform whether cluster subdivision is worth
+    /// building, a quietly wrong denominator would be expensive.
+    /// </summary>
+    static void SubCellsTileTheParentExactly(Check c)
+    {
+        const double minX = -100, minZ = 40, maxX = 156, maxZ = 296;
+        int n = LodHzbProjection.SubdivisionsPerAxis;
+        c.Eq(n * n, LodHzbProjection.SubCellCount, "the cell count is the square of the axis count");
+
+        double area = 0;
+        var seen = new List<(double, double, double, double)>();
+
+        for (int i = 0; i < LodHzbProjection.SubCellCount; i++)
+        {
+            LodHzbProjection.SubCell(i, minX, 0, minZ, maxX, 10, maxZ,
+                out double cx0, out double cz0, out double cx1, out double cz1);
+
+            c.True(cx1 > cx0, $"cell {i} has width");
+            c.True(cz1 > cz0, $"cell {i} has depth");
+            c.True(cx0 >= minX && cx1 <= maxX, $"cell {i} stays inside the parent in x");
+            c.True(cz0 >= minZ && cz1 <= maxZ, $"cell {i} stays inside the parent in z");
+
+            area += (cx1 - cx0) * (cz1 - cz0);
+            seen.Add((cx0, cz0, cx1, cz1));
+        }
+
+        // Areas summing to the parent's, with every cell inside it, is only possible if the
+        // cells neither overlap nor leave a gap.
+        c.Near((maxX - minX) * (maxZ - minZ), area, 0.0001, "the cells sum to the parent's area");
+
+        // The extremes are the parent's own edges, not an accumulated approximation of them.
+        c.Near(minX, seen.Min(cell => cell.Item1), 0.0000001, "the cells start at the parent's near x edge");
+        c.Near(minZ, seen.Min(cell => cell.Item2), 0.0000001, "and its near z edge");
+        c.Near(maxX, seen.Max(cell => cell.Item3), 0.0000001, "and reach its far x edge exactly");
+        c.Near(maxZ, seen.Max(cell => cell.Item4), 0.0000001, "and its far z edge exactly");
+
+        c.Eq(LodHzbProjection.SubCellCount, seen.Distinct().Count(), "every cell is distinct");
+
+        // Out-of-range indices clamp rather than producing a box outside the parent, which
+        // the shader relies on: it loops a fixed count and must never test empty space.
+        LodHzbProjection.SubCell(-5, minX, 0, minZ, maxX, 10, maxZ,
+            out double lowX, out _, out _, out _);
+        c.Near(minX, lowX, 0.0000001, "a negative index clamps to the first cell");
+        LodHzbProjection.SubCell(9999, minX, 0, minZ, maxX, 10, maxZ,
+            out _, out _, out double highX, out _);
+        c.Near(maxX, highX, 0.0000001, "an oversized index clamps to the last");
+
+        // A degenerate parent must not produce inverted cells - the projection would refuse
+        // them, but the measurement would then read as "nothing hideable" for a bad reason.
+        LodHzbProjection.SubCell(0, 10, 0, 10, 10, 10, 10,
+            out double dx0, out double dz0, out double dx1, out double dz1);
+        c.True(dx1 >= dx0 && dz1 >= dz0, "a zero-area parent yields non-inverted cells");
     }
 
     /// <summary>

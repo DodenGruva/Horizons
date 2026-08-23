@@ -136,6 +136,51 @@ internal static class LodHzbProjection
             "");
     }
 
+
+    /// <summary>
+    /// How many pieces a section's box is split into along each horizontal axis when
+    /// measuring how much finer testing would buy. Four, so sixteen cells - two levels of
+    /// quadtree subdivision, which is the granularity a cluster scheme would plausibly
+    /// reach before the per-piece bookkeeping outweighs the saving.
+    /// </summary>
+    public const int SubdivisionsPerAxis = 4;
+
+    public const int SubCellCount = SubdivisionsPerAxis * SubdivisionsPerAxis;
+
+    /// <summary>
+    /// One cell of the box, split horizontally only.
+    ///
+    /// Horizontally only, and that is the whole point of the exercise. A section is refused
+    /// as unhideable because its rectangle overlaps sky, and it overlaps sky because it is
+    /// 64 to 1,024 blocks WIDE - wide enough that part of it reaches past the ridge hiding
+    /// the rest. Splitting the height would not address that; splitting the footprint does.
+    ///
+    /// The cells tile the parent exactly: no gaps, no overlap, and the union is the parent
+    /// box. Anything else would make the measurement a different question from the one
+    /// being asked, which is how much of this section a finer draw unit could skip.
+    /// </summary>
+    public static void SubCell(
+        int index,
+        double minX, double minY, double minZ,
+        double maxX, double maxY, double maxZ,
+        out double cellMinX, out double cellMinZ, out double cellMaxX, out double cellMaxZ)
+    {
+        int clamped = Math.Clamp(index, 0, SubCellCount - 1);
+        int cx = clamped % SubdivisionsPerAxis;
+        int cz = clamped / SubdivisionsPerAxis;
+
+        double spanX = (maxX - minX) / SubdivisionsPerAxis;
+        double spanZ = (maxZ - minZ) / SubdivisionsPerAxis;
+
+        cellMinX = minX + spanX * cx;
+        cellMinZ = minZ + spanZ * cz;
+
+        // The far edge of the last cell is the parent's own edge, taken directly rather
+        // than accumulated, so floating-point drift cannot leave a sliver uncovered.
+        cellMaxX = cx == SubdivisionsPerAxis - 1 ? maxX : minX + spanX * (cx + 1);
+        cellMaxZ = cz == SubdivisionsPerAxis - 1 ? maxZ : minZ + spanZ * (cz + 1);
+    }
+
     /// <summary>
     /// The pyramid level whose texels are big enough that the rectangle spans at most two
     /// of them on each axis, so four samples always cover it.
