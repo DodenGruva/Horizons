@@ -16,6 +16,39 @@ planning and verification artifact only; it changes no runtime rendering behavio
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
 
+## [0.3.68]
+
+In development, not yet run. Measurement only; nothing is hidden.
+
+**The mod now weighs the two possible answers to the same problem, side by side.** Distant
+terrain often cannot be marked hidden because the piece being tested overlaps open sky. There
+are two ways to fix that: draw terrain in smaller pieces, or look at the depth picture in
+finer detail. The first changes how terrain is built and drawn; the second changes only the
+test. `.vhhzb` now reports what each would win, over exactly the same set of pieces, so the
+choice can be made from one number rather than an argument.
+
+Offline, on a synthetic hillside, looking in finer detail found about a quarter more hidden
+pieces than the current setting. Whether that holds on real terrain is what the new report is
+for. Nothing has changed yet - both figures are measurements.
+
+**The mod also now says WHY it could not judge a piece:** too close to the camera, off the
+side of the screen, or a shape it could not work with. A run where half the pieces came back
+unjudged could not say which, and that turned out to matter - it was the ring of terrain
+right around the player, which can never be judged and which was quietly distorting the
+figures.
+
+## [0.3.67]
+
+In development.
+
+**Fixed a 160-millisecond stutter** the first time `.vhhzb on` was used. That was the mod
+compiling a small program for the graphics card, which happens once - but it was being timed
+as though it were the per-frame cost, and reported as such.
+
+**`.vhhzb why` now answers about something useful.** It was landing on the piece of ground
+right beside you, which can never be judged because part of it sits behind the camera. It now
+walks past those to the first piece it can actually say something about.
+
 ## [0.3.66]
 
 In development, not yet run. Measurement only; nothing is hidden and the picture is unchanged.

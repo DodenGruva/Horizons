@@ -1472,6 +1472,45 @@ rather than on an interval. Assume the reader will hand the log to someone else.
 
 **Found:** 2026-08-22, session 42, twice in one session.
 
+### G73 - A cross-check between two asynchronous measurements has a noise floor
+
+**Trigger:** validating one visibility mechanism against another, or any "this count must be
+zero" gate whose two sides are sampled at different times.
+
+**Trap:** the depth pyramid judges last frame's depth buffer; the delayed occlusion query
+reports an actual draw some frames earlier. When the camera moves, both can be right and
+still disagree. Session 42 read seven such disagreements in 2,922 comparisons as a defect,
+made it Phase 4's blocking gate, and spent two owner playtests chasing a number that cannot
+reach zero by construction. A view-epoch guard was added on the strength of the same
+reasoning and refused **zero** comparisons, which should have been the tell.
+
+**Do:** establish correctness from a deterministic offline fixture - for this renderer, a
+synthetic occluder with background around it, and boxes that poke out of it by a hair. Keep
+the runtime cross-check for spotting gross divergence and for figures it is genuinely good at
+(how much one mechanism finds that the other has not measured). Before gating on any count,
+ask what its floor is when everything works.
+
+**Found:** 2026-08-23, session 43, after the owner asked whether the work was really blocked.
+
+### G74 - A box clears an occluder only by a whole texel of its own test level
+
+**Trigger:** reasoning about why hierarchical depth culling rejects so little.
+
+**Trap:** the pyramid level is chosen so a box spans at most N texels, so a bigger box is
+tested at a coarser level. A texel that overlaps the box also covers everything within its
+own footprint - 256 screen pixels at level 8 - so a box sitting inside an occluder by less
+than one texel still samples the background beyond it and correctly refuses to hide. The
+clearance a box needs therefore grows with the box. A synthetic fixture whose test box was
+comfortably inside the occluder in pixels failed for exactly this reason.
+
+**Do:** state the limit as clearance-in-texels, not "sections are too wide". It has two
+independent levers - make the boxes smaller (cluster subdivision, which changes what is
+drawn) or sample more texels at a finer level (which changes only the test). Measure both
+over the same population before choosing; offline, raising the footprint from two texels to
+eight found about a quarter more hidden boxes.
+
+**Found:** 2026-08-23, session 43, from a failing offline fixture.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

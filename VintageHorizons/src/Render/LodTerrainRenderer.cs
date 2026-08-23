@@ -3863,6 +3863,16 @@ public class LodTerrainRenderer : IRenderer
     public long HzbVerdictsAcrossViewChange { get; private set; }
 
     /// <summary>
+    /// How stale an occlusion-query answer may be and still be treated as describing the
+    /// same view as a pyramid verdict. Four frames: the verdict is already one frame old by
+    /// the time it is read, and at 400 fps four frames is 10 ms, which is short enough that
+    /// the camera cannot have moved far and long enough that ordinary query cadence still
+    /// supplies comparisons. This bounds the comparison, not the renderer - a refused
+    /// comparison costs a sample, never a draw.
+    /// </summary>
+    const int HzbComparisonMaxQueryAgeFrames = 4;
+
+    /// <summary>
     /// Checks one verdict against the delayed occlusion query for the same section.
     ///
     /// Only current, completed query results count as evidence. A query that is still
@@ -3880,10 +3890,20 @@ public class LodTerrainRenderer : IRenderer
 
         if (!temporalOcclusionQueries.TryGetValue(key, out TemporalOcclusionQuery? query)) return;
 
-        // Both answers have to describe the same view. A verdict computed one frame ago
-        // says nothing about a query answered after the camera moved, and comparing them
-        // across a turn is what produced every unsafe-looking disagreement so far.
+        // Both answers have to describe the same view, and the occlusion epoch is too coarse
+        // a test for that: it advances on a global invalidation, not on ordinary mouse
+        // movement. Measured - a run with ZERO epoch changes still produced seven sections
+        // the pyramid called hidden that a query had seen. So the age of the query's own
+        // answer is checked as well: a result taken many frames ago describes a camera that
+        // has since moved, whatever the epoch says.
         if (hzbVerdictEpoch != temporalOcclusionEpoch)
+        {
+            HzbVerdictsAcrossViewChange++;
+            return;
+        }
+
+        long queryAge = frameCounter - query.State.LastQueryFrame;
+        if (queryAge < 0 || queryAge > HzbComparisonMaxQueryAgeFrames)
         {
             HzbVerdictsAcrossViewChange++;
             return;
@@ -3931,42 +3951,59 @@ public class LodTerrainRenderer : IRenderer
     /// The verdicts are counted and nothing else: the established path has already drawn
     /// every one of these sections by the time the answer arrives.
     /// </summary>
+
+    /// <summary>
+    /// Creates the classifier and its compute program, once, outside any timed phase.
+    /// Returns false while it is unavailable, which costs the measurement and nothing else.
+    /// </summary>
+    bool PrepareClassifier()
+    {
+        if (hzbClassifier == null)
+        {
+            hzbClassifier = new LodHzbClassifier(
+                message => capi.Logger.Warning("{0}", message));
+            hzbVerdictObserver ??= ObserveHzbVerdict;
+            hzbClassifier.VerdictObserver = hzbVerdictObserver;
+        }
+
+        if (!hzbClassifier.Available && !hzbClassifier.TryCreate())
+        {
+            if (!reportedHzbClassifier)
+            {
+                reportedHzbClassifier = true;
+                capi.Logger.Warning(
+                    "[VintageHorizons] depth-pyramid classification is unavailable and "
+                    + "nothing that draws depends on it: {0}", hzbClassifier.LastFailure);
+            }
+            return false;
+        }
+
+        if (!reportedHzbClassifier)
+        {
+            reportedHzbClassifier = true;
+            capi.Logger.Notification(
+                "[VintageHorizons] depth-pyramid classification running in shadow: it "
+                + "counts what a depth test would hide and hides nothing.");
+        }
+
+        return true;
+    }
+
     void ClassifyAgainstDepthPyramid()
     {
         if (!DepthPyramidEnabled || depthPyramid == null || !depthPyramid.Allocated) return;
         if (!LastHzbBuild.Built) return;
 
+        // Built before the clock starts. Compiling and linking a compute program is a
+        // one-time cost of about 160 ms on this driver, and timing it as part of the phase
+        // reported a 160,690 us maximum for work that happens once and never again - which
+        // is worse than useless in a figure whose whole job is to say what the pyramid
+        // costs every frame.
+        if (!PrepareClassifier()) return;
+
         LodPhaseStart phase = LodPhaseCost.Start(TrackPhaseAllocations);
         try
         {
-            if (hzbClassifier == null)
-            {
-                hzbClassifier = new LodHzbClassifier(
-                    message => capi.Logger.Warning("{0}", message));
-                hzbVerdictObserver ??= ObserveHzbVerdict;
-                hzbClassifier.VerdictObserver = hzbVerdictObserver;
-            }
-
-            if (!hzbClassifier.Available && !hzbClassifier.TryCreate())
-            {
-                if (!reportedHzbClassifier)
-                {
-                    reportedHzbClassifier = true;
-                    capi.Logger.Warning(
-                        "[VintageHorizons] depth-pyramid classification is unavailable and "
-                        + "nothing that draws depends on it: {0}", hzbClassifier.LastFailure);
-                }
-                return;
-            }
-
-            if (!reportedHzbClassifier)
-            {
-                reportedHzbClassifier = true;
-                capi.Logger.Notification(
-                    "[VintageHorizons] depth-pyramid classification running in shadow: it "
-                    + "counts what a depth test would hide and hides nothing.");
-            }
-
             // The epoch these boxes were projected under. Verdicts arrive a frame later and
             // are compared against occlusion queries whose answers carry their own epoch;
             // without this the two can be from different views, and a camera turn between
@@ -4023,6 +4060,14 @@ public class LodTerrainRenderer : IRenderer
         bool found = false;
         double hitDistance = 0;
 
+        // A section adjacent to the camera has corners behind the camera plane, so the only
+        // answer it can ever give is "declined". The first two attempts at this command both
+        // landed on one and told nobody anything. Keep the first such section as a fallback,
+        // then keep walking for one the test can actually judge.
+        long fallbackKey = 0;
+        bool haveFallback = false;
+        double fallbackDistance = 0;
+
         for (int distance = 32; distance <= maxBlocks && !found; distance += 32)
         {
             double x = startX + lookX * distance;
@@ -4053,10 +4098,45 @@ public class LodTerrainRenderer : IRenderer
                     continue;
                 }
 
+                // Judgeable? Ask before settling on it.
+                int candidateSize = LodWorld.KeyFootprintBlocks(candidate);
+                double candidateOriginX2 = LodWorld.KeySx(candidate) * (double)candidateSize;
+                double candidateOriginZ2 = LodWorld.KeySz(candidate) * (double)candidateSize;
+                LodHeightSpan candidateSpan = SectionSpan(candidate, waterPass: false);
+                double candidateMinY = candidateSpan.HasGeometry
+                    ? candidateSpan.MinY - camPos.Y : -camPos.Y;
+                double candidateMaxY = candidateSpan.HasGeometry
+                    ? candidateSpan.MaxY - camPos.Y : worldHeight - camPos.Y;
+
+                frustum.CopyViewProjection(hzbViewProjection);
+                LodHzbScreenBounds probe = LodHzbProjection.Project(
+                    hzbViewProjection,
+                    candidateOriginX2 - camPos.X, candidateMinY, candidateOriginZ2 - camPos.Z,
+                    candidateOriginX2 - camPos.X + candidateSize, candidateMaxY,
+                    candidateOriginZ2 - camPos.Z + candidateSize);
+
+                if (!probe.Usable)
+                {
+                    if (!haveFallback)
+                    {
+                        fallbackKey = candidate;
+                        fallbackDistance = distance;
+                        haveFallback = true;
+                    }
+                    continue;
+                }
+
                 key = candidate;
                 hitDistance = distance;
                 found = true;
             }
+        }
+
+        if (!found && haveFallback)
+        {
+            key = fallbackKey;
+            hitDistance = fallbackDistance;
+            found = true;
         }
 
         if (!found)
@@ -4111,6 +4191,15 @@ public class LodTerrainRenderer : IRenderer
                     + "terrain is in view. ",
                 LodHzbClassifier.VerdictFailedOpen =>
                     "The card declined to judge it and it is drawn. ",
+                LodHzbClassifier.VerdictNearPlane =>
+                    "The card declined: part of its box sits at or behind the camera plane, "
+                    + "which happens to any section close enough to stand beside. It is drawn. ",
+                LodHzbClassifier.VerdictOffScreen =>
+                    "The card declined: it projects entirely off screen, which is the frustum "
+                    + "test's business rather than the depth test's. It is drawn. ",
+                LodHzbClassifier.VerdictDegenerate =>
+                    "The card declined: its projection produced a value nothing can be judged "
+                    + "from. It is drawn. ",
                 _ => "The card found something behind the scene here, so it is genuinely in view. ",
             });
         }
@@ -4175,6 +4264,13 @@ public class LodTerrainRenderer : IRenderer
             report.Append("headroom: ").Append(subdivision);
         }
 
+        string undecided = DescribeDepthPyramidUndecided();
+        if (undecided.Length > 0)
+        {
+            report.AppendLine();
+            report.Append("undecided because: ").Append(undecided);
+        }
+
         if (HzbVerdictsChecked > 0)
         {
             report.AppendLine();
@@ -4200,6 +4296,9 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Hidden share per distance band; empty until something has been classified.</summary>
     public string DescribeDepthPyramidByDistance() => hzbClassifier?.DescribeByDistance() ?? "";
+
+    /// <summary>Why the test declined, when it did; empty when it never declined.</summary>
+    public string DescribeDepthPyramidUndecided() => hzbClassifier?.DescribeUndecided() ?? "";
 
     /// <summary>
     /// What a finer draw unit would add. Measured, not argued: the question of whether

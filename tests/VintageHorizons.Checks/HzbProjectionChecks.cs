@@ -23,6 +23,8 @@ public static class HzbProjectionChecks
         LevelChoiceRoundsUp(c);
         CoarserLevelsNeverHideMore(c);
         SubCellsTileTheParentExactly(c);
+        NeverHidesABoxThatPokesOut(c);
+        WiderSamplingHidesMore(c);
     }
 
     /// <summary>
@@ -300,6 +302,220 @@ public static class HzbProjectionChecks
         LodHzbProjection.SubCell(0, 10, 0, 10, 10, 10, 10,
             out double dx0, out double dz0, out double dx1, out double dz1);
         c.True(dx1 >= dx0 && dz1 >= dz0, "a zero-area parent yields non-inverted cells");
+    }
+
+    /// <summary>
+    /// A synthetic scene with a known occluder, and boxes that stick out of it by a hair.
+    ///
+    /// This replaces what the in-game comparison against occlusion queries was being asked
+    /// to do. That comparison can never read zero: the pyramid judges last frame's depth
+    /// buffer and the query reports an actual draw some frames earlier, so a moving camera
+    /// makes them disagree while both are correct. Chasing it to zero was chasing the
+    /// instrument. The question underneath - can this test hide a box that is partly in
+    /// front of the scene - is deterministic, and belongs here.
+    ///
+    /// The occluder is a rectangle of near depth over part of the screen, with the rest at
+    /// the depth-clear value, exactly as sky arrives in a real buffer.
+    /// </summary>
+    static void NeverHidesABoxThatPokesOut(Check c)
+    {
+        const int width = 1920, height = 1080;
+        int levels = LodHzbReference.LevelCount(width, height);
+
+        // Level 0 of a scene: near depth inside the occluder, background outside it.
+        const float occluderDepth = 0.90f;
+        var scene = new float[width * height];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                // Background on the left, right and top, occluder filling the rest - the
+                // shape a ridge actually makes. The margins have to be well clear of the
+                // test boxes: a coarse pyramid level pools 128 or 256 screen pixels into
+                // one texel, so a box "inside" the occluder by less than a texel still
+                // samples background and correctly refuses to hide. The first version of
+                // this fixture failed for exactly that reason, which is the same effect
+                // that stops real sections hiding.
+                bool insideOccluder = x >= 300 && x < 1500 && y >= 200;
+                scene[y * width + x] = insideOccluder ? occluderDepth : 1.0f;
+            }
+        }
+
+        // Reduced with the same rule the shader uses, so the pyramid under test is the one
+        // the reduction actually produces rather than a hand-written stand-in.
+        var chain = new List<(float[] Data, int W, int H)> { (scene, width, height) };
+        for (int level = 1; level < levels; level++)
+        {
+            (float[] previous, int pw, int ph) = chain[level - 1];
+            chain.Add((LodHzbReference.Reduce(previous, pw, ph),
+                Math.Max(1, pw >> 1), Math.Max(1, ph >> 1)));
+        }
+
+        var pyramid = new BuiltPyramid(chain);
+
+        // A box well inside the occluder and behind it: hideable, and the fixture is
+        // worthless if this one does not hide.
+        c.True(LodHzbProjection.IsOccluded(
+                Bounds(0.25f, 0.40f, 0.35f, 0.50f, occluderDepth + 0.01f),
+                pyramid, width, height, out _),
+            "a box behind the occluder and well inside it is hidden");
+
+        // Now the cases that must NOT hide. Each is behind the occluder in depth - so the
+        // depth comparison alone would hide it - and each overlaps background somewhere.
+        (string Name, float MinU, float MinV, float MaxU, float MaxV)[] pokingOut =
+        {
+            ("past the left edge", 0.05f, 0.40f, 0.18f, 0.50f),
+            ("past the right edge", 0.72f, 0.40f, 0.85f, 0.50f),
+            ("above the top edge", 0.25f, 0.05f, 0.35f, 0.20f),
+            ("straddling the top-left corner", 0.05f, 0.05f, 0.18f, 0.20f),
+            ("spanning the whole screen", 0.0f, 0.0f, 1.0f, 1.0f),
+        };
+
+        foreach ((string name, float u0, float v0, float u1, float v1) in pokingOut)
+        {
+            c.False(LodHzbProjection.IsOccluded(
+                    Bounds(u0, v0, u1, v1, occluderDepth + 0.01f),
+                    pyramid, width, height, out _),
+                $"a box reaching {name} of the occluder is drawn");
+        }
+
+        // And the boundary itself, walked one screen-percent at a time. Somewhere along this
+        // sweep the box stops being fully inside the occluder, and from that point on it
+        // must never be hidden again - a single hidden verdict after the first visible one
+        // would mean the rounding lets a box escape at some widths but not others.
+        bool leftTheOccluder = false;
+        for (int step = 0; step <= 40; step++)
+        {
+            float right = 0.35f + step * 0.015f;
+            bool hidden = LodHzbProjection.IsOccluded(
+                Bounds(0.25f, 0.40f, right, 0.50f, occluderDepth + 0.01f),
+                pyramid, width, height, out _);
+
+            if (!hidden) leftTheOccluder = true;
+            else if (leftTheOccluder)
+            {
+                c.True(false, $"a box widened to {right:0.000} hid again after escaping the occluder");
+                break;
+            }
+        }
+        c.True(leftTheOccluder, "widening the box past the occluder eventually stops hiding it");
+
+        // Depth, the other axis: a box nearer than the occluder is never hidden however
+        // snugly it sits inside it.
+        c.False(LodHzbProjection.IsOccluded(
+                Bounds(0.25f, 0.40f, 0.35f, 0.50f, occluderDepth - 0.01f),
+                pyramid, width, height, out _),
+            "a box in front of the occluder is drawn");
+    }
+
+    /// <summary>
+    /// How much the sampling width is worth, measured on a synthetic ridge.
+    ///
+    /// A box is only hidden if it is inside the occluder by at least one texel of the level
+    /// it is tested at, and the level is chosen so the box spans at most N texels. So a
+    /// wider sampling footprint picks a finer level, shrinks the clearance a box needs, and
+    /// should hide strictly more - at a sample cost growing as the square of N.
+    ///
+    /// This is the alternative to cluster subdivision for the same problem, and unlike
+    /// subdivision it changes only the test, not what gets drawn or how terrain is stored.
+    /// The numbers below are asserted rather than printed so a regression shows up as a
+    /// failure rather than as a line nobody reads.
+    /// </summary>
+    static void WiderSamplingHidesMore(Check c)
+    {
+        const int width = 1920, height = 1080;
+        int levels = LodHzbReference.LevelCount(width, height);
+        const float occluderDepth = 0.90f;
+
+        var scene = new float[width * height];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                scene[y * width + x] = x >= 300 && x < 1500 && y >= 200 ? occluderDepth : 1.0f;
+            }
+        }
+
+        var chain = new List<(float[] Data, int W, int H)> { (scene, width, height) };
+        for (int level = 1; level < levels; level++)
+        {
+            (float[] previous, int pw, int ph) = chain[level - 1];
+            chain.Add((LodHzbReference.Reduce(previous, pw, ph),
+                Math.Max(1, pw >> 1), Math.Max(1, ph >> 1)));
+        }
+        var pyramid = new BuiltPyramid(chain);
+
+        // A grid of candidate boxes of several sizes, all behind the occluder, spread over
+        // the screen. Some genuinely overlap background and must never hide at any width.
+        var boxes = new List<LodHzbScreenBounds>();
+        foreach (float size in new[] { 0.05f, 0.10f, 0.20f, 0.40f })
+        {
+            for (float u = 0f; u + size <= 1f; u += 0.05f)
+            {
+                for (float v = 0f; v + size <= 1f; v += 0.05f)
+                {
+                    boxes.Add(Bounds(u, v, u + size, v + size, occluderDepth + 0.01f));
+                }
+            }
+        }
+        c.True(boxes.Count > 500, "the sweep covers a useful number of boxes");
+
+        int Hidden(int perAxis) => boxes.Count(box =>
+            LodHzbProjection.IsOccluded(box, pyramid, width, height, perAxis, out _));
+
+        int at2 = Hidden(2);
+        int at4 = Hidden(4);
+        int at8 = Hidden(8);
+        int at16 = Hidden(16);
+
+        // Monotone: a finer level can only ever pool fewer foreign pixels into a texel, so
+        // widening the footprint can never take a hidden verdict away.
+        c.True(at4 >= at2, "sampling four texels per axis hides at least as much as two");
+        c.True(at8 >= at4, "eight at least as much as four");
+        c.True(at16 >= at8, "sixteen at least as much as eight");
+
+        // And it is a real gain, not a rounding artifact. If this ever stops holding, the
+        // sampling width has stopped being a lever and the sky refusals need another answer.
+        c.True(at8 > at2, "widening the footprint hides materially more than the default two");
+
+        // Measured on this fixture, 2026-08-23: of 1,085 boxes behind the occluder, two
+        // texels per axis hides 326, four hides 368, eight hides 404 and sixteen hides 421.
+        // So the default leaves about a fifth of the achievable hiding on the table, and the
+        // curve flattens after eight - which is the shape that decides how wide is worth
+        // paying for. Pinned loosely, as a regression guard rather than a golden value.
+        c.True(at8 >= at2 + at2 / 5,
+            "eight texels per axis hides at least a fifth more than two");
+        c.True(at16 - at8 < at8 - at4,
+            "and the gain flattens: sixteen adds less over eight than eight added over four");
+
+        // The ceiling: no width may hide a box that genuinely overlaps background, because
+        // the reduction is still max and background is still the farthest thing there.
+        foreach (int perAxis in new[] { 2, 4, 8, 16 })
+        {
+            c.False(LodHzbProjection.IsOccluded(
+                    Bounds(0.0f, 0.0f, 1.0f, 1.0f, occluderDepth + 0.01f),
+                    pyramid, width, height, perAxis, out _),
+                $"a full-screen box still never hides at {perAxis} texels per axis");
+            c.False(LodHzbProjection.IsOccluded(
+                    Bounds(0.05f, 0.40f, 0.18f, 0.50f, occluderDepth + 0.01f),
+                    pyramid, width, height, perAxis, out _),
+                $"a box over the left background still never hides at {perAxis} texels per axis");
+        }
+    }
+
+    /// <summary>A screen-space rectangle and depth, bypassing projection to test the sampler.</summary>
+    static LodHzbScreenBounds Bounds(float minU, float minV, float maxU, float maxV, float depth) =>
+        new(true, minU, minV, maxU, maxV, depth, "");
+
+    /// <summary>A pyramid backed by real reduced levels rather than a constant.</summary>
+    sealed class BuiltPyramid : ILodHzbLevels
+    {
+        readonly List<(float[] Data, int W, int H)> chain;
+        public BuiltPyramid(List<(float[] Data, int W, int H)> chain) => this.chain = chain;
+        public int Levels => chain.Count;
+        public (int Width, int Height) Size(int level) => (chain[level].W, chain[level].H);
+        public float Farthest(int level, int x, int y) =>
+            chain[level].Data[y * chain[level].W + x];
     }
 
     /// <summary>

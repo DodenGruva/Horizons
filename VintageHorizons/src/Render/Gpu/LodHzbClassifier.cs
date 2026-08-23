@@ -61,10 +61,21 @@ internal sealed class LodHzbClassifier : IDisposable
     public const uint VerdictOccluded = 1u;
     public const uint VerdictFailedOpen = 2u;
     public const uint VerdictBackground = 3u;
+    public const uint VerdictNearPlane = 4u;
+    public const uint VerdictOffScreen = 5u;
+    public const uint VerdictDegenerate = 6u;
+
+    /// <summary>Every verdict that means "draw it because the test could not decide".</summary>
+    public static bool IsUndecided(uint verdict) =>
+        verdict == VerdictFailedOpen || verdict == VerdictNearPlane
+        || verdict == VerdictOffScreen || verdict == VerdictDegenerate;
 
     /// <summary>The verdict occupies the low nibble; the hidden sub-cell count the next byte.</summary>
     public static uint VerdictOf(uint packed) => packed & 0xFu;
     public static int HiddenSubCellsOf(uint packed) => (int)((packed >> 8) & 0xFFu);
+
+    /// <summary>True when a wider sampling footprint would have hidden what the narrow one could not.</summary>
+    public static bool HiddenByWideSamplingOf(uint packed) => ((packed >> 16) & 1u) != 0u;
 
     const int LocalSize = 64;
     const int BytesPerBox = 32;     // two vec4: camera-relative min, max
@@ -105,6 +116,15 @@ const uint VERDICT_FAILED_OPEN = 2u;
 // responses: this one says the box is too big, not that the terrain is in view.
 const uint VERDICT_BACKGROUND = 3u;
 
+// Fail-open, split by cause. Every one of these still means DRAW IT - the verdict a caller
+// acts on is unchanged - but a single undifferentiated 'undecided' bucket cannot say whether
+// the test is being defeated by geometry near the camera, by sections leaving the screen, or
+// by something genuinely wrong. Half a session's sections came back undecided and nothing
+// could say which.
+const uint VERDICT_NEAR_PLANE = 4u;
+const uint VERDICT_OFF_SCREEN = 5u;
+const uint VERDICT_DEGENERATE = 6u;
+
 // Matches LodHzbProjection.MinimumW. A corner at or behind the camera plane divides through
 // infinity, and the rectangle that comes out is not merely inaccurate - it can be small and
 // in the wrong place, which is the one failure mode that hides visible terrain.
@@ -113,12 +133,21 @@ const float MINIMUM_W = 1e-4;
 // Matches LodHzbProjection.SubdivisionsPerAxis.
 const int SUBDIVISIONS_PER_AXIS = 4;
 
+// The two sampling widths compared each frame. A box can only be hidden if it sits inside
+// the occluder by at least one texel of the level it is tested at, and the level is chosen
+// so the box spans at most this many texels - so a wider footprint picks a FINER level and
+// shrinks the clearance a box needs. Offline, on a synthetic ridge, eight found about a
+// quarter more hidden boxes than two. Whether that holds on real terrain is what the two
+// counts below are for.
+const int TEXELS_NARROW = 2;
+const int TEXELS_WIDE = 8;
+
 // One box, one verdict. Shared by the section and by each of its sub-cells so a cell can
 // never be judged by looser rules than the whole - the measurement would be meaningless if
 // the two disagreed about what hidden means.
-uint TestBox(vec3 lo, vec3 hi)
+uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
 {
-    if (hi.x < lo.x || hi.y < lo.y || hi.z < lo.z) return VERDICT_FAILED_OPEN;
+    if (hi.x < lo.x || hi.y < lo.y || hi.z < lo.z) return VERDICT_DEGENERATE;
 
     float minU = 1.0 / 0.0;
     float minV = 1.0 / 0.0;
@@ -138,9 +167,9 @@ uint TestBox(vec3 lo, vec3 hi)
         if (isinf(clip.x) || isnan(clip.x) || isinf(clip.y) || isnan(clip.y)
             || isinf(clip.z) || isnan(clip.z) || isinf(clip.w) || isnan(clip.w))
         {
-            return VERDICT_FAILED_OPEN;
+            return VERDICT_DEGENERATE;
         }
-        if (clip.w <= MINIMUM_W) return VERDICT_FAILED_OPEN;
+        if (clip.w <= MINIMUM_W) return VERDICT_NEAR_PLANE;
 
         vec3 ndc = clip.xyz / clip.w;
         float u = ndc.x * 0.5 + 0.5;
@@ -149,7 +178,7 @@ uint TestBox(vec3 lo, vec3 hi)
 
         if (isinf(u) || isnan(u) || isinf(v) || isnan(v) || isinf(depth) || isnan(depth))
         {
-            return VERDICT_FAILED_OPEN;
+            return VERDICT_DEGENERATE;
         }
 
         minU = min(minU, u);
@@ -160,8 +189,8 @@ uint TestBox(vec3 lo, vec3 hi)
     }
 
     // Off screen is the frustum test business, not ours.
-    if (maxU < 0.0 || minU > 1.0 || maxV < 0.0 || minV > 1.0) return VERDICT_FAILED_OPEN;
-    if (nearestDepth <= 0.0 || nearestDepth >= 1.0) return VERDICT_FAILED_OPEN;
+    if (maxU < 0.0 || minU > 1.0 || maxV < 0.0 || minV > 1.0) return VERDICT_OFF_SCREEN;
+    if (nearestDepth <= 0.0 || nearestDepth >= 1.0) return VERDICT_NEAR_PLANE;
 
     minU = clamp(minU, 0.0, 1.0);
     maxU = clamp(maxU, 0.0, 1.0);
@@ -174,12 +203,13 @@ uint TestBox(vec3 lo, vec3 hi)
     float widthPixels = (maxU - minU) * float(screenWidth);
     float heightPixels = (maxV - minV) * float(screenHeight);
     float longest = max(widthPixels, heightPixels);
+    float perAxis = float(max(2, texelsPerAxis));
     int level = 0;
-    if (longest > 2.0) level = int(ceil(log2(longest / 2.0)));
+    if (longest > perAxis) level = int(ceil(log2(longest / perAxis)));
     level = clamp(level, 0, levelCount - 1);
 
     ivec2 levelSize = textureSize(hzb, level);
-    if (levelSize.x <= 0 || levelSize.y <= 0) return VERDICT_FAILED_OPEN;
+    if (levelSize.x <= 0 || levelSize.y <= 0) return VERDICT_DEGENERATE;
 
     // Outward on both edges: a rectangle covering a sliver of a texel must include it, or
     // the box could be called hidden on the strength of pixels it does not sit behind.
@@ -193,7 +223,7 @@ uint TestBox(vec3 lo, vec3 hi)
     x1 = clamp(x1, x0, levelSize.x - 1);
     y1 = clamp(y1, y0, levelSize.y - 1);
 
-    if ((x1 - x0) > 2 || (y1 - y0) > 2) return VERDICT_FAILED_OPEN;
+    if ((x1 - x0) > texelsPerAxis || (y1 - y0) > texelsPerAxis) return VERDICT_DEGENERATE;
 
     float farthest = -1.0 / 0.0;
     for (int y = y0; y <= y1; y++)
@@ -203,7 +233,7 @@ uint TestBox(vec3 lo, vec3 hi)
             // Not named sample: that is a reserved qualifier in GLSL 4.x and the compiler
             // rejects the declaration with a syntax error naming SAMPLE.
             float texel = texelFetch(hzb, ivec2(x, y), level).r;
-            if (isinf(texel) || isnan(texel)) return VERDICT_FAILED_OPEN;
+            if (isinf(texel) || isnan(texel)) return VERDICT_DEGENERATE;
             farthest = max(farthest, texel);
         }
     }
@@ -222,8 +252,17 @@ void main()
     vec3 lo = boxes[index * 2u].xyz;
     vec3 hi = boxes[index * 2u + 1u].xyz;
 
-    uint verdict = TestBox(lo, hi);
+    uint verdict = TestBox(lo, hi, TEXELS_NARROW);
     uint hiddenCells = 0u;
+    uint hiddenWide = 0u;
+
+    // The cheaper of the two candidate answers to the sky problem: keep the section whole
+    // and sample more texels at a finer level. Only asked when the narrow test failed, so
+    // the count is the extra this would win over what already happens.
+    if (verdict != VERDICT_OCCLUDED && TestBox(lo, hi, TEXELS_WIDE) == VERDICT_OCCLUDED)
+    {
+        hiddenWide = 1u;
+    }
 
     // How much a finer draw unit would buy, measured rather than argued. Every section that
     // is NOT hidden as a whole gets its footprint split into a 4x4 grid - height untouched,
@@ -248,7 +287,7 @@ void main()
                 float x1 = cx == SUBDIVISIONS_PER_AXIS - 1 ? hi.x : lo.x + spanX * float(cx + 1);
                 float z1 = cz == SUBDIVISIONS_PER_AXIS - 1 ? hi.z : lo.z + spanZ * float(cz + 1);
 
-                if (TestBox(vec3(x0, lo.y, z0), vec3(x1, hi.y, z1)) == VERDICT_OCCLUDED)
+                if (TestBox(vec3(x0, lo.y, z0), vec3(x1, hi.y, z1), TEXELS_NARROW) == VERDICT_OCCLUDED)
                 {
                     hiddenCells++;
                 }
@@ -256,8 +295,9 @@ void main()
         }
     }
 
-    // Verdict in the low nibble, hidden sub-cell count in the second byte.
-    results[index] = verdict | (hiddenCells << 8);
+    // Verdict in the low nibble, hidden sub-cell count in the second byte, and bit 16 set
+    // when a wider sampling footprint would have hidden a section the narrow one could not.
+    results[index] = verdict | (hiddenCells << 8) | (hiddenWide << 16);
 }
 ";
 
@@ -309,6 +349,19 @@ void main()
     long subCellsTested;
     long subCellsHidden;
     long sectionsFullyCellHidden;
+
+    // Why the test declined, kept apart. A run where half the sections were undecided could
+    // not say whether that was geometry near the camera, sections leaving the screen, or a
+    // fault - three answers wanting three different responses.
+    long nearPlane;
+    long offScreen;
+    long degenerate;
+
+    // The other candidate answer to the sky problem, and the cheaper one: keep sections
+    // whole and sample more texels at a finer level. Counted over exactly the sections the
+    // current narrow test could not hide, so it is directly comparable with the subdivision
+    // headroom above - one run now distinguishes the two levers.
+    long hiddenByWideSampling;
 
     public long SubCellsTested => subCellsTested;
     public long SubCellsHidden => subCellsHidden;
@@ -519,6 +572,7 @@ void main()
                 subCellsTested += LodHzbProjection.SubCellCount;
                 subCellsHidden += HiddenSubCellsOf(packed);
                 if (HiddenSubCellsOf(packed) == LodHzbProjection.SubCellCount) sectionsFullyCellHidden++;
+                if (HiddenByWideSamplingOf(packed)) hiddenByWideSampling++;
             }
 
             bool wasOccluded = false;
@@ -526,6 +580,9 @@ void main()
             {
                 case VerdictOccluded: occluded++; wasOccluded = true; break;
                 case VerdictFailedOpen: failedOpen++; break;
+                case VerdictNearPlane: failedOpen++; nearPlane++; break;
+                case VerdictOffScreen: failedOpen++; offScreen++; break;
+                case VerdictDegenerate: failedOpen++; degenerate++; break;
                 case VerdictBackground: background++; break;
                 default: visible++; break;
             }
@@ -536,7 +593,7 @@ void main()
             if (VerdictObserver != null && i < pendingKeys.Length)
                 VerdictObserver(pendingKeys[i], code);
 
-            if (code == VerdictFailedOpen) continue;
+            if (IsUndecided(code)) continue;
             if (i >= pendingDistances.Length) continue;
             int band = BandFor(pendingDistances[i]);
             bandTested[band]++;
@@ -644,8 +701,21 @@ void main()
         subCellsTested = 0;
         subCellsHidden = 0;
         sectionsFullyCellHidden = 0;
+        nearPlane = 0;
+        offScreen = 0;
+        degenerate = 0;
+        hiddenByWideSampling = 0;
         Array.Clear(bandTested);
         Array.Clear(bandOccluded);
+    }
+
+    /// <summary>Why the test declined, when it did. Empty when it never declined.</summary>
+    public string DescribeUndecided()
+    {
+        long total = nearPlane + offScreen + degenerate;
+        if (total == 0) return "";
+        return $"{nearPlane} crossed the near plane, {offScreen} left the screen, "
+            + $"{degenerate} were degenerate";
     }
 
     /// <summary>
@@ -656,9 +726,13 @@ void main()
     {
         if (subCellsTested == 0) return "";
         int n = LodHzbProjection.SubdivisionsPerAxis;
-        return $"splitting each not-hidden section {n}x{n}: {SubCellHiddenFraction:P1} of its "
-            + $"{subCellsTested} pieces would be hidden, and {sectionsFullyCellHidden} sections "
-            + "would go entirely";
+        long sections = subCellsTested / LodHzbProjection.SubCellCount;
+        double wideShare = sections > 0 ? hiddenByWideSampling / (double)sections : 0.0;
+
+        return $"of {sections} sections the test could not hide - splitting each {n}x{n} would "
+            + $"hide {SubCellHiddenFraction:P1} of the pieces and {sectionsFullyCellHidden} "
+            + $"sections entirely; sampling wider instead would hide {hiddenByWideSampling} "
+            + $"of them whole ({wideShare:P1}), which costs no change to what is drawn";
     }
 
     /// <summary>Hidden share per distance band, or an empty string when nothing was tested.</summary>

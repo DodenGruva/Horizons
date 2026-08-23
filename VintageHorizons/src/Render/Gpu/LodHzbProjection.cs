@@ -189,13 +189,31 @@ internal static class LodHzbProjection
     /// pixels into one texel, and pooling can only push the farthest depth farther, which
     /// makes the box harder to declare hidden.
     /// </summary>
-    public static int LevelFor(float widthPixels, float heightPixels, int levels)
+    /// <summary>
+    /// How many texels per axis the test is willing to sample. Two is the classic choice and
+    /// what this started with; it is also why big boxes hide so rarely.
+    ///
+    /// The level is picked so the rectangle spans at most this many texels, so allowing more
+    /// texels picks a FINER level, and a finer texel pools fewer screen pixels. That matters
+    /// because a box can only be hidden if it is inside the occluder by at least one texel -
+    /// a texel straddling the edge pulls in the background beyond it and refuses. At two
+    /// texels a 384-pixel-wide box is tested at 256-pixel texels and needs a quarter of the
+    /// screen of clearance; at eight it is tested at 64-pixel texels and needs an eighth of
+    /// that. The cost is the sample count, which grows as the square.
+    /// </summary>
+    public const int DefaultTexelsPerAxis = 2;
+
+    public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
+        LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);
+
+    public static int LevelFor(float widthPixels, float heightPixels, int levels, int texelsPerAxis)
     {
         if (levels <= 0) return 0;
+        int perAxis = Math.Max(2, texelsPerAxis);
         float longest = Math.Max(widthPixels, heightPixels);
-        if (!float.IsFinite(longest) || longest <= 2f) return 0;
+        if (!float.IsFinite(longest) || longest <= perAxis) return 0;
 
-        int level = (int)Math.Ceiling(Math.Log2(longest / 2.0));
+        int level = (int)Math.Ceiling(Math.Log2(longest / (double)perAxis));
         return Math.Clamp(level, 0, levels - 1);
     }
 
@@ -211,14 +229,25 @@ internal static class LodHzbProjection
         ILodHzbLevels pyramid,
         int screenWidth,
         int screenHeight,
+        out int sampledLevel) =>
+        IsOccluded(bounds, pyramid, screenWidth, screenHeight, DefaultTexelsPerAxis, out sampledLevel);
+
+    public static bool IsOccluded(
+        in LodHzbScreenBounds bounds,
+        ILodHzbLevels pyramid,
+        int screenWidth,
+        int screenHeight,
+        int texelsPerAxis,
         out int sampledLevel)
     {
         sampledLevel = -1;
+        int perAxis = Math.Max(2, texelsPerAxis);
         if (!bounds.Usable || pyramid == null || pyramid.Levels <= 0) return false;
         if (screenWidth <= 0 || screenHeight <= 0) return false;
 
         int level = LevelFor(
-            bounds.WidthPixels(screenWidth), bounds.HeightPixels(screenHeight), pyramid.Levels);
+            bounds.WidthPixels(screenWidth), bounds.HeightPixels(screenHeight),
+            pyramid.Levels, perAxis);
         (int levelWidth, int levelHeight) = pyramid.Size(level);
         if (levelWidth <= 0 || levelHeight <= 0) return false;
         sampledLevel = level;
@@ -238,7 +267,7 @@ internal static class LodHzbProjection
 
         // A rectangle that somehow still spans more texels than the level choice promised
         // is a bug in that choice, not something to sample expensively around. Fail open.
-        if ((x1 - x0) > 2 || (y1 - y0) > 2) return false;
+        if ((x1 - x0) > perAxis || (y1 - y0) > perAxis) return false;
 
         float farthest = float.NegativeInfinity;
         for (int y = y0; y <= y1; y++)

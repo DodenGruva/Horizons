@@ -50,6 +50,16 @@ public static class HzbChecks
                     $"verdict {verdict} survives {cells} packed cells");
                 c.Eq(cells, LodHzbClassifier.HiddenSubCellsOf(packed),
                     $"{cells} cells survive verdict {verdict}");
+                c.False(LodHzbClassifier.HiddenByWideSamplingOf(packed),
+                    $"the wide flag stays clear for verdict {verdict} with {cells} cells");
+
+                uint withWide = packed | (1u << 16);
+                c.True(LodHzbClassifier.HiddenByWideSamplingOf(withWide),
+                    $"the wide flag reads back for verdict {verdict} with {cells} cells");
+                c.Eq(verdict, LodHzbClassifier.VerdictOf(withWide),
+                    $"and does not disturb verdict {verdict}");
+                c.Eq(cells, LodHzbClassifier.HiddenSubCellsOf(withWide),
+                    $"nor the {cells} packed cells");
             }
         }
 
@@ -61,6 +71,26 @@ public static class HzbChecks
         };
         c.Eq(4, codes.Distinct().Count(), "the four verdicts are distinct");
         c.True(codes.All(code => code <= 0xF), "and all fit in the low nibble");
+
+        // The fail-open family. Splitting one bucket into causes must not change what any
+        // of them MEAN: each still says draw it, and a caller that treats one as a decision
+        // would hide terrain on the strength of the test having failed.
+        var undecided = new[]
+        {
+            LodHzbClassifier.VerdictFailedOpen, LodHzbClassifier.VerdictNearPlane,
+            LodHzbClassifier.VerdictOffScreen, LodHzbClassifier.VerdictDegenerate,
+        };
+        c.Eq(4, undecided.Distinct().Count(), "the fail-open causes are distinct from each other");
+        c.True(undecided.All(LodHzbClassifier.IsUndecided), "and all read as undecided");
+        c.True(undecided.All(code => code <= 0xF), "and all fit in the low nibble");
+        c.False(LodHzbClassifier.IsUndecided(LodHzbClassifier.VerdictOccluded),
+            "a hidden verdict is a decision, not an undecided one");
+        c.False(LodHzbClassifier.IsUndecided(LodHzbClassifier.VerdictVisible),
+            "and so is a visible one");
+        c.False(LodHzbClassifier.IsUndecided(LodHzbClassifier.VerdictBackground),
+            "and a background refusal, which is a specific reason rather than a failure");
+        c.Eq(0, undecided.Intersect(codes.Except(new[] { LodHzbClassifier.VerdictFailedOpen })).Count(),
+            "no fail-open cause collides with a decided verdict");
     }
 
     /// <summary>
@@ -82,7 +112,17 @@ public static class HzbChecks
             "the fail-open verdict matches");
         c.True(source.Contains($"VERDICT_BACKGROUND = {LodHzbClassifier.VerdictBackground}u"),
             "the background verdict matches");
+        c.True(source.Contains($"VERDICT_NEAR_PLANE = {LodHzbClassifier.VerdictNearPlane}u"),
+            "the near-plane cause matches");
+        c.True(source.Contains($"VERDICT_OFF_SCREEN = {LodHzbClassifier.VerdictOffScreen}u"),
+            "the off-screen cause matches");
+        c.True(source.Contains($"VERDICT_DEGENERATE = {LodHzbClassifier.VerdictDegenerate}u"),
+            "the degenerate cause matches");
         c.True(source.Contains("hiddenCells << 8"), "and the sub-cell count is packed where C# reads it");
+        c.True(source.Contains("hiddenWide << 16"), "and the wide-sampling flag where C# reads that");
+        c.True(source.Contains($"TEXELS_NARROW = {LodHzbProjection.DefaultTexelsPerAxis}"),
+            "the narrow sampling width matches the C# default");
+        c.True(source.Contains("TEXELS_WIDE = 8"), "and the wide one is the width measured offline");
 
         // GLSL reserved qualifiers used as identifiers. `sample` reached hardware once and
         // failed the compile with a message naming SAMPLE; the C# twin could never catch it

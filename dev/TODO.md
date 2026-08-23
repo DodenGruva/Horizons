@@ -154,72 +154,66 @@ the same line, and a settled-play reading needs `VINTAGEHORIZONS_STATS=1` - the 
 above are the 30-second join report, when a large share of sections are at the frontier and
 so carry the curtain.
 
-## Phase 4: built and measured, and its correctness gate is NOT closed
+## Phase 4: built, measured, and waiting on one comparison
 
-Everything below is in 0.3.65. **The owner last played 0.3.63**, so the two most important
-fixes have never run on hardware. Nothing the pyramid decides is allowed to affect drawing,
-and there is no code path from a verdict to a draw call.
+Everything below is in 0.3.68. **The owner last ran 0.3.66.** Nothing the pyramid decides can
+affect drawing; there is no code path from a verdict to a draw call.
 
 ### What is established
 
-**Cost passes the gate.** 27.4 us of GPU time per frame at 1440x1440p/12 levels, stable over
-twelve intervals, against 218.6 us of cached-terrain draw submission - about an eighth of the
-work it could remove. A frame-time A/B agrees at +0.023 ms, at the noise floor per view but
-consistent in sign across 5 of 6 views where an off-vs-off pair flips sign three times.
+**Cost passes.** 27.4 us of GPU time per frame at 1440p/12 levels against 218.6 us of
+cached-terrain draw submission - about an eighth of the work it could remove.
 
-**Benefit, at two ground-level locations, 16 million section-tests:**
+**It finds a lot, and it scales with distance.** Two ground-level locations, 16 million
+section-tests: 46-88% hidden within 1 km, rising to 98-100% past 2 km. An aerial route finds
+0.0%, which is the honest answer for a camera above the terrain rather than a defect.
 
-| distance | location 1 | location 2 |
-|---|---:|---:|
-| 0-1k | 88% | 46-48% |
-| 1-2k | 99% | 62-65% |
-| 2-4k | 100% | 78-90% |
-| 4-8k | 98-100% | 98% |
+**Most of what it finds is new.** 3,439 of 4,570 hides were sections no occlusion query had
+measured - **75% is genuinely additional** to the delayed occlusion already running.
 
-The absolute share depends on what is in front of the camera; the SHAPE replicates, and it
-is the owner's scaling argument. The aerial `bodanboys-gpu-baseline` route finds 0.0% and is
-the wrong instrument for this - it is a draw baseline, with the camera above the terrain.
+**Correctness is established offline, not from the query comparison.** `NeverHidesABoxThatPokesOut`
+builds a synthetic ridge, reduces it through the real pyramid code, and requires that no box
+touching background is ever hidden - past each edge, straddling a corner, spanning the screen,
+and swept a percent at a time from inside to outside. **The runtime query comparison is a
+cross-check with a noise floor above zero and must not be used as a gate; see G73.**
 
-**Whole sections are too coarse a unit, and this is measured.** Every not-hidden verdict -
-7.5 million of them - was refused because the section's screen rectangle overlaps sky, where
-nothing was drawn and the depth clear value stands. Only 25,316 sections were ever genuinely
-in view. A section is 64 blocks across at L0 and 1,024 at L4, so its box is either fully
-buried or it pokes into open sky. **Cluster subdivision (plan Phase 8) is what unlocks the
-rest of this, not a later optimisation**, and that is a plan-ordering decision for the owner.
+**Why so little is hidden, in exact terms (G74):** a box clears an occluder only by a whole
+texel of the level it is tested at, and the level is chosen from the box's size, so bigger
+boxes are tested at coarser levels and need proportionally more clearance. That is the sky
+problem, and it has two independent levers.
 
-### What is owed, in order
+### The one thing owed: which lever to pull
 
-1. **The correctness gate. 1,215 sections were called hidden that an occlusion query had
-   positively seen** - on 0.3.63, which compares a verdict one frame old against whatever the
-   query says now. Those are different views whenever the camera moves, and the count grew
-   only while moving: zero across 2,944,821 stationary checks, then 46 immediately after a
-   turn. 0.3.64 refuses to compare across a view change and counts those separately. **Until
-   that has run, this gate is open and nothing may act on a pyramid verdict.**
-2. **What the pyramid adds over the delayed occlusion already running.** The overlap is large
-   - millions of verdicts where the query hid what the pyramid did not - so the headline share
-   flatters it by an unknown amount. 0.3.65 counts sections hidden that no query had measured,
-   which is the only figure that represents a new saving. Never read.
-3. **An open-view control.** All three benefit samples face terrain; the owner confirmed the
-   intended control was still facing a mountain. Without it, 46-100% is a favourable-case
-   number of unknown typicality.
-4. **`.vhhzb why` has never produced a useful answer.** It searched coarsest-first and kept
-   reporting the 2,048-block section containing the camera. Fixed in 0.3.64, never run.
-5. **The headroom figure (0.3.66), which is the evidence for the cluster decision.** Every
-   section the whole-box test could not hide is split 4x4 across its footprint - height
-   untouched, since the refusal is about width - and each cell tested on identical terms.
-   The share of cells hidden is what a finer draw unit would win on exactly the population
-   that currently wins nothing. Never read. If it comes back high, cluster subdivision moves
-   ahead of the rest of the plan; if it comes back low, the sky refusals are not about
-   granularity and the phase needs rethinking rather than subdividing.
+Both are measured in 0.3.68 over the same population - the sections the current test could
+not hide - so a single run chooses between them:
 
-**How to run it:** install 0.3.65, `.vhhzb on`, face terrain, wait about fifteen seconds,
-`.vhhzb`, then `.vhhzb why` at a distant ridge. Both write to the client log. Alt-tabbing is
-safe - those frames are skipped and counted separately (G72 and the minimised-window fix).
+| lever | what it changes | offline result |
+|---|---|---|
+| **Wider sampling** (2 to 8 texels per axis) | the test only | ~24% more hidden boxes on a synthetic ridge |
+| **Cluster subdivision** (4x4 per section) | what is drawn, how terrain is stored, how sections are built | unmeasured on a valid population |
 
-**Known limits of the current evidence:** the owner's cache reaches about 4 km, so the 8-16k
-and 16k+ bands are empty and the far case is inferred from the 2-8k trend. GPU timers only
-arm under the benchmark harness, so a normal session reports 0.0 us for GPU cost. One
-machine, one resolution.
+Wider sampling is strictly cheaper if it works, and is a constant rather than a phase. **Do
+not promote cluster subdivision (plan Phase 8) until this comparison has run.**
+
+**How to run it:** install 0.3.68, stand where a ridge or mountain blocks the view with cached
+terrain behind it, `.vhhzb on`, wait about fifteen seconds, `.vhhzb`, then `.vhhzb why` at a
+distant ridge. Both write to the client log. Read the `headroom:` line, which now carries both
+levers, and `undecided because:` - if near-plane refusals dominate, the population is the ring
+of cached-but-masked sections around the camera and the figures are about that rather than
+about distant terrain.
+
+### Smaller and unverified
+
+- The frame-age bound on the query comparison (0.3.67) should shrink the unsafe disagreements
+  toward zero. If it does not, the attribution to instrument noise is wrong and this needs a
+  different explanation.
+- The undecided breakdown, the fixed `.vhhzb why`, and the two-lever comparison have never run.
+- The owner's cache reaches about 4 km, so the 8-16k and 16k+ bands are empty and the far case
+  is inferred from the 2-8k trend.
+- GPU timers only arm under the benchmark harness; a normal session reports 0.0 us GPU cost.
+- The frontier curtain remains unaddressed: one missing neighbour walls a section's edge from
+  its surface down to bedrock, so a single open side drops its floor 110 blocks. That is real
+  drawn geometry and a candidate for its own work, independent of the depth test.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
