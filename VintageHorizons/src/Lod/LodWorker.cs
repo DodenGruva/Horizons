@@ -115,6 +115,11 @@ public class MeshResult
     public int VertexCount;
     public int IndexCount;
 
+    // Exact worker-produced opaque quads for the optional Phase 7 renderer. Kept beside
+    // the expanded arrays until the packed path has passed its visual/performance gates.
+    public uint[] PackedOpaqueQuads = Array.Empty<uint>();
+    public int PackedOpaqueQuadCount;
+
     // Water/translucent geometry, drawn in a second blended pass.
     public float[]? WaterXyz;
     public byte[]? WaterRgba;
@@ -141,6 +146,9 @@ public class MeshResult
     public long EstimatedUploadBytes => SectionSnapshot.SaturatingAdd(
         UploadBytes(VertexCount, IndexCount),
         UploadBytes(WaterVertexCount, WaterIndexCount));
+
+    public long EstimatedPackedOpaqueBytes =>
+        LodPackedQuadFormat.Bytes(PackedOpaqueQuadCount);
 
     static long UploadBytes(int vertexCount, int indexCount)
     {

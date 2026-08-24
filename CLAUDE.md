@@ -92,6 +92,11 @@ Completion evidence:
   patch component by exactly one in both `modinfo.json` and the project file (for example,
   `0.3.40` -> `0.3.41`). Never put changed binaries behind an already-used version. Ordinary
   compile and test runs are not playable artifacts and do not consume a version number.
+- Standing owner instruction (2026-08-24): whenever source is ready for the owner's in-game
+  testing, automatically advance the patch, create the ready test zip, verify it, and copy it to
+  `%APPDATA%\VintagestoryData\Mods`. Do not stop at a source-only handoff. This authorizes the
+  private test artifact and local Mods-folder copy; it does not authorize launching the game,
+  committing, pushing, tagging, or publishing.
 - Full test tiers and isolated game-process rules are documented in `README.md`.
 - Set `VINTAGE_STORY` to the game install when it is not at the project fallback location.
 - Never launch or stop a Vintage Story test process outside the repository's isolation scripts,

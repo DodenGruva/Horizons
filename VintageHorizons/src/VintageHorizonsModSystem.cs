@@ -213,7 +213,7 @@ public class VintageHorizonsModSystem : ModSystem
                     renderer.DepthPyramidEnabled = true;
                     renderer.GpuCullEnabled = true;
 
-                    // Last, and inside the cull branch: where the picture is taken only
+                    // Last, and inside the cull branch: the second same-frame picture only
                     // means anything to something that reads it.
                     if (config.LateDepthPicture) renderer.LateDepthPyramid = true;
                 }
@@ -1331,12 +1331,15 @@ public class VintageHorizonsModSystem : ModSystem
                 Mod.Logger.Notification(
                     "  hzb: {0} | cpu {1:0.0}us avg / {2:0.0}us max, p95 {3:0}/p99 {4:0} | "
                     + "gpu {5:0.0}us avg / {6:0.0}us max over {7} timed builds | "
-                    + "classify gpu {8:0.0}us avg / {9:0.0}us max over {10} dispatches",
+                    + "mid-frame gpu {8:0.0}us avg / {9:0.0}us max over {10} builds | "
+                    + "classify gpu {11:0.0}us avg / {12:0.0}us max over {13} dispatches",
                     renderer.DescribeDepthPyramid(),
                     renderer.HzbCost.AvgUs, renderer.HzbCost.MaxUs,
                     renderer.HzbCost.P95Us, renderer.HzbCost.P99Us,
                     renderer.GpuHzbCost.AvgUs, renderer.GpuHzbCost.MaxUs,
                     renderer.GpuHzbCost.Calls,
+                    renderer.GpuSplitHzbCost.AvgUs, renderer.GpuSplitHzbCost.MaxUs,
+                    renderer.GpuSplitHzbCost.Calls,
                     renderer.GpuClassifyCost.AvgUs, renderer.GpuClassifyCost.MaxUs,
                     renderer.GpuClassifyCost.Calls);
 
@@ -1430,6 +1433,7 @@ public class VintageHorizonsModSystem : ModSystem
             if (arena != null)
             {
                 Mod.Logger.Notification("  gpu arena shadow: {0}", arena);
+                Mod.Logger.Notification("  packed opaque: {0}", renderer.DescribePackedDraw());
                 // One command per legacy opaque draw call, so commands against batches is
                 // the draw-call reduction a regional multi-draw would deliver - but only
                 // over the terrain the arenas actually hold, which is why coverage is
@@ -1447,12 +1451,17 @@ public class VintageHorizonsModSystem : ModSystem
             if (renderer.GpuTimingRequested)
             {
                 LodPhaseCost opaqueGpu = renderer.GpuOpaqueCost;
+                LodPhaseCost splitNearGpu = renderer.GpuSplitNearCost;
+                LodPhaseCost splitFarGpu = renderer.GpuSplitFarCost;
                 LodPhaseCost waterGpu = renderer.GpuWaterCost;
                 Mod.Logger.Notification(
                     "  delayed GPU pass p95/p99/max us: opaque {0:0}/{1:0}/{2:0} over {3} samples | "
-                    + "water {4:0}/{5:0}/{6:0} over {7}; {8} pending, {9} ring-full skips, "
-                    + "{10} time-query target conflicts, timing {11}",
+                    + "split near {4:0}/{5:0}/{6:0} over {7} | split far {8:0}/{9:0}/{10:0} over {11} | "
+                    + "water {12:0}/{13:0}/{14:0} over {15}; {16} pending, {17} ring-full skips, "
+                    + "{18} time-query target conflicts, timing {19}",
                     opaqueGpu.P95Us, opaqueGpu.P99Us, opaqueGpu.MaxUs, opaqueGpu.Calls,
+                    splitNearGpu.P95Us, splitNearGpu.P99Us, splitNearGpu.MaxUs, splitNearGpu.Calls,
+                    splitFarGpu.P95Us, splitFarGpu.P99Us, splitFarGpu.MaxUs, splitFarGpu.Calls,
                     waterGpu.P95Us, waterGpu.P99Us, waterGpu.MaxUs, waterGpu.Calls,
                     renderer.GpuTimerPendingResults, renderer.GpuTimerUnavailableSlots,
                     renderer.GpuTimerTargetBusy, renderer.GpuTimingActive ? "active" : "inactive");
@@ -1952,6 +1961,27 @@ public class VintageHorizonsModSystem : ModSystem
                     + "identical, and anything that differs is a bug worth reporting.");
             });
 
+        // Phase 7 keeps the accepted expanded batching path beside the packed one for a
+        // controlled A/B. This switch is deliberately session-only until the shader-pull
+        // path has passed a real-world visual and timing gate on representative hardware.
+        capi.ChatCommands.Create("vhpacked")
+            .WithDescription("Use 12-byte opaque quad records for batched distant terrain. Needs .vhgpu on and .vhindirect on. Experimental and session-only.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] packed opaque drawing " + renderer.DescribePackedDraw());
+
+                renderer.PackedDrawEnabled = (bool)args[0];
+                return TextCommandResult.Success(
+                    "[VintageHorizons] packed opaque drawing " + renderer.DescribePackedDraw()
+                    + " This switch is not saved yet. Compare the same view against off; "
+                    + "the picture must remain identical.");
+            });
+
         // The first switch in this mod that can take terrain OFF the screen rather than
         // change how it gets there. Off by default, not saved, and it says plainly what to
         // look for - because the only failure that matters here is terrain that should be
@@ -1998,7 +2028,7 @@ public class VintageHorizonsModSystem : ModSystem
         // question it settles is a comparison, and a comparison whose two halves are different
         // builds is one nobody can run while looking at the same hillside.
         capi.ChatCommands.Create("vhlate")
-            .WithDescription("Take the depth picture at the end of the frame so distant cached terrain can hide other cached terrain. Needs .vhcull on. Off by default; remembered between sessions.")
+            .WithDescription("Split cached terrain near/far and take a fresh depth picture between them, so cached hills can hide farther terrain in the same frame. Needs .vhcull on. Off by default; remembered between sessions.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
             .HandleWith(args =>
             {
@@ -2021,8 +2051,8 @@ public class VintageHorizonsModSystem : ModSystem
                 // halves and look entirely reasonable.
                 renderer.ResetDepthPyramidInterval();
 
-                // Same coupling as .vhcull on, and for the same reason: moving where the
-                // picture is taken does nothing at all unless something reads it, and a switch
+                // Same coupling as .vhcull on, and for the same reason: adding a second
+                // picture does nothing at all unless something reads it, and a switch
                 // sitting on with nothing underneath it is how a playtest gets spent measuring
                 // an instrument (G72).
                 if (renderer.LateDepthPyramid && !renderer.DepthPyramidEnabled)
@@ -2033,9 +2063,8 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success(
                     "[VintageHorizons] depth picture " + renderer.DescribeLateDepthPyramid()
                     + (renderer.LateDepthPyramid
-                        ? " The picture is one frame old, so the thing to watch for is distant "
-                          + "terrain blinking out while you turn quickly. Turn it off in the "
-                          + "same spot to compare."
+                        ? " Watch the frame-time graph for new hitches and compare the same "
+                          + "view with it off; every verdict is now from the current frame."
                         : ""));
             });
 

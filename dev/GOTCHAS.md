@@ -1658,6 +1658,68 @@ with the reason recorded rather than a number presented as derived.
 
 **Found:** 2026-08-24, session 45.
 
+### G84 - An std430 `uvec3` array does not have a twelve-byte stride
+
+**Trigger:** packing three 32-bit words into an SSBO record.
+
+**Trap:** the struct looks twelve bytes wide in source, but std430 arrays round a three-component
+vector's stride to sixteen bytes. Using `uvec3[]` would add 33% to the packed arena while the CPU,
+tests and telemetry continued calling the format twelve bytes.
+
+**Do:** pull the buffer as scalar `uint[]` and index three words per record, or explicitly accept
+and report a sixteen-byte GPU format. Pin the shader declaration as well as the CPU constants.
+
+**Found:** 2026-08-24, session 46.
+
+### G85 - A shared compute command layout constrains a new indirect draw type
+
+**Trigger:** changing from indexed indirect draws to draw-arrays indirect draws while reusing a
+compute cull that edits command slots.
+
+**Trap:** `DrawElementsIndirectCommand` is five words and `DrawArraysIndirectCommand` is four.
+Packing the latter naturally changes every later slot address, while the cull shader still writes
+`commands[index * 5 + 1]`. The result is suppression editing the wrong commands.
+
+**Do:** retain the five-word stride and pad draw-arrays commands until the producer, compute shader,
+draw call and deterministic layout checks are deliberately migrated together.
+
+**Found:** 2026-08-24, session 46.
+
+### G86 - Geometry-format savings are not process-memory savings during dual publication
+
+**Trigger:** validating a packed format beside the established representation.
+
+**Trap:** twelve bytes versus eighty-eight is an 86.4% representation reduction, but publishing
+both regional forms temporarily increases total arena memory, and legacy meshes remain resident
+for fallback. Reporting the format ratio as total memory saved would claim a benefit the process
+does not yet realize.
+
+**Do:** report packed and expanded regional bytes separately during the A/B. After visual and timing
+acceptance, stop retaining the expanded regional copy on the selected product path; measure total
+process memory separately.
+
+**Found:** 2026-08-24, session 46.
+
+### G87 - Packing bytes can lose if it increases unique vertex work
+
+**Trigger:** replacing indexed mesh vertices with procedural vertex pulling.
+
+**Trap:** 0.3.85 reduced each regional opaque quad from 88 bytes to 12 and matched the picture, but
+used draw-arrays expansion for six full shader invocations. The accepted indexed mesh shades four
+unique corners and reuses two of them. On the primary driver the same scene fell from about 300 to
+260 FPS—roughly 0.51 ms or 13% slower—so the bandwidth win did not pay for 50% more decoding.
+
+**Do:** compare unique post-transform vertices, not only stored bytes or triangle vertices. For
+packed quads, keep one reusable `0,1,2,0,2,3` index pattern and rebase four virtual corners per
+record; retain the expanded path until total frame time proves the replacement.
+
+**Evidence:** 0.3.86 made exactly that topology change. In the owner's same scene it remained
+visually identical and restored packed performance to the exact same FPS as expanded batching.
+The result isolates the extra unique vertex work as the 0.3.85 regression and establishes that the
+12-byte decoder itself is neutral in this view; it does not establish a standalone FPS gain.
+
+**Found:** 2026-08-24, session 46.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

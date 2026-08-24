@@ -93,12 +93,16 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         LodGpuArenaRange Vertices,
         LodGpuArenaRange Indices,
         int VertexCount,
-        int IndexCount)
+        int IndexCount,
+        LodGpuArenaRange PackedQuads,
+        int PackedQuadCount)
     {
         /// <summary>The value a regional multi-draw would use to rebase stored indices.</summary>
         public long BaseVertex => Vertices.Offset / LodGpuGeometryFormat.VertexStrideBytes;
 
         public long FirstIndex => Indices.Offset / LodGpuGeometryFormat.IndexStrideBytes;
+
+        public long FirstPackedQuad => PackedQuads.Offset / LodPackedQuadFormat.StrideBytes;
     }
 
     /// <summary>
@@ -110,6 +114,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
 
     readonly LodGpuArena vertices;
     readonly LodGpuArena indices;
+    readonly LodGpuArena packed;
     readonly Dictionary<long, MirroredSection> sections = new();
 
     /// <summary>
@@ -125,6 +130,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
 
     public LodGpuArena VertexArena => vertices;
     public LodGpuArena IndexArena => indices;
+    public LodGpuArena PackedArena => packed;
     public bool Verifying => verify;
     public int Count => sections.Count;
     public long MirroredSections { get; private set; }
@@ -136,6 +142,13 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     public long LiveBytes => vertices.LiveBytes + indices.LiveBytes;
     public long PendingRetireBytes => vertices.PendingRetireBytes + indices.PendingRetireBytes;
     public long AllocationFailures => vertices.AllocationFailures + indices.AllocationFailures;
+    public long PackedAllocationFailures => packed.AllocationFailures;
+    public long PackedLiveBytes => packed.LiveBytes;
+    public long PackedCommittedBytes => packed.CommittedBytes;
+    public long TotalLiveBytes => LiveBytes + PackedLiveBytes;
+    public long TotalCommittedBytes => CommittedBytes + PackedCommittedBytes;
+    public long PackedMirroredSections { get; private set; }
+    public long PackedSkippedSections { get; private set; }
 
     public LodGpuGeometryMirror(
         ILodGpuArenaBackend backend,
@@ -143,7 +156,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         bool verify = false,
         int regionShift = DefaultRegionShift,
         LodGpuArenaLimits? vertexLimits = null,
-        LodGpuArenaLimits? indexLimits = null)
+        LodGpuArenaLimits? indexLimits = null,
+        LodGpuArenaLimits? packedLimits = null)
     {
         vertices = new LodGpuArena(
             backend,
@@ -153,6 +167,10 @@ internal sealed class LodGpuGeometryMirror : IDisposable
             backend,
             LodGpuArenaKind.Index,
             indexLimits ?? LodGpuArenaPolicy.IndexLimits(ceilingBytes));
+        packed = new LodGpuArena(
+            backend,
+            LodGpuArenaKind.PackedQuad,
+            packedLimits ?? LodGpuArenaPolicy.PackedLimits(ceilingBytes));
         this.verify = verify;
         this.regionShift = regionShift;
     }
@@ -224,8 +242,41 @@ internal sealed class LodGpuGeometryMirror : IDisposable
             return Skip(key, hadPrevious, previous);
         }
 
+        LodGpuArenaRange packedRange = LodGpuArenaRange.None;
+        int packedCount = 0;
+        uint[]? packedWords = geometry.PackedQuads;
+        if (packedWords != null && geometry.PackedQuadCount > 0)
+        {
+            long packedBytes = LodPackedQuadFormat.Bytes(geometry.PackedQuadCount);
+            if (packed.TryAllocate(group, packedBytes, out packedRange))
+            {
+                EnsureScratch(packedBytes);
+                LodPackedQuadFormat.EncodeBytes(
+                    packedWords, geometry.PackedQuadCount, scratch);
+                bool packedStored = packed.Upload(
+                        packedRange, scratch.AsSpan(0, (int)packedBytes))
+                    && Matches(packed, packedRange, packedBytes);
+                if (packedStored)
+                {
+                    packedCount = geometry.PackedQuadCount;
+                    PackedMirroredSections++;
+                }
+                else
+                {
+                    packed.Retire(packedRange);
+                    packedRange = LodGpuArenaRange.None;
+                    PackedSkippedSections++;
+                }
+            }
+            else
+            {
+                PackedSkippedSections++;
+            }
+        }
+
         sections[key] = new MirroredSection(
-            publication.Identity, region, group, vertexRange, indexRange, vertexCount, indexCount);
+            publication.Identity, region, group, vertexRange, indexRange, vertexCount, indexCount,
+            packedRange, packedCount);
         MirroredSections++;
         if (verify) VerifiedSections++;
 
@@ -233,6 +284,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         {
             vertices.Retire(previous.Vertices);
             indices.Retire(previous.Indices);
+            if (previous.PackedQuads.IsLive) packed.Retire(previous.PackedQuads);
             Replacements++;
         }
 
@@ -244,10 +296,11 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         if (!sections.Remove(sectionKey, out MirroredSection section)) return;
         vertices.Retire(section.Vertices);
         indices.Retire(section.Indices);
+        if (section.PackedQuads.IsLive) packed.Retire(section.PackedQuads);
     }
 
     /// <summary>Bounded reclamation for one frame. Never waits on a fence.</summary>
-    public int Reclaim() => vertices.Reclaim() + indices.Reclaim();
+    public int Reclaim() => vertices.Reclaim() + indices.Reclaim() + packed.Reclaim();
 
     /// <summary>
     /// The model, the GPU buffers and the records that make them meaningful are one unit:
@@ -260,6 +313,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         regionGroups.Clear();
         vertices.Clear();
         indices.Clear();
+        packed.Clear();
     }
 
     public void Dispose()
@@ -268,6 +322,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         regionGroups.Clear();
         vertices.Dispose();
         indices.Dispose();
+        packed.Dispose();
         scratch = [];
         readback = [];
     }
@@ -340,6 +395,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         sections.Remove(key);
         vertices.Retire(previous.Vertices);
         indices.Retire(previous.Indices);
+        if (previous.PackedQuads.IsLive) packed.Retire(previous.PackedQuads);
         return false;
     }
 
@@ -370,6 +426,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     public string Describe() =>
         $"sections {sections.Count} live, {MirroredSections} mirrored, {Replacements} replaced, "
         + $"{SkippedSections} skipped | vertices {Describe(vertices)} | indices {Describe(indices)}"
+        + $" | packed {Describe(packed)}, {PackedMirroredSections} mirrored, "
+        + $"{PackedSkippedSections} skipped"
         + (verify ? $" | verified {VerifiedSections}, {VerificationFailures} mismatched" : "");
 
     static string Describe(LodGpuArena arena) =>

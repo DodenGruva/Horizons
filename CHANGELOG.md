@@ -8,71 +8,45 @@ first.
 
 ## [Unreleased]
 
-**Distant terrain can now hide other distant terrain, and the memory pool grows with your view
-distance.** The mod works out what is hidden by taking a snapshot of how far away everything is.
-That snapshot used to be taken before any distant terrain was drawn, so only the game's own nearby
-hills could hide anything - which meant that from a hilltop looking out, nothing was hidden at all.
-Taken at the end of the frame instead, it hides 8% of pieces within a kilometre, 20% at one to two,
-and 35% at two to four, for the same cost. `.vhlate on`, off by default and remembered per install.
+## [0.3.86] - 2026-08-24
 
-**The pool holding distant terrain now sizes itself from your cached-terrain draw distance.** It
-was a fixed 256 MB, which on a normal view was refusing a third of the terrain and quietly sending
-it down the slower path - so the faster drawing could only ever help part of the screen. It now
-asks for what your own settings imply, and the owner measured 300 to 480 FPS at the same spot after
-the change. It is a limit rather than a reservation, so a distance you never reach costs nothing,
-and a card that cannot afford your setting is a reason to turn the distance down.
+**Packed terrain now reuses four decoded corners per quad.** The first 0.3.85 experiment looked
+identical but reduced the owner's same-scene frame rate from about 300 to 260 FPS. It saved memory
+while making the vertex shader reconstruct six corners for every quad, where the expanded indexed
+path processed only four unique corners.
 
-**The depth measurements are readable in an ordinary session.** They previously only recorded
-themselves when the game was launched through the benchmark script, so a normal run reported zero
-and looked free rather than unmeasured. Switching the depth feature on now starts the clock, and
-the report says in words whether its own figures are real.
+This revision keeps the exact 12-byte records but draws them through one small reusable index
+pattern. Each packed quad is decoded four times and the graphics card reuses those results for its
+six triangle indices. The 0.3.85 draw-arrays implementation is rejected. In the owner's same-scene
+comparison, 0.3.86 looked exactly the same and held exactly the same FPS with packing on and off.
+That accepts the indexed format on the primary driver: it is not a standalone FPS win in this
+scene, but no longer erases the compact representation's benefit. `.vhpacked` remains opt-in while
+paired-route telemetry, a second driver, and retirement of the temporary expanded regional mirror
+remain open.
 
-**Known:** with the end-of-frame snapshot on, a few pieces of distant terrain can flicker while the
-camera turns. The next change replaces the one-frame-old snapshot with one taken during the same
-frame, which removes the cause rather than guarding against it.
+## [0.3.85] - 2026-08-24
 
-**Distant terrain hidden behind hills can now actually be skipped.** Until now the mod worked
-out what was hidden and then drew it anyway - the answer arrived a frame too late to use. The
-graphics card now makes that decision and cancels the drawing in the same frame, so there is no
-window in which the world has moved on from the answer. Off by default, and remembered per
-install once switched on: `.vhgpu on`, `.vhindirect on`, `.vhcull on`.
+**Packed opaque terrain is ready for an opt-in playtest.** Greedy quads now have an exact
+12-byte regional representation instead of four vertices plus six indices (88 bytes), an 86.4%
+reduction. The worker writes packed records directly, a bounded companion arena publishes them,
+and the shader reconstructs the same six triangle vertices. Turn it on with `.vhpacked on` after
+`.vhgpu on` and `.vhindirect on`; `.vhpacked off` returns to expanded batching for an immediate
+same-view comparison.
 
-It is off by default deliberately. Switching to batched drawing gives up the older
-occlusion-query saving, and depth culling does not yet replace it in ordinary play, because
-cached terrain cannot occlude cached terrain until a later phase. Turning it on today costs a
-few frames and returns little on most views; that trade is the owner's to make, not a default.
+This is deliberately not a default yet. Expanded batching and the established renderer remain
+complete same-frame fallbacks if packed geometry, a GPU page, the shader, or a draw is unavailable.
+The packed path is source- and harness-tested; this package exists to establish visual parity and
+real-driver timing before the temporary dual regional representation is retired.
 
-**The hidden-terrain test now looks at the depth picture in more detail.** It sampled a
-2x2 patch and now samples 8x8 at a correspondingly finer level, which lets a piece of terrain
-count as hidden when it clears the ridge by far less. Measured in game: of 404 pieces found
-hidden, 248 would have been drawn under the old setting - 61% of all hides come from this one
-change. Chosen by measuring both candidate fixes offline against a real terrain cache rather
-than by argument; the alternative, splitting terrain into smaller pieces, wins about half as
-much and would require rewriting how terrain is stored, built and drawn.
+## [0.3.84]
 
-**A whole class of testing moved off the owner's machine.** The measurements this work depends
-on now run against a real cache with no game process, in under a minute, and reproduce the
-game's own figures to within a point at the same settings. Three earlier playtests had been
-spent on instruments that turned out to be broken; the offline harness found two equivalent
-faults in its own first run in ten minutes.
+Human-played and accepted on the primary machine.
 
-**Fixes.** A counter reporting what the sampling change bought was gated so that it could only
-ever read zero, and reported "no benefit" for a full playtest. Restoring the graphics state
-after the mod's compute work missed one of the two buffer slots it binds. `.vhcull` printed its
-status only to chat, which cannot be copied out of the game, so a test run could not afterwards
-be shown to have tested anything.
-
-Human-tested on one machine for visual correctness. Culling has not been shown to pay for
-itself, its cost is not yet broken down per stage, and no non-AMD driver has run it.
-
-
-**A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
-The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
-gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
-cached-on-cached depth strategies and packed quads before any default decision. This is a
-planning and verification artifact only; it changes no runtime rendering behavior.
-
-Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+**Distant terrain now hides other distant terrain from a same-frame depth picture.** The opaque
+pass is split into near and far buckets; after the near hills draw, the mod refreshes its depth
+snapshot and uses it to cancel hidden far draws. This replaces the one-frame-old experiment and
+removes its stale-picture policy, camera-delta re-base and turning guard. The owner reports the
+flicker is gone and the result runs very well.
 
 ## [0.3.83]
 

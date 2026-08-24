@@ -28,6 +28,10 @@ param(
     # switches were set by hand is how session 40 lost a run.
     [ValidateSet('0', '1')]
     [string]$GpuIndirect,
+    # Pull twelve-byte opaque quad records in the vertex shader. Keep indirect drawing on
+    # in both halves of the A/B so this isolates packing rather than batching.
+    [ValidateSet('0', '1')]
+    [string]$GpuPacked,
     # Build the private depth pyramid every frame. It hides nothing, so an A/B over this
     # measures the mechanism's cost alone - which is exactly the Phase 4 gate.
     [ValidateSet('0', '1')]
@@ -1032,6 +1036,9 @@ if ($GpuArenaPageMb) {
 if ($GpuIndirect) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_INDIRECT = $GpuIndirect
 }
+if ($GpuPacked) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_PACKED = $GpuPacked
+}
 if ($Hzb) {
     $clientEnvironment.VINTAGEHORIZONS_DEPTH_PYRAMID = $Hzb
 }
@@ -1192,6 +1199,7 @@ try {
         gpuArenaMb = if ($GpuArenaMb) { $GpuArenaMb } else { $null }
         gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
         gpuIndirect = if ($GpuIndirect) { $GpuIndirect } else { $null }
+        gpuPacked = if ($GpuPacked) { $GpuPacked } else { $null }
         hzb = if ($Hzb) { $Hzb } else { $null }
         gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')

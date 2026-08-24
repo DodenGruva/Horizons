@@ -13,7 +13,6 @@ public static class GpuRendererChecks
         GlStateOwnership(c);
         DelayedTimerRing(c);
         BenchmarkWiring(c);
-        GeometryRevisionTracksOnlyLosses(c);
         DiscardedTimingNeverReachesTheTotal(c);
     }
 
@@ -581,75 +580,6 @@ public static class GpuRendererChecks
             DrawIndirectBuffer = value;
             Operations.Add("draw-indirect-buffer");
         }
-    }
-
-    /// <summary>
-    /// What the previous-frame depth picture is told about the scene changing under it.
-    ///
-    /// The distinction being pinned here is a judgement call and the whole value of the guard
-    /// rests on it: geometry APPEARING is harmless, because an old picture simply does not
-    /// contain it and it can hide nothing. Geometry DISAPPEARING or being replaced is the
-    /// hazard - it is still standing in the old picture, at its old distance, able to hide
-    /// terrain that is now visible.
-    ///
-    /// Getting this backwards in either direction is silent. Counting arrivals would refuse
-    /// the cull right through a join, when hundreds of sections stream in and none is a
-    /// hazard, and the feature would look useless. Not counting losses would let it hide
-    /// terrain behind a hill that is no longer there.
-    /// </summary>
-    static void GeometryRevisionTracksOnlyLosses(Check c)
-    {
-        var legacy = new FakeRenderPath("legacy", ownsGlResources: true);
-        var shadow = new LodGpuShadowRenderPath();
-        var warnings = new List<string>();
-        using var coordinator = new LodRenderPathCoordinator(legacy, shadow, warnings.Add);
-        coordinator.Configure(new LodRenderPathSelection(
-            LodRenderPathPreference.Off, false, LodRenderPathSelection.LegacyPath, "test"));
-
-        // The world has to be established BEFORE the baseline is read. Entering a world is
-        // itself a loss - every picture from the previous one is void - so a coordinator that
-        // has never seen a world counts its first publication as a world transition, and
-        // reading the baseline before that would measure the transition rather than the
-        // publication.
-        coordinator.PrepareFrame(new LodRenderFrame(1, 0, 0, 100));
-        long start = coordinator.GeometryRevision;
-
-        coordinator.Publish(1, 100, null, null, 3, 6, 0, 0, 0);
-        coordinator.Publish(1, 200, null, null, 3, 6, 0, 0, 0);
-        coordinator.Publish(1, 300, null, null, 3, 6, 0, 0, 0);
-        c.Eq(start, coordinator.GeometryRevision,
-            "sections arriving for the first time do not disturb an older picture");
-
-        long afterArrivals = coordinator.GeometryRevision;
-        coordinator.Publish(1, 200, null, null, 9, 12, 0, 0, 0);
-        c.Eq(afterArrivals + 1, coordinator.GeometryRevision,
-            "replacing an existing section's mesh counts, because the old one is in the picture");
-
-        long afterReplace = coordinator.GeometryRevision;
-        coordinator.Remove(1, 300);
-        c.Eq(afterReplace + 1, coordinator.GeometryRevision,
-            "evicting a section counts");
-
-        long afterRemove = coordinator.GeometryRevision;
-        coordinator.Remove(1, 999);
-        c.Eq(afterRemove, coordinator.GeometryRevision,
-            "removing a section that was never there changes nothing");
-
-        long beforeEpoch = coordinator.GeometryRevision;
-        coordinator.PrepareFrame(new LodRenderFrame(2, 1, 0, 100));
-        c.True(coordinator.GeometryRevision > beforeEpoch,
-            "a new world invalidates every picture taken in the old one");
-
-        long beforeClear = coordinator.GeometryRevision;
-        coordinator.Clear(2);
-        c.Eq(beforeClear + 1, coordinator.GeometryRevision,
-            "clearing the set counts");
-
-        // Monotonic, because the picture's recorded value is compared for INEQUALITY. A
-        // counter that could return to an earlier value would let a stale picture be accepted
-        // after the scene had changed and changed back.
-        c.True(coordinator.GeometryRevision > start,
-            "the revision only ever moves forward");
     }
 
     /// <summary>

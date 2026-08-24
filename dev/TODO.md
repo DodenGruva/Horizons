@@ -43,79 +43,61 @@ batching-plus-culling against the established path with occlusion queries - not 
 against itself. Nothing has run that, which is why the switches are saved rather than
 defaulted on.
 
-## Phase 6: the split is next, and most of the pieces already exist
+## Phase 7: portability and final memory policy remain
 
-**Decided 2026-08-24, reversing this session's own choice.** The depth picture will be taken
-DURING the frame, between a near and a far bucket of cached terrain, so every verdict is
-same-frame. The previous-frame picture was built, measured and played first; it is cheaper and it
-works, but its verdicts are one frame old and the owner saw distant terrain flicker in the MIDDLE
-of the screen while turning. Mid-screen means staleness is not a boundary artefact a guard can
-contain, which is what the whole case for keeping it rested on. See G82 - the edge theory was
-assumed rather than asked, and a guard was built on it.
+The source path is complete. Greedy opaque rectangles now have an exact three-word record:
+four 7-bit X/Z endpoints, two quarter-block 16-bit heights, three face bits, and the unmodified
+32-bit RGBA/tint payload. That is **12 bytes instead of 88**, an 86.4% reduction from the accepted
+four-vertex/six-index representation. Eight bytes cannot retain those semantics; sixteen adds no
+fidelity. Workers write packed records directly beside the expanded arrays, a separate bounded
+regional arena publishes them, and `lodterrainpacked` pulls four unique corners per quad while a
+shared index pattern emits the same six triangle indices.
 
-**What carries over unchanged.** The pyramid, the cull shader, the classifier, the arena sizing,
-the telemetry, and `LodStaleDepthPolicy`'s projection/geometry/teleport guards. The split needs no
-staleness guards at all, so the turning guard added in 0.3.83 should be REMOVED rather than tuned,
-along with the camera-delta re-base (`LodHzbProjection.RebaseForCameraDelta`) if nothing else
-claims it.
+`.vhpacked on|off` provides an immediate, session-only visual comparison. The scriptable gate is
+`VINTAGEHORIZONS_GPU_PACKED=0|1` or `bench-windows.ps1 -GpuPacked 0|1`; keep arenas and indirect
+drawing on in both halves. A missing shader, arena, page or draw leaves expanded batching active,
+and a draw failure repairs the same frame through the established renderer.
 
-**What the split has to add.** Splitting the command list into a near and a far bucket; two cull
-dispatches and two multi-draw runs; and a second picture taken between them, while the drawer holds
-its bound state. The drawer's current all-or-nothing rule - every batch issues or none, because
-half a horizon is worse than a slow one - is the delicate part.
+**Source evidence:** the fast tier passes 3,911 assertions. The 782 packed-format assertions cover
+all six faces, L0/L1/L3/L6, the 14-bit height limit, every tint/material alpha band, quarter-block
+cover, degenerate rectangles, rejection cases and exact decoded equality with the expanded mesh.
+Arena replacement/fence lifetime, byte-for-byte upload, padded indirect commands, batching and
+static shader structure and the indexed-only backend are separately pinned.
 
-**What is already known about its cost.** A second full-screen copy and reduction, plus a mid-frame
-sync point: the card must finish the near draws before the depth can be read. That stall is the
-thing to watch on the owner's frame-time graph, since he reads hitch frequency off it and his
-stated goal is smoothness rather than throughput.
+**Primary-driver result from 0.3.85:** visual parity passed, but performance did not. The owner
+reported the same scene at about 300 FPS expanded and 260 FPS packed, approximately 0.51 ms or 13%
+slower. The first backend decoded six independently generated vertices per quad while the expanded
+indexed path shaded four unique corners. That draw-arrays implementation is rejected.
 
-**What is already known about its value.** From an ordinary hilltop with an open view, the picture
-taken before cached terrain hides NOTHING - 0% of 27,229 sections across every band - because
-vanilla's terrain is behind and below the camera. The end-of-frame picture hid 8% within a
-kilometre, 20% at 1-2k and 35% at 2-4k over 40,657 tests at the same spot, for 25.4us against
-22.1us. The split cannot reach the near bucket, so expect less than that; the offline model put a
-split at about an eighth of what is still drawn on this world, and roughly a quarter once
-re-weighted onto a grown one.
+0.3.86 keeps the 12-byte record and uses one reusable `0,1,2,0,2,3` index pattern, rebased by four
+virtual corners per packed quad. This restores four decoder invocations per quad without restoring
+per-section index storage. The owner's same-view comparison reports exact visual parity and the
+exact same FPS with packing off and on. The indexed revision therefore recovered the full 0.3.85
+loss. Packing is performance-neutral in this scene rather than a standalone FPS optimization, and
+the primary-driver format/draw-topology gate is accepted.
 
-### The flicker is unexplained, and that should not be lost
+**Still owed before portable/default acceptance:**
 
-One cause was proposed - screen-edge clamping under rotation - and the owner's observation
-disproves it. No other mechanism has been established. The split removes staleness entirely, so
-this may never need diagnosing, but if anything similar appears afterwards the cause was never
-found and this note is the only record of that.
+- Run paired routes with `-GpuIndirect 1 -GpuPacked 0|1`, comparing GPU opaque time, total frame
+  time, upload time and reported regional bytes. The decode must not erase the traffic reduction.
+- Run a second driver before treating shader-pulling behaviour as portable.
+- After the paired route and portability gate, stop retaining the expanded *regional* copy while
+  packed drawing is the selected product path. Dual representation is intentional for this A/B
+  but is not the final memory state; legacy `MeshRef` geometry remains the complete fallback.
 
-### Phase 5's own gate is closed
+### Cluster subdivision is the explicit Phase 8 follow-on
 
-Culling is confirmed on hardware - `67008 dispatches over 1733784 commands, last frame's commands
-were culled on the card` - and the depth work costs about 25us of GPU time a frame against a
-2,083us frame. Its correctness half has been human-played across four viewpoints, including a
-bird's-eye view of 27,000 sections with no legitimate occlusion available, where it suppressed
-none.
+It has not been forgotten or replaced by packing. Whole-section boxes remain the largest measured
+visibility limitation: in every sampled view most sections the HZB could not hide overlapped open
+sky, at one spot all of them. The offline 4x4 estimate removes a further 13-34% of what remains,
+depending on view. Packing comes first because cluster ranges, commands and bounds should point at
+the compact format rather than force two geometry-layout migrations.
 
-### Still owed from Phase 5
-
-- **A non-AMD driver.** Compute writing into a buffer the driver then reads as draw commands is
-  precisely where vendors differ, and only one has ever run this.
-- **Head-to-head against delayed occlusion.** Batching suspends the occlusion queries that were
-  worth 170 to 500 FPS in session 34. Until culling is measured against that, the switches cannot
-  become defaults.
-- `Culled` reports a single frame's state, so `.vhcull` can say "nothing was culled last frame" on
-  a frame where the indirect draw did not happen at all. Cosmetic, but it invites the wrong
-  conclusion.
-- The frontier curtain remains unaddressed: one missing neighbour walls a section's edge from its
-  surface down to bedrock, so a single open side drops its floor 110 blocks. Real drawn geometry,
-  and a candidate for its own work independent of the depth test.
-
-### Cluster subdivision: parked, and now the largest remaining lever
-
-Not discarded, and the case for it grew this session. At every viewpoint measured, the overwhelming
-majority of sections the test could NOT hide were refused for the same reason: part of the box
-overlaps open sky, so the test cannot prove the whole thing is behind anything. At one spot that
-was 100% of the not-hidden population. Splitting each section into 4x4 pieces would take a further
-13-34% of what remains depending on the view, and the in-game counter reports it every run.
-
-That is a shape problem rather than a depth problem, and no amount of work on when the picture is
-taken addresses it.
+The primary-driver packed gate is now closed and whole-section sky overlap remains the measured
+limiter, so clusters are the next implementation branch. Add moderate mesher-produced clusters
+with conservative bounds and contiguous packed ranges, then measure the same views again. Do not
+combine that change with GPU LOD authority: one measured branch at a time keeps holes, metadata
+cost and regressions attributable.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 

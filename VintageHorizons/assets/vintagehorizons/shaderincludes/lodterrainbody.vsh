@@ -2,8 +2,20 @@
 // Fog handling, transition push-down and structure adapted from Farseer's region.vsh
 // (github.com/ViciousBadger/VSMod-Farseer, MIT, (c) Badgerson).
 
+#ifndef VH_PACKED
 layout(location = 0) in vec3 vertexPositionIn;
 layout(location = 1) in vec4 vertexColorIn;
+#else
+// Three tightly packed scalar words per greedy quad. Scalar uint[] is deliberate:
+// an array of uvec3 has a sixteen-byte std430 stride and would silently throw away the
+// format's 12-byte target. A reusable 0,1,2,0,2,3 index pattern plus each command's
+// baseVertex makes gl_VertexID select one of four unique corners; the post-transform cache
+// can therefore reuse corners instead of running this decoder six times per quad.
+layout(std430, binding = 0) readonly buffer VhPackedQuadBuffer
+{
+    uint vhPackedWords[];
+};
+#endif
 
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
@@ -99,6 +111,72 @@ out vec3 sectionLocal;
 
 void main()
 {
+#ifdef VH_PACKED
+    uint vhQuad = uint(gl_VertexID) / 4u;
+    uint vhLogicalCorner = uint(gl_VertexID) % 4u;
+    uint vhBase = vhQuad * 3u;
+    uint vhGeometry = vhPackedWords[vhBase];
+    uint vhHeights = vhPackedWords[vhBase + 1u];
+    uint vhColor = vhPackedWords[vhBase + 2u];
+
+    float vhX0 = float(vhGeometry & 127u) * vhRecordNoise.z;
+    float vhX1 = float((vhGeometry >> 7u) & 127u) * vhRecordNoise.z;
+    float vhZ0 = float((vhGeometry >> 14u) & 127u) * vhRecordNoise.z;
+    float vhZ1 = float((vhGeometry >> 21u) & 127u) * vhRecordNoise.z;
+    uint vhFace = (vhGeometry >> 28u) & 7u;
+    float vhY0 = float(vhHeights & 65535u) * 0.25;
+    float vhY1 = float(vhHeights >> 16u) * 0.25;
+
+    vec3 vertexPositionIn;
+    if (vhFace == 0u)
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX0, vhY0, vhZ0)
+            : vhLogicalCorner == 1u ? vec3(vhX1, vhY0, vhZ0)
+            : vhLogicalCorner == 2u ? vec3(vhX1, vhY0, vhZ1)
+            : vec3(vhX0, vhY0, vhZ1);
+    }
+    else if (vhFace == 1u)
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX0, vhY0, vhZ0)
+            : vhLogicalCorner == 1u ? vec3(vhX0, vhY0, vhZ1)
+            : vhLogicalCorner == 2u ? vec3(vhX1, vhY0, vhZ1)
+            : vec3(vhX1, vhY0, vhZ0);
+    }
+    else if (vhFace == 2u)
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX0, vhY0, vhZ0)
+            : vhLogicalCorner == 1u ? vec3(vhX0, vhY0, vhZ1)
+            : vhLogicalCorner == 2u ? vec3(vhX0, vhY1, vhZ1)
+            : vec3(vhX0, vhY1, vhZ0);
+    }
+    else if (vhFace == 3u)
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX1, vhY0, vhZ0)
+            : vhLogicalCorner == 1u ? vec3(vhX1, vhY1, vhZ0)
+            : vhLogicalCorner == 2u ? vec3(vhX1, vhY1, vhZ1)
+            : vec3(vhX1, vhY0, vhZ1);
+    }
+    else if (vhFace == 4u)
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX0, vhY0, vhZ0)
+            : vhLogicalCorner == 1u ? vec3(vhX0, vhY1, vhZ0)
+            : vhLogicalCorner == 2u ? vec3(vhX1, vhY1, vhZ0)
+            : vec3(vhX1, vhY0, vhZ0);
+    }
+    else
+    {
+        vertexPositionIn = vhLogicalCorner == 0u ? vec3(vhX0, vhY0, vhZ1)
+            : vhLogicalCorner == 1u ? vec3(vhX1, vhY0, vhZ1)
+            : vhLogicalCorner == 2u ? vec3(vhX1, vhY1, vhZ1)
+            : vec3(vhX0, vhY1, vhZ1);
+    }
+
+    vec4 vertexColorIn = vec4(
+        float(vhColor & 255u),
+        float((vhColor >> 8u) & 255u),
+        float((vhColor >> 16u) & 255u),
+        float(vhColor >> 24u)) / 255.0;
+#endif
     yLevel = vertexPositionIn.y;
     vertexColor = vertexColorIn;
 

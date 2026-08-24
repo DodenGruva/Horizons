@@ -171,9 +171,12 @@ public class LodTerrainRenderer : IRenderer
     /// <summary>Plain-language state of the GPU timers, for any report that prints their figures.</summary>
     public string DescribeGpuTiming() => gpuTelemetry.DescribeTiming();
     public LodPhaseCost GpuOpaqueCost => gpuTelemetry.OpaqueCost;
+    public LodPhaseCost GpuSplitNearCost => gpuTelemetry.SplitNearCost;
+    public LodPhaseCost GpuSplitFarCost => gpuTelemetry.SplitFarCost;
 
     /// <summary>GPU time to copy the depth buffer and reduce every pyramid level.</summary>
     public LodPhaseCost GpuHzbCost => gpuTelemetry.HzbGpuCost;
+    public LodPhaseCost GpuSplitHzbCost => gpuTelemetry.SplitHzbGpuCost;
 
     /// <summary>
     /// GPU time for the classification dispatch alone. Separate from the build because
@@ -657,9 +660,12 @@ public class LodTerrainRenderer : IRenderer
     /// the two paths cannot quietly fall out of.
     /// </summary>
     IShaderProgram? indirectProg;
+    IShaderProgram? packedProg;
     bool shaderOk;
     bool indirectShaderOk;
+    bool packedShaderOk;
     bool reportedIndirectShaderOk;
+    bool reportedPackedShaderOk;
     IShaderProgram? hzbProg;
     bool hzbShaderOk;
 
@@ -695,27 +701,12 @@ public class LodTerrainRenderer : IRenderer
     bool depthPyramidEnabled;
 
     /// <summary>
-    /// Take the depth picture at the END of this renderer's own pass instead of before it,
-    /// and cull against it NEXT frame. Phase 6.
+    /// Split cached opaque terrain at the measured 512-block boundary. The near bucket draws
+    /// first, a fresh depth picture is taken, and the far bucket is culled and drawn against
+    /// that picture in the SAME frame. Phase 6.
     ///
-    /// The point is what the picture contains. Built where it is built today - after vanilla
-    /// and before any cached section - the only thing that can hide anything is whatever
-    /// vanilla drew inside its own view distance, a bubble of a couple of hundred blocks. Every
-    /// cached mountain beyond it is invisible to the test, which is why culling currently costs
-    /// and returns little. Built at the end, the picture holds vanilla AND every cached section
-    /// that drew, so cached terrain can hide cached terrain.
-    ///
-    /// The price is that the picture is one frame old. Measured offline against the owner's own
-    /// cache: walking costs essentially nothing, and a fast turn costs coverage rather than
-    /// correctness - sections that were off screen last frame have no data and are simply
-    /// drawn, which <see cref="LodHzbProjection.Project"/> already does for anything that does
-    /// not land on the picture. Of the sections a one-frame-old picture hides, 1.1% at walking
-    /// pace to 2.6% under a hard turn would have been drawn by a fresh one; at zero motion the
-    /// figure is exactly zero, which is the instrument's own self-test.
-    ///
-    /// This is a milder version of a staleness this mod already ships: the delayed occlusion
-    /// queries hold verdicts for 8 to 16 frames, across unlimited rotation, on a profile that
-    /// is default-on because it measured a large gain in game.
+    /// The config and command retain their old "late" names so an existing saved opt-in now
+    /// selects the safe replacement automatically. No verdict crosses a frame boundary.
     /// </summary>
     public bool LateDepthPyramid
     {
@@ -725,56 +716,16 @@ public class LodTerrainRenderer : IRenderer
             if (lateDepthPyramid == value) return;
             lateDepthPyramid = value;
 
-            // The stored picture belongs to the other arrangement and its matrix would be
-            // paired with boxes it never saw. Throw it away rather than reason about it.
-            InvalidatePyramidView();
             ResetDepthPyramidCounters();
         }
     }
 
     bool lateDepthPyramid;
-
-    /// <summary>
-    /// How far the camera may travel between the picture being taken and the cull that reads
-    /// it. Two blocks, matching the translation limit the shipped aggressive temporal profile
-    /// already accepts for answers up to sixteen frames old; one frame of sprinting is about a
-    /// twentieth of it, so this only ever catches a teleport or a jarring cut.
-    /// </summary>
-    internal const double LateDepthTranslationLimitBlocks = 2.0;
-
-    readonly float[] pyramidViewProjection = new float[16];
-    readonly float[] pyramidProjectionMatrix = new float[16];
-    readonly float[] pyramidCameraMatrix = new float[16];
-
-    /// <summary>
-    /// How far the view may turn between the picture and the cull that reads it.
-    ///
-    /// The same figure the shipped "safe" temporal profile uses, because it is answering the
-    /// same question: how much orientation change makes a previous-frame verdict untrustworthy.
-    /// Compared element-wise over the orientation basis, so it is a matrix distance rather than
-    /// an angle - about a twentieth of a degree, which passes the drift of a hand resting on a
-    /// mouse and refuses a deliberate turn.
-    /// </summary>
-    internal const float LateDepthRotationLimit = SafeTemporalRotationMatrix;
-    readonly float[] stalePyramidViewProjection = new float[16];
     readonly float[] explainViewProjection = new float[16];
-    double pyramidCameraX, pyramidCameraY, pyramidCameraZ;
-    long pyramidBuiltFrame = long.MinValue;
-    long pyramidGeometryRevision;
-
-    /// <summary>
-    /// Frames the stale picture was refused, and why. Reported because a cull that quietly
-    /// stops happening looks exactly like a cull that found nothing to hide, and telling those
-    /// apart from a log is the whole reason this counter exists (G72).
-    /// </summary>
-    public long LateDepthRefusedNoPicture { get; private set; }
-    public long LateDepthRefusedProjection { get; private set; }
-    public long LateDepthRefusedTeleport { get; private set; }
-    public long LateDepthRefusedGeometry { get; private set; }
-    public long LateDepthRefusedTurning { get; private set; }
-    public long LateDepthCullsOffered { get; private set; }
-
-    void InvalidatePyramidView() => pyramidBuiltFrame = long.MinValue;
+    public long SplitDepthFrames { get; private set; }
+    public long SplitDepthNearCommands { get; private set; }
+    public long SplitDepthFarCommands { get; private set; }
+    public long SplitDepthMidBuilds { get; private set; }
 
     /// <summary>
     /// Starts a fresh measurement interval for everything the depth work is judged on.
@@ -797,12 +748,10 @@ public class LodTerrainRenderer : IRenderer
         gpuTelemetry.ResetInterval();
         depthPyramid?.ResetInterval();
         hzbClassifier?.ResetInterval();
-        LateDepthRefusedNoPicture = 0;
-        LateDepthRefusedProjection = 0;
-        LateDepthRefusedTeleport = 0;
-        LateDepthRefusedGeometry = 0;
-        LateDepthRefusedTurning = 0;
-        LateDepthCullsOffered = 0;
+        SplitDepthFrames = 0;
+        SplitDepthNearCommands = 0;
+        SplitDepthFarCommands = 0;
+        SplitDepthMidBuilds = 0;
         HzbHiddenButQuerySawIt = 0;
         HzbMissedWhatQueryHid = 0;
         HzbVerdictsChecked = 0;
@@ -817,6 +766,7 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Owns the vertex array and the per-frame command and record buffers.</summary>
     LodGpuIndirectDrawer? indirectDrawer;
+    LodGpuIndirectDrawer? packedDrawer;
     LodGpuCullPass? cullPass;
     readonly float[] cullViewProjection = new float[16];
 
@@ -838,8 +788,14 @@ public class LodTerrainRenderer : IRenderer
     /// </summary>
     readonly List<long> indirectLeftovers = new();
 
+    /// <summary>Far-bucket leftovers draw only after the mid-frame picture is taken.</summary>
+    readonly List<long> indirectFarLeftovers = new();
+
     /// <summary>Keys written into this frame's command list, kept for the same reason.</summary>
     readonly List<long> indirectRecorded = new();
+
+    /// <summary>Keys recorded into the far command list, retained for fail-open redraw.</summary>
+    readonly List<long> indirectFarRecorded = new();
 
     /// <summary>True only inside the walk of an indirect opaque pass.</summary>
     bool indirectPassActive;
@@ -850,6 +806,12 @@ public class LodTerrainRenderer : IRenderer
     /// resolved under one path would be applied under the other.
     /// </summary>
     bool indirectDrawingThisFrame;
+
+    /// <summary>
+    /// Fixed once per frame. The split is meaningful only when both indirect drawing and
+    /// depth culling are active; otherwise one ordinary command list is the complete path.
+    /// </summary>
+    bool depthSplitThisFrame;
     float appliedZFar;
     Vec3d camPos = new();
 
@@ -952,6 +914,7 @@ public class LodTerrainRenderer : IRenderer
     readonly LodTintRegistry tints;
     int uploadedTintVersion = -1;
     int uploadedIndirectTintVersion = -1;
+    int uploadedPackedTintVersion = -1;
 
     public LodTerrainRenderer(
         ICoreClientAPI capi,
@@ -1049,6 +1012,7 @@ public class LodTerrainRenderer : IRenderer
 
         uploadedTintVersion = -1; // fresh program object: uniform state is gone
         uploadedIndirectTintVersion = -1;
+        uploadedPackedTintVersion = -1;
         WarnIfIncludeMissing(prog, "lodterrain");
         shaderOk = prog.Compile();
         if (!shaderOk && !ShaderLoadIsProvisional)
@@ -1064,6 +1028,16 @@ public class LodTerrainRenderer : IRenderer
         indirectProg.FragmentShader = capi.Shader.NewShader(EnumShaderType.FragmentShader);
         capi.Shader.RegisterFileShaderProgram("lodterrainindirect", indirectProg);
         WarnIfIncludeMissing(indirectProg, "lodterrainindirect");
+
+        // Same body again, with the packed input block enabled. Per-section attributes,
+        // every fragment calculation and every uniform remain shared with the already
+        // played indirect path; only vertex acquisition changes.
+        packedProg = capi.Shader.NewShaderProgram();
+        packedProg.AssetDomain = "vintagehorizons";
+        packedProg.VertexShader = capi.Shader.NewShader(EnumShaderType.VertexShader);
+        packedProg.FragmentShader = capi.Shader.NewShader(EnumShaderType.FragmentShader);
+        capi.Shader.RegisterFileShaderProgram("lodterrainpacked", packedProg);
+        WarnIfIncludeMissing(packedProg, "lodterrainpacked");
         // The depth-pyramid reduction. It shares nothing with the terrain shaders - no
         // include, no tint constant, no vertex format - because it draws one attributeless
         // triangle and writes depth. A driver that refuses it costs the pyramid and
@@ -1084,6 +1058,12 @@ public class LodTerrainRenderer : IRenderer
             capi.Logger.Warning(
                 "[VintageHorizons] the indirect lodterrain variant failed to compile; "
                 + "cached terrain keeps drawing through the established path");
+
+        packedShaderOk = packedProg.Compile();
+        if (!packedShaderOk && !ShaderLoadIsProvisional)
+            capi.Logger.Warning(
+                "[VintageHorizons] the packed lodterrain variant failed to compile; "
+                + "the expanded regional path remains available");
 
         // Said once, when it actually worked, so the log carries positive evidence rather
         // than only the absence of a complaint. This line is the answer to "does the
@@ -1621,7 +1601,9 @@ public class LodTerrainRenderer : IRenderer
                 result.AssumedCoveredSides,
                 // Borrowed for the call only. The shadow arenas copy what they need before
                 // this returns; nothing may retain the mesher's arrays.
-                new LodRenderGeometry(result.Xyz, result.Rgba, result.Indices),
+                new LodRenderGeometry(
+                    result.Xyz, result.Rgba, result.Indices,
+                    result.PackedOpaqueQuads, result.PackedOpaqueQuadCount),
                 result.Heights);
         }
 
@@ -2716,7 +2698,8 @@ public class LodTerrainRenderer : IRenderer
         // Fixed before anything reads it, and before the occlusion queries are resolved:
         // the two paths disagree about whether per-section queries are issued at all, so
         // the choice must not change between resolving a query and acting on it.
-        bool indirectWanted = IndirectDrawAvailable;
+        bool packedWanted = PackedDrawAvailable;
+        bool indirectWanted = packedWanted || IndirectDrawAvailable;
         if (indirectWanted != indirectDrawingThisFrame)
         {
             // Entering the batched path also gives up the query objects themselves. They are
@@ -2736,7 +2719,22 @@ public class LodTerrainRenderer : IRenderer
             // losing terrain, in the exact A/B this switch exists for.
             InvalidateTemporalOcclusionScene();
         }
+
+        if (packedShaderOk && !reportedPackedShaderOk)
+        {
+            reportedPackedShaderOk = true;
+            capi.Logger.Notification(
+                "[VintageHorizons] the packed lodterrain variant compiled after {0} "
+                + "attempt(s); 12-byte quad drawing is available behind .vhpacked on",
+                shaderLoadAttempts);
+        }
         indirectDrawingThisFrame = indirectWanted;
+        packedDrawingThisFrame = packedWanted;
+        depthSplitThisFrame = LateDepthPyramid
+            && GpuCullEnabled
+            && DepthPyramidEnabled
+            && indirectDrawingThisFrame
+            && ActiveFarBuilder != null;
 
         LodPhaseStart phaseStart = LodPhaseCost.Start(TrackPhaseAllocations);
         UpdateReadinessShadow(viewDistance);
@@ -2798,10 +2796,9 @@ public class LodTerrainRenderer : IRenderer
         // the set of near occluders a distant section would have to be behind. Copied
         // before we draw a single cached section, so cached terrain cannot occlude itself
         // by accident - that is Phase 6 and it is a separate decision.
-        // Early: the picture holds vanilla only. Late: it is taken at the bottom of this
-        // method instead, after cached terrain has drawn, and this frame culls against the one
-        // the previous frame left behind.
-        if (!LateDepthPyramid) BuildDepthPyramid();
+        // The split still needs this first picture for its near bucket. A second build after
+        // the near draw adds cached occluders for the far bucket; both are same-frame.
+        BuildDepthPyramid();
         hzbBoxes.Clear();
         hzbCollecting = DepthPyramidEnabled;
 
@@ -2862,56 +2859,15 @@ public class LodTerrainRenderer : IRenderer
 
         LastCulledCount = culledThisFrame; // opaque pass only: water covers a subset
 
-        // Between the two passes, and that placement is the whole correctness of it.
-        //
-        // Water is drawn blended but it still WRITES depth, so a picture taken after the water
-        // pass has lake and ocean surfaces in it standing at their own distance. A section
-        // further away would then be judged hidden behind water you can see straight through,
-        // and the hole would appear underneath the surface rather than behind a hill - the
-        // hardest possible place to attribute it. An occluder has to be opaque.
-        //
-        // The terrain program is released around it and taken back afterwards. The engine
-        // refuses to activate a second shader while one is in use - "Already a different
-        // shader (lodterrain) in use!" - and that refusal is what made the first attempt at
-        // this build fail on every single frame of a playtest: 0 of 4047 builds completed. It
-        // failed safe, because a frame with no picture draws everything, and the counter said
-        // so in the log rather than leaving it to be guessed at.
-        //
-        // Uniforms survive the round trip. They belong to the program object, not to the
-        // binding, so the water pass finds ApplyFrameUniforms' values exactly where it left
-        // them. The build also puts the framebuffer, texture unit and vertex array back
-        // through LodGlStateGuard.
-        if (LateDepthPyramid)
-        {
-            // Classified BEFORE the rebuild, and this ordering is the whole of it. The build
-            // below overwrites the picture the cull just used, and the classifier's only job is
-            // to describe the picture that actually decided something. Run afterwards it finds
-            // a picture stamped with the current frame, correctly refuses it as one nothing
-            // could have read yet, and reports nothing at all - which is exactly what the
-            // 2026-08-24 log shows: "created, no sections classified yet" over 3,298 frames
-            // where culling was demonstrably working.
-            //
-            // Safe here because boxes are only ever collected in the opaque pass - the water
-            // draw that follows adds none - so the set being classified is already complete.
-            hzbCollecting = false;
-            ClassifyAgainstDepthPyramid();
-
-            prog.Stop();
-            BuildDepthPyramid();
-            prog.Use();
-        }
-
         // Pass 2: water and thin cover remain two-sided. Water must be visible from below,
         // and a plant mat has no opposite face to take over when the camera is underneath.
         renderPaths.DrawWater();
 
-        // The late arrangement already classified above, against the picture it was about to
-        // replace. Doing it twice would count every section a second time.
-        if (!LateDepthPyramid)
-        {
-            hzbCollecting = false;
-            ClassifyAgainstDepthPyramid();
-        }
+        // The split's mid-frame picture deliberately excludes water: water is blended but
+        // writes depth, so treating it as an occluder could remove visible ground beneath it.
+        // Classification reads the unchanged private pyramid, not the live depth attachment.
+        hzbCollecting = false;
+        ClassifyAgainstDepthPyramid();
 
         // Both passes cull, so this is summed after the second one rather than beside
         // LastCulledCount, which is deliberately opaque-only.
@@ -3058,21 +3014,31 @@ public class LodTerrainRenderer : IRenderer
             gpuShadow.AttachMirror(new LodGpuGeometryMirror(
                 backend, ceiling, verify: mode == LodGpuArenaMode.Verify));
             shadowBuilder = new LodGpuIndirectBuilder();
+            splitFarBuilder = new LodGpuIndirectBuilder();
+            packedBuilder = new LodGpuIndirectBuilder(packed: true);
+            packedFarBuilder = new LodGpuIndirectBuilder(packed: true);
             // .vhgpu can be run again while a drawer already exists - on to verify, for
             // instance. The mirror disposes its own predecessor; this one has to be told.
             indirectDrawer?.Dispose();
+            packedDrawer?.Dispose();
             cullPass?.Dispose();
             cullPass = new LodGpuCullPass(
                 message => capi.Logger.Warning(message));
             indirectDrawer = new LodGpuIndirectDrawer(
                 new LodGpuOpenGlDrawBackend(message => capi.Logger.Warning("{0}", message)),
                 message => capi.Logger.Warning("{0}", message));
+            packedDrawer = new LodGpuIndirectDrawer(
+                new LodGpuOpenGlPackedDrawBackend(message => capi.Logger.Warning("{0}", message)),
+                message => capi.Logger.Warning("{0}", message));
+            long packedCeiling = LodGpuArenaPolicy.PackedLimits(ceiling).CeilingBytes;
             capi.Logger.Notification(
-                "[VintageHorizons] GPU arena shadow on: {0} MiB ceiling, {1} MiB vertex pages, "
-                + "{2} page sets, content verification {3}. Sized for a {4} draw distance "
-                + "({5} sections); the ceiling is a cap, not a reservation, so pages are only "
+                "[VintageHorizons] GPU arena shadow on: {0} MiB expanded ceiling plus {1} MiB "
+                + "packed-validation ceiling, {2} MiB vertex pages, {3} page sets, content "
+                + "verification {4}. Sized for a {5} draw distance ({6} sections); each ceiling "
+                + "is a cap, not a reservation, so pages are only "
                 + "committed as sections arrive.",
                 ceiling / (1024 * 1024),
+                packedCeiling / (1024 * 1024),
                 LodGpuArenaPolicy.VertexPageBytes / (1024 * 1024),
                 LodGpuArenaPolicy.PageSets(ceiling),
                 mode == LodGpuArenaMode.Verify ? "on" : "off",
@@ -3136,6 +3102,9 @@ public class LodTerrainRenderer : IRenderer
             renderPaths.SetShadowEnabled(false, selection);
             gpuShadow.DetachMirror();
             shadowBuilder = null;
+            splitFarBuilder = null;
+            packedBuilder = null;
+            packedFarBuilder = null;
             // The drawer's buffers reference nothing the arenas own, but its whole reason
             // to exist goes away with them, and a stale vertex array would outlive the
             // pages its batches name.
@@ -3143,6 +3112,8 @@ public class LodTerrainRenderer : IRenderer
             indirectDrawingThisFrame = false;
             indirectDrawer?.Dispose();
             indirectDrawer = null;
+            packedDrawer?.Dispose();
+            packedDrawer = null;
             cullPass?.Dispose();
             cullPass = null;
             GpuCullEnabled = false;
@@ -3215,11 +3186,14 @@ public class LodTerrainRenderer : IRenderer
 
     void DrawLegacyOpaque()
     {
-        gpuTelemetry.BeginOpaque();
-        shadowBuilder?.Begin();
+        if (!depthSplitThisFrame) gpuTelemetry.BeginOpaque();
+        ActiveNearBuilder?.Begin();
+        if (depthSplitThisFrame) ActiveFarBuilder?.Begin();
         indirectPassActive = indirectDrawingThisFrame;
         indirectLeftovers.Clear();
+        indirectFarLeftovers.Clear();
         indirectRecorded.Clear();
+        indirectFarRecorded.Clear();
         try
         {
             if (OpaqueFrontToBack)
@@ -3252,12 +3226,15 @@ public class LodTerrainRenderer : IRenderer
             // the next frame's Begin.
             indirectPassActive = false;
             EndShadowCommands();
+            // The real walk already recorded every box the classifier should see. Legacy
+            // fallback redraws must not add the same section a second time.
+            hzbCollecting = false;
             if (indirectDrawingThisFrame) DrawIndirectOpaque();
         }
         finally
         {
             indirectPassActive = false;
-            gpuTelemetry.EndOpaque();
+            if (!depthSplitThisFrame) gpuTelemetry.EndOpaque();
         }
     }
 
@@ -3273,19 +3250,125 @@ public class LodTerrainRenderer : IRenderer
     {
         LastIndirectBatches = 0;
         LastIndirectCommands = 0;
-        LastIndirectLeftovers = indirectLeftovers.Count;
-        if (shadowBuilder == null || indirectDrawer == null || indirectProg == null
+        LastIndirectLeftovers = indirectLeftovers.Count + indirectFarLeftovers.Count;
+        LodGpuIndirectBuilder? nearBuilder = ActiveNearBuilder;
+        LodGpuIndirectDrawer? activeDrawer = ActiveDrawer;
+        IShaderProgram? activeProgram = ActiveIndirectProgram;
+        if (nearBuilder == null || activeDrawer == null || activeProgram == null
             || prog == null)
+        {
+            indirectLeftovers.AddRange(indirectRecorded);
+            indirectFarLeftovers.AddRange(indirectFarRecorded);
+            DrawIndirectLeftovers(indirectLeftovers);
+            DrawIndirectLeftovers(indirectFarLeftovers);
+            LastIndirectLeftovers = indirectLeftovers.Count + indirectFarLeftovers.Count;
             return;
+        }
+
+        if (depthSplitThisFrame && ActiveFarBuilder != null)
+        {
+            DrawSplitIndirectOpaque();
+            return;
+        }
+
+        DrawIndirectBucket(nearBuilder, indirectRecorded, indirectLeftovers,
+            applyFrameUniforms: true);
+        DrawIndirectLeftovers(indirectLeftovers);
+        LastIndirectLeftovers = indirectLeftovers.Count;
+    }
+
+    /// <summary>
+    /// Draws near terrain, refreshes the pyramid while the terrain shader is released,
+    /// then draws the far bucket against that same-frame picture. Each bucket has its own
+    /// fail-open list, so a refused or partially issued multi-draw is repaired before the
+    /// frame leaves this method.
+    /// </summary>
+    void DrawSplitIndirectOpaque()
+    {
+        SplitDepthFrames++;
+        LodGpuIndirectBuilder nearBuilder = ActiveNearBuilder!;
+        LodGpuIndirectBuilder farBuilder = ActiveFarBuilder!;
+        SplitDepthNearCommands += nearBuilder.CommandCount;
+        SplitDepthFarCommands += farBuilder.CommandCount;
+
+        bool nearDrewAnything = nearBuilder.CommandCount > 0 || indirectLeftovers.Count > 0;
+        bool farHasAnything = farBuilder.CommandCount > 0 || indirectFarLeftovers.Count > 0;
+
+        if (nearDrewAnything)
+        {
+            gpuTelemetry.BeginSplitNear();
+            try
+            {
+                DrawIndirectBucket(nearBuilder, indirectRecorded, indirectLeftovers,
+                    applyFrameUniforms: true);
+                DrawIndirectLeftovers(indirectLeftovers);
+            }
+            finally
+            {
+                gpuTelemetry.EndSplitNear();
+            }
+        }
+
+        if (nearDrewAnything && farHasAnything)
+        {
+            // Between opaque buckets, never after water. Water writes depth even though it is
+            // blended, so including it would allow transparent surfaces to hide solid ground.
+            // G78: the engine refuses the reduction shader while lodterrain is still active.
+            prog!.Stop();
+            try
+            {
+                BuildDepthPyramid(splitMid: true);
+                if (LastHzbBuild.Built) SplitDepthMidBuilds++;
+            }
+            finally
+            {
+                prog.Use();
+            }
+        }
+
+        if (farHasAnything)
+        {
+            gpuTelemetry.BeginSplitFar();
+            try
+            {
+                DrawIndirectBucket(farBuilder, indirectFarRecorded, indirectFarLeftovers,
+                    applyFrameUniforms: true);
+                DrawIndirectLeftovers(indirectFarLeftovers);
+            }
+            finally
+            {
+                gpuTelemetry.EndSplitFar();
+            }
+        }
+
+        LastIndirectLeftovers = indirectLeftovers.Count + indirectFarLeftovers.Count;
+    }
+
+    /// <summary>Issues one complete command bucket or repairs it through legacy draws.</summary>
+    void DrawIndirectBucket(
+        LodGpuIndirectBuilder builder,
+        List<long> recorded,
+        List<long> leftovers,
+        bool applyFrameUniforms)
+    {
 
         bool drew = false;
-        prog.Stop();
+        LodGpuIndirectDrawer drawer = builder.Packed ? packedDrawer! : indirectDrawer!;
+        IShaderProgram drawProgram = builder.Packed ? packedProg! : indirectProg!;
+        prog!.Stop();
         try
         {
-            indirectProg.Use();
-            ApplyFrameUniforms(
-                indirectProg, ApprovedViewDistance(), ref uploadedIndirectTintVersion);
-            drew = indirectDrawer.Draw(shadowBuilder, BuildCullRequest());
+            drawProgram.Use();
+            if (applyFrameUniforms)
+            {
+                if (builder.Packed)
+                    ApplyFrameUniforms(
+                        drawProgram, ApprovedViewDistance(), ref uploadedPackedTintVersion);
+                else
+                    ApplyFrameUniforms(
+                        drawProgram, ApprovedViewDistance(), ref uploadedIndirectTintVersion);
+            }
+            drew = drawer.Draw(builder, BuildCullRequest());
         }
         catch (Exception e)
         {
@@ -3295,28 +3378,25 @@ public class LodTerrainRenderer : IRenderer
         }
         finally
         {
-            indirectProg.Stop();
+            drawProgram.Stop();
             prog.Use();
         }
 
         if (drew)
         {
-            LastIndirectBatches = indirectDrawer.LastBatches;
-            LastIndirectCommands = indirectDrawer.LastCommands;
+            LastIndirectBatches += drawer.LastBatches;
+            LastIndirectCommands += drawer.LastCommands;
             // A multi-draw is a draw call; counting it keeps the periodic report's
             // submission figure meaning the same thing on both paths.
-            OpaqueDrawCalls += LastIndirectBatches;
+            OpaqueDrawCalls += drawer.LastBatches;
         }
         else
         {
             // Nothing was drawn from the arenas, so every section that was batched still
             // has to reach the screen. Falling back within the same frame is what keeps a
             // driver failure invisible rather than a frame of missing horizon.
-            indirectLeftovers.AddRange(indirectRecorded);
-            LastIndirectLeftovers = indirectLeftovers.Count;
+            leftovers.AddRange(recorded);
         }
-
-        DrawIndirectLeftovers();
     }
 
     /// <summary>
@@ -3334,7 +3414,7 @@ public class LodTerrainRenderer : IRenderer
     /// </summary>
     LodGpuCullRequest BuildCullRequest()
     {
-        if (!GpuCullEnabled || cullPass == null) return default;
+        if (!GpuCullEnabled || !DepthPyramidEnabled || cullPass == null) return default;
 
         // Ahead of the picture checks, not behind them. Creation used to sit last, so a
         // session where no picture had been built yet never attempted it - and the status line
@@ -3347,11 +3427,11 @@ public class LodTerrainRenderer : IRenderer
         if (depthPyramid == null || !depthPyramid.Allocated) return default;
         if (!LastHzbBuild.Built) return default;
 
-        if (!TryPyramidTestMatrix(count: true, stalePyramidViewProjection, out _)) return default;
+        frustum.CopyViewProjection(cullViewProjection);
 
         return new LodGpuCullRequest(
             cullPass,
-            LateDepthPyramid ? stalePyramidViewProjection : cullViewProjection,
+            cullViewProjection,
             depthPyramid.TextureName,
             depthPyramid.Width,
             depthPyramid.Height,
@@ -3363,10 +3443,10 @@ public class LodTerrainRenderer : IRenderer
     /// draws them. Their per-section uniforms were deliberately not uploaded during the
     /// walk, so the transform is set up again here - for these sections only.
     /// </summary>
-    void DrawIndirectLeftovers()
+    void DrawIndirectLeftovers(List<long> leftovers)
     {
-        if (indirectLeftovers.Count == 0) return;
-        foreach (long key in indirectLeftovers)
+        if (leftovers.Count == 0) return;
+        foreach (long key in leftovers)
         {
             if (!sectionMeshes.TryGetValue(key, out MeshRef? mesh)) continue;
             if (!SetupSectionTransform(key, renderCullDistanceSquared)) continue;
@@ -3382,19 +3462,32 @@ public class LodTerrainRenderer : IRenderer
     void EndShadowCommands()
     {
         LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
-        if (shadowBuilder == null || mirror == null) return;
+        LodGpuIndirectBuilder? nearBuilder = ActiveNearBuilder;
+        LodGpuIndirectBuilder? farBuilder = ActiveFarBuilder;
+        if (nearBuilder == null || mirror == null) return;
         try
         {
-            shadowBuilder.End(mirror.VertexArena, mirror.IndexArena);
-            ShadowIndirectCommands = shadowBuilder.CommandCount;
-            ShadowIndirectBatches = shadowBuilder.Batches.Count;
-            ShadowIndirectDropped = shadowBuilder.CandidatesDropped;
-            ShadowIndirectMissing = shadowBuilder.MissingSections;
-            ShadowIndirectCoverage = shadowBuilder.Coverage;
+            nearBuilder.End(mirror);
+            if (depthSplitThisFrame && farBuilder != null)
+                farBuilder.End(mirror);
+
+            ShadowIndirectCommands = nearBuilder.CommandCount
+                + (depthSplitThisFrame ? farBuilder?.CommandCount ?? 0 : 0);
+            ShadowIndirectBatches = nearBuilder.Batches.Count
+                + (depthSplitThisFrame ? farBuilder?.Batches.Count ?? 0 : 0);
+            ShadowIndirectDropped = nearBuilder.CandidatesDropped
+                + (depthSplitThisFrame ? farBuilder?.CandidatesDropped ?? 0 : 0);
+            ShadowIndirectMissing = nearBuilder.MissingSections
+                + (depthSplitThisFrame ? farBuilder?.MissingSections ?? 0 : 0);
+            int total = ShadowIndirectCommands + ShadowIndirectMissing;
+            ShadowIndirectCoverage = total == 0 ? 1 : ShadowIndirectCommands / (double)total;
         }
         catch (Exception e)
         {
             shadowBuilder = null;
+            splitFarBuilder = null;
+            packedBuilder = null;
+            packedFarBuilder = null;
             capi.Logger.Warning(
                 "[VintageHorizons] Shadow indirect command building disabled; visible legacy "
                 + "rendering is unchanged: {0}", e.Message);
@@ -3488,6 +3581,14 @@ public class LodTerrainRenderer : IRenderer
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_INDIRECT") == "1";
 
     /// <summary>
+    /// Pull exact twelve-byte greedy quads instead of expanded vertices/indices. It is an
+    /// opt-in Phase 7 comparison layered on the same CPU candidates, section records,
+    /// culling and fallback as the accepted indirect path.
+    /// </summary>
+    public bool PackedDrawEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_PACKED") == "1";
+
+    /// <summary>
     /// Everything that has to hold before a frame may take the fast path. Read once per
     /// frame into <see cref="indirectDrawingThisFrame"/>.
     /// </summary>
@@ -3496,6 +3597,34 @@ public class LodTerrainRenderer : IRenderer
         && indirectDrawer is { Ready: true }
         && shadowBuilder != null
         && gpuShadow.Mirror != null;
+
+    bool PackedDrawAvailable => IndirectDrawEnabled && PackedDrawEnabled
+        && packedShaderOk && packedProg != null
+        && packedDrawer is { Ready: true }
+        && packedBuilder != null
+        && gpuShadow.Mirror != null;
+
+    bool packedDrawingThisFrame;
+
+    public string DescribePackedDraw()
+    {
+        LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
+        if (!PackedDrawEnabled)
+            return mirror == null
+                ? "off"
+                : $"off: expanded batching uses {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB; "
+                    + $"packed geometry ready {mirror.PackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
+        if (!IndirectDrawEnabled)
+            return "on, but idle: turn batched terrain drawing on with .vhindirect on";
+        if (!packedShaderOk) return "unavailable: the packed shader variant did not compile";
+        if (mirror == null || packedDrawer == null)
+            return "unavailable: the regional arenas are not attached. Turn them on with .vhgpu on";
+        if (packedDrawer.Failed) return "failed; expanded batching remains active: " + packedDrawer.FailureReason;
+        return $"on: 12-byte quads, {mirror.PackedLiveBytes / (1024.0 * 1024.0):0.0} MiB "
+            + $"versus {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB expanded. "
+            + $"Last frame {LastIndirectBatches} multi-draws covered {LastIndirectCommands} sections, "
+            + $"{LastIndirectLeftovers} used the established fallback";
+    }
 
     /// <summary>
     /// What depth culling is doing, in the terms someone standing in the world can act on.
@@ -3678,11 +3807,13 @@ public class LodTerrainRenderer : IRenderer
         // happen once, after the walk. A section the arenas do not hold produces no
         // command, so it falls through to the second sub-pass and is drawn the
         // established way - which is why partial coverage costs submissions, not terrain.
-        bool recorded = RecordShadowCommand(key);
+        bool recorded = RecordShadowCommand(key, out bool farBucket);
         if (indirectPassActive)
         {
-            if (recorded) indirectRecorded.Add(key);
-            else indirectLeftovers.Add(key);
+            List<long> target = farBucket ? indirectFarRecorded : indirectRecorded;
+            List<long> fallback = farBucket ? indirectFarLeftovers : indirectLeftovers;
+            if (recorded) target.Add(key);
+            else fallback.Add(key);
             return;
         }
 
@@ -3899,6 +4030,7 @@ public class LodTerrainRenderer : IRenderer
         double dx = originX + footprint / 2.0 - camPos.X;
         double dz = originZ + footprint / 2.0 - camPos.Z;
         if (dx * dx + dz * dz > cullDistSq) return false;
+        float horizontalDistance = (float)Math.Sqrt(dx * dx + dz * dz);
 
         // Camera-relative box, matching the model matrix below. The Y range is the mesh's
         // own, from the pass being drawn: opaque and water are submitted separately and a
@@ -3940,13 +4072,14 @@ public class LodTerrainRenderer : IRenderer
         //
         // Opaque only: the water pass walks a subset of the same sections and would count
         // them twice, and water is not an occluder.
-        if (hzbCollecting && !waterPass)
+        if (hzbCollecting && !waterPass
+            && (!depthSplitThisFrame || !LodGpuDepthSplitPolicy.IsNear(horizontalDistance)))
         {
             hzbBoxes.Add(new LodHzbSectionBox(
                 key,
                 (float)relX, (float)boxMinY, (float)relZ,
                 (float)(relX + footprint), (float)boxMaxY, (float)(relZ + footprint),
-                (float)Math.Sqrt(dx * dx + dz * dz)));
+                horizontalDistance));
         }
 
         // Sides that border on never-captured area, so the shader can dissolve them
@@ -4002,6 +4135,7 @@ public class LodTerrainRenderer : IRenderer
         // a second, possibly disagreeing, walk of the draw list.
         if (shadowBuilder != null)
         {
+            lastSectionHorizontalDistance = horizontalDistance;
             lastSectionFacts = new LodGpuSectionFacts(
                 key,
                 (float)relX, (float)-camPos.Y, (float)relZ,
@@ -4023,7 +4157,23 @@ public class LodTerrainRenderer : IRenderer
     }
 
     LodGpuIndirectBuilder? shadowBuilder;
+    LodGpuIndirectBuilder? splitFarBuilder;
+    LodGpuIndirectBuilder? packedBuilder;
+    LodGpuIndirectBuilder? packedFarBuilder;
+
+    LodGpuIndirectBuilder? ActiveNearBuilder =>
+        packedDrawingThisFrame ? packedBuilder : shadowBuilder;
+
+    LodGpuIndirectBuilder? ActiveFarBuilder =>
+        packedDrawingThisFrame ? packedFarBuilder : splitFarBuilder;
+
+    LodGpuIndirectDrawer? ActiveDrawer =>
+        packedDrawingThisFrame ? packedDrawer : indirectDrawer;
+
+    IShaderProgram? ActiveIndirectProgram =>
+        packedDrawingThisFrame ? packedProg : indirectProg;
     LodGpuSectionFacts lastSectionFacts;
+    float lastSectionHorizontalDistance;
 
     /// <summary>
     /// Records what a regional multi-draw would have submitted for a section the legacy
@@ -4032,11 +4182,29 @@ public class LodTerrainRenderer : IRenderer
     /// the one Phase 3 would actually issue, and the batch count it reports is the real
     /// answer to how far draw calls would fall.
     /// </summary>
-    bool RecordShadowCommand(long key)
+    bool RecordShadowCommand(long key, out bool farBucket)
     {
+        farBucket = false;
+
         // Ordered so the visible path pays one null field read per drawn section when the
         // shadow is off, which is the ordinary case.
-        if (shadowBuilder == null) return false;
+        LodGpuIndirectBuilder? nearBuilder = ActiveNearBuilder;
+        if (nearBuilder == null) return false;
+
+        // Fail open before even choosing a bucket. A stale distance is no safer than stale
+        // box facts, and could otherwise put the fallback on the wrong side of the rebuild.
+        if (lastSectionFacts.SectionKey != key)
+        {
+            nearBuilder.AddMissing();
+            return false;
+        }
+
+        farBucket = depthSplitThisFrame
+            && !LodGpuDepthSplitPolicy.IsNear(lastSectionHorizontalDistance);
+        LodGpuIndirectBuilder? farBuilder = ActiveFarBuilder;
+        LodGpuIndirectBuilder builder = farBucket && farBuilder != null
+            ? farBuilder
+            : nearBuilder;
         LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
         if (mirror == null) return false;
         if (!mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section))
@@ -4044,7 +4212,7 @@ public class LodTerrainRenderer : IRenderer
             // Drawn, but the arenas never managed to hold it. Counted rather than ignored:
             // batches over a partial mirror are not a draw-call reduction, and silence here
             // is exactly what made the first measured run look better than it was.
-            shadowBuilder.AddMissing();
+            builder.AddMissing();
             return false;
         }
         // The facts were written by the SetupSectionTransform call for this same section, one
@@ -4055,16 +4223,10 @@ public class LodTerrainRenderer : IRenderer
         // would be scattered terrain missing in some views - the exact fault this renderer
         // has already spent two sessions chasing once.
         //
-        // Fail open: hand it back as unmirrored, so it is drawn the established way and
-        // counted, rather than batched against a box that does not describe it.
-        if (lastSectionFacts.SectionKey != key)
-        {
-            shadowBuilder.AddMissing();
-            return false;
-        }
-
-        shadowBuilder.Add(section, lastSectionFacts);
-        return true;
+        // The packed representation is optional during Phase 7 publication. A section whose
+        // packed span was refused must enter this frame's legacy leftovers, not disappear from
+        // both lists merely because the expanded mirror record exists.
+        return builder.Add(section, lastSectionFacts);
     }
 
     int culledThisFrame;
@@ -4102,7 +4264,7 @@ public class LodTerrainRenderer : IRenderer
     /// pyramid, and a later phase with no pyramid must draw everything - the same direction
     /// every other fallback in this renderer fails in.
     /// </summary>
-    void BuildDepthPyramid()
+    void BuildDepthPyramid(bool splitMid = false)
     {
         if (!DepthPyramidEnabled || !hzbShaderOk) return;
 
@@ -4117,14 +4279,10 @@ public class LodTerrainRenderer : IRenderer
             // attachment would be wrong in exactly the way nobody would notice.
             LodGpuDepthFacts depth = LodGpuCapabilities.ProbeActiveDepth();
 
-            timing = gpuTelemetry.BeginHzb();
+            timing = splitMid
+                ? gpuTelemetry.BeginSplitHzb()
+                : gpuTelemetry.BeginHzb();
             LastHzbBuild = depthPyramid.Build(depth);
-
-            // Recorded only on success, and only here, so the stored camera and matrices
-            // always describe the picture actually in the texture. A frame that failed to
-            // build leaves the previous frame's record standing, which is correct: the
-            // texture still holds that picture, and it is that picture the guards must judge.
-            if (LastHzbBuild.Built) RecordPyramidView();
 
             if (!LastHzbBuild.Built && !reportedHzbFailure)
             {
@@ -4137,13 +4295,13 @@ public class LodTerrainRenderer : IRenderer
             {
                 reportedHzbBuilt = true;
                 capi.Logger.Notification(
-                    "[VintageHorizons] depth pyramid built: {0}x{1}, {2} levels. Nothing is "
-                    + "hidden by it; this phase measures what it costs.",
+                    "[VintageHorizons] depth pyramid built: {0}x{1}, {2} levels.",
                     LastHzbBuild.Width, LastHzbBuild.Height, LastHzbBuild.Levels);
             }
         }
         catch (Exception e)
         {
+            LastHzbBuild = default;
             DepthPyramidEnabled = false;
             capi.Logger.Warning(
                 "[VintageHorizons] depth pyramid disabled for this session; rendering is "
@@ -4155,8 +4313,16 @@ public class LodTerrainRenderer : IRenderer
             // must not leave a near-zero sample in an average of real builds.
             if (timing)
             {
-                if (LastHzbBuild.Built) gpuTelemetry.EndHzb();
-                else gpuTelemetry.DiscardHzb();
+                if (splitMid)
+                {
+                    if (LastHzbBuild.Built) gpuTelemetry.EndSplitHzb();
+                    else gpuTelemetry.DiscardSplitHzb();
+                }
+                else
+                {
+                    if (LastHzbBuild.Built) gpuTelemetry.EndHzb();
+                    else gpuTelemetry.DiscardHzb();
+                }
             }
             HzbCost.Add(phase);
         }
@@ -4171,106 +4337,6 @@ public class LodTerrainRenderer : IRenderer
     long hzbDispatchEpoch = -1;
     long hzbVerdictEpoch = -1;
     bool hzbCollecting;
-
-    /// <summary>
-    /// The matrix any test against the current pyramid must be projected through, or false
-    /// meaning there is no usable picture and everything must be drawn.
-    ///
-    /// One place, used by both readers - the cull that removes terrain and the classifier that
-    /// reports on it. If those two disagreed about which view the picture belongs to, the
-    /// report would describe a suppression that never happened, which is worse than no report.
-    /// </summary>
-    bool TryPyramidTestMatrix(bool count, float[] destination, out LodStaleDepthRefusal refusal)
-    {
-        refusal = LodStaleDepthRefusal.None;
-
-        if (!LateDepthPyramid)
-        {
-            frustum.CopyViewProjection(destination);
-            return true;
-        }
-
-        double dx = camPos.X - pyramidCameraX;
-        double dy = camPos.Y - pyramidCameraY;
-        double dz = camPos.Z - pyramidCameraZ;
-
-        refusal = LodStaleDepthPolicy.Evaluate(
-            pyramidBuiltFrame, frameCounter,
-            ProjectionMatchesPyramid(),
-            ViewRotationExceeded(
-                capi.Render.CameraMatrixOriginf, pyramidCameraMatrix, LateDepthRotationLimit),
-            dx, dy, dz,
-            pyramidGeometryRevision, renderPaths.GeometryRevision,
-            LateDepthTranslationLimitBlocks);
-
-        if (refusal != LodStaleDepthRefusal.None)
-        {
-            if (count)
-            {
-                switch (refusal)
-                {
-                    case LodStaleDepthRefusal.NoPicture: LateDepthRefusedNoPicture++; break;
-                    case LodStaleDepthRefusal.ProjectionChanged: LateDepthRefusedProjection++; break;
-                    case LodStaleDepthRefusal.GeometryChanged: LateDepthRefusedGeometry++; break;
-                    case LodStaleDepthRefusal.ViewTurned: LateDepthRefusedTurning++; break;
-                    default: LateDepthRefusedTeleport++; break;
-                }
-            }
-            return false;
-        }
-
-        LodHzbProjection.RebaseForCameraDelta(pyramidViewProjection, dx, dy, dz, destination);
-        if (count) LateDepthCullsOffered++;
-        return true;
-    }
-
-    /// <summary>
-    /// Remembers whose view the picture in the texture belongs to.
-    ///
-    /// The camera is stored as well as the matrix because the matrix alone cannot re-base a
-    /// box: cull boxes are built relative to the CURRENT camera, and testing them against an
-    /// older picture means expressing them relative to where the camera stood when that
-    /// picture was taken.
-    /// </summary>
-    void RecordPyramidView()
-    {
-        frustum.CopyViewProjection(pyramidViewProjection);
-        Array.Copy(capi.Render.CurrentProjectionMatrix, pyramidProjectionMatrix, 16);
-        Array.Copy(capi.Render.CameraMatrixOriginf, pyramidCameraMatrix, 16);
-        pyramidCameraX = camPos.X;
-        pyramidCameraY = camPos.Y;
-        pyramidCameraZ = camPos.Z;
-        pyramidGeometryRevision = renderPaths.GeometryRevision;
-        pyramidBuiltFrame = frameCounter;
-    }
-
-    /// <summary>
-    /// The stored view-projection, shifted so it accepts boxes built against THIS frame's
-    /// camera.
-    ///
-    /// Multiplying the old view-projection by a translation of the camera delta is the whole
-    /// trick, and it means neither the boxes nor the shader need to know any of this happened.
-    /// Only the translation column changes; the rotation and projection columns are the old
-    /// frame's untouched, which is exactly right - the picture was taken through them.
-    /// </summary>
-
-    /// <summary>
-    /// Whether the projection is the one the picture was taken through. A field-of-view
-    /// change, a zoom or a window resize rewrites it, and a box projected through the new one
-    /// lands somewhere the old picture never described.
-    /// </summary>
-    bool ProjectionMatchesPyramid()
-    {
-        float[] now = capi.Render.CurrentProjectionMatrix;
-        if (now == null || now.Length < 16) return false;
-        for (int i = 0; i < 16; i++)
-        {
-            float a = now[i], b = pyramidProjectionMatrix[i];
-            if (!float.IsFinite(a) || !float.IsFinite(b)) return false;
-            if (Math.Abs(a - b) > 1e-6f * Math.Max(1f, Math.Abs(b))) return false;
-        }
-        return true;
-    }
 
     /// <summary>
     /// Sections the pyramid called hidden that a completed occlusion query had positively
@@ -4464,18 +4530,14 @@ public class LodTerrainRenderer : IRenderer
             // The batch about to be READ was dispatched under the previous epoch; the one
             // about to be dispatched belongs to this one. Swapped in that order because
             // Classify reads before it dispatches.
-            // The same matrix the cull used, not this frame's. In the late arrangement the
-            // picture belongs to the previous frame, and a classifier projecting through this
-            // frame's view would report verdicts nothing acted on.
-            //
             // Ahead of the epoch swap, because the swap is a hand-off: it says the batch about
             // to be dispatched belongs to this epoch. Advancing it and then not dispatching
             // would pair the next frame's verdicts with the wrong epoch entirely.
-            if (!TryPyramidTestMatrix(count: false, hzbViewProjection, out _)) return;
+            frustum.CopyViewProjection(hzbViewProjection);
 
             hzbVerdictEpoch = hzbDispatchEpoch;
             hzbDispatchEpoch = temporalOcclusionEpoch;
-            hzbClassifier.Classify(
+            hzbClassifier!.Classify(
                 hzbBoxes,
                 hzbViewProjection,
                 depthPyramid.TextureName,
@@ -4520,12 +4582,7 @@ public class LodTerrainRenderer : IRenderer
         // the render thread is using that one. Filled once, and every projection below reads
         // it, so the whole explanation describes a single picture rather than drifting between
         // frames as it walks.
-        if (!TryPyramidTestMatrix(count: false, explainViewProjection, out LodStaleDepthRefusal why))
-        {
-            return "the picture from the previous frame is not being used this frame: "
-                + DescribeStaleRefusal(why)
-                + ". While that holds, nothing is hidden and every piece is drawn";
-        }
+        frustum.CopyViewProjection(explainViewProjection);
 
         long key = 0;
         bool found = false;
@@ -4717,6 +4774,11 @@ public class LodTerrainRenderer : IRenderer
         report.AppendLine();
         report.Append($"cost: gpu {GpuHzbCost.AvgUs:0.0}us avg / {GpuHzbCost.MaxUs:0.0}us max");
         report.Append($" over {GpuHzbCost.Calls} timed builds");
+        if (LateDepthPyramid)
+        {
+            report.Append($" | mid-frame gpu {GpuSplitHzbCost.AvgUs:0.0}us avg / "
+                + $"{GpuSplitHzbCost.MaxUs:0.0}us max over {GpuSplitHzbCost.Calls} builds");
+        }
         report.Append($" | classify gpu {GpuClassifyCost.AvgUs:0.0}us avg / "
             + $"{GpuClassifyCost.MaxUs:0.0}us max over {GpuClassifyCost.Calls} dispatches");
         report.Append($" | cpu {HzbCost.AvgUs:0.0}us avg / {HzbCost.MaxUs:0.0}us max");
@@ -4769,27 +4831,9 @@ public class LodTerrainRenderer : IRenderer
         return report.ToString();
     }
 
-    /// <summary>One refusal, in the words someone reading a log needs.</summary>
-    static string DescribeStaleRefusal(LodStaleDepthRefusal refusal) => refusal switch
-    {
-        LodStaleDepthRefusal.NoPicture => "no picture from an earlier frame exists yet",
-        LodStaleDepthRefusal.ProjectionChanged => "the view changed shape (zoom, field of view "
-            + "or window size), so the old picture describes a different screen",
-        LodStaleDepthRefusal.CameraJumped => "the camera moved further than one frame of travel "
-            + "can explain",
-        LodStaleDepthRefusal.GeometryChanged => "cached terrain was rebuilt or evicted under it",
-        LodStaleDepthRefusal.ViewTurned => "the view was turning, so the old picture would judge "
-            + "each piece at the place it sat last frame rather than where it is now",
-        _ => "it is being used",
-    };
-
     /// <summary>
-    /// Where the depth picture is taken and whether the previous frame's is being used.
-    ///
-    /// It reports the REFUSALS, not just the setting, because that is the difference between
-    /// "the previous frame's picture is doing nothing for you" and "it is switched on and
-    /// working". A late picture refused every frame draws everything and looks exactly like
-    /// one that found nothing to hide.
+    /// Whether the second, same-frame depth opportunity is active and whether its mid-frame
+    /// builds are actually succeeding.
     /// </summary>
     public string DescribeLateDepthPyramid()
     {
@@ -4798,20 +4842,13 @@ public class LodTerrainRenderer : IRenderer
                 + "game's nearby hills can hide anything - cached hills cannot. "
                 + "Switch with .vhlate on";
 
-        long refused = LateDepthRefusedNoPicture + LateDepthRefusedProjection
-            + LateDepthRefusedTeleport + LateDepthRefusedGeometry + LateDepthRefusedTurning;
-        long total = refused + LateDepthCullsOffered;
-        if (total == 0)
-            return "taken at the end of the frame; nothing has read it yet";
+        if (SplitDepthFrames == 0)
+            return "same-frame near/far split requested, but no split frame has drawn yet";
 
-        return "taken at the end of the frame and read by the next one, so cached terrain can "
-            + $"hide cached terrain. {LateDepthCullsOffered} of {total} frames used it; "
-            + $"{refused} refused ({LateDepthRefusedNoPicture} no picture yet, "
-            + $"{LateDepthRefusedProjection} the view changed shape, "
-            + $"{LateDepthRefusedTeleport} the camera jumped, "
-            + $"{LateDepthRefusedGeometry} terrain changed under it, "
-            + $"{LateDepthRefusedTurning} the view was turning). "
-            + "A refused frame draws everything.";
+        return $"same-frame split at {LodGpuDepthSplitPolicy.NearRadiusBlocks:0} blocks: "
+            + $"{SplitDepthFrames} frames, {SplitDepthNearCommands} near commands and "
+            + $"{SplitDepthFarCommands} far commands, {SplitDepthMidBuilds} mid-frame "
+            + "pictures completed. A failed picture draws the far bucket without culling.";
     }
 
     /// <summary>Hidden share per distance band; empty until something has been classified.</summary>
@@ -4902,6 +4939,8 @@ public class LodTerrainRenderer : IRenderer
         renderPaths.Dispose();
         indirectDrawer?.Dispose();
         indirectDrawer = null;
+        packedDrawer?.Dispose();
+        packedDrawer = null;
         cullPass?.Dispose();
         cullPass = null;
         depthPyramid?.Dispose();

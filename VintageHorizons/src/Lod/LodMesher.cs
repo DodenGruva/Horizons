@@ -44,6 +44,10 @@ public static class LodMesher
         public readonly List<float> Xyz = new(16384);
         public readonly List<byte> Rgba = new(8192);
         public readonly List<int> Indices = new(12288);
+        public readonly List<uint> Packed = new(3072);
+        public readonly bool Pack;
+
+        public Buffers(bool pack) => Pack = pack;
 
         // Running vertical extent of everything emitted into this pass. Free: every Y
         // here was computed anyway, and AddVert is the single funnel every vertex passes
@@ -58,6 +62,7 @@ public static class LodMesher
             Xyz.Clear();
             Rgba.Clear();
             Indices.Clear();
+            Packed.Clear();
             MinY = float.PositiveInfinity;
             MaxY = float.NegativeInfinity;
         }
@@ -86,8 +91,8 @@ public static class LodMesher
         int gs = LodSection.GridSize;
         SectionSnapshot self = job.Self;
 
-        var opaque = opaqueBuffers ??= new Buffers();
-        var water = waterBuffers ??= new Buffers();
+        var opaque = opaqueBuffers ??= new Buffers(pack: true);
+        var water = waterBuffers ??= new Buffers(pack: false);
         var hf = hFaces ??= new List<HFace>(8192);
         var vf = vFaces ??= new List<VFace>(8192);
         opaque.Clear();
@@ -170,6 +175,8 @@ public static class LodMesher
             Indices = opaque.Indices.ToArray(),
             VertexCount = opaque.Xyz.Count / 3,
             IndexCount = opaque.Indices.Count,
+            PackedOpaqueQuads = opaque.Packed.ToArray(),
+            PackedOpaqueQuadCount = opaque.Packed.Count / LodPackedQuadFormat.WordsPerQuad,
             WaterXyz = water.Xyz.Count > 0 ? water.Xyz.ToArray() : null,
             WaterRgba = water.Xyz.Count > 0 ? water.Rgba.ToArray() : null,
             WaterIndices = water.Xyz.Count > 0 ? water.Indices.ToArray() : null,
@@ -296,11 +303,13 @@ public static class LodMesher
                 // the same winding.
                 if (first.Bottom)
                 {
-                    AddQuad(buf, color, alpha, x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
+                    AddQuad(buf, LodPackedFace.Bottom, step, color, alpha,
+                        x0, y, z0, x1, y, z0, x1, y, z1, x0, y, z1);
                 }
                 else
                 {
-                    AddQuad(buf, color, alpha, x0, y, z0, x0, y, z1, x1, y, z1, x1, y, z0);
+                    AddQuad(buf, LodPackedFace.Top, step, color, alpha,
+                        x0, y, z0, x0, y, z1, x1, y, z1, x1, y, z0);
                 }
             }
 
@@ -364,25 +373,25 @@ public static class LodMesher
 
             if (seg.Dir == W)
             {
-                AddQuad(buf, color, alpha,
+                AddQuad(buf, LodPackedFace.West, step, color, alpha,
                     fixedCoord, seg.YBottom, a0, fixedCoord, seg.YBottom, a1,
                     fixedCoord, seg.YTop, a1, fixedCoord, seg.YTop, a0);
             }
             else if (seg.Dir == E)
             {
-                AddQuad(buf, color, alpha,
+                AddQuad(buf, LodPackedFace.East, step, color, alpha,
                     fixedCoord, seg.YBottom, a0, fixedCoord, seg.YTop, a0,
                     fixedCoord, seg.YTop, a1, fixedCoord, seg.YBottom, a1);
             }
             else if (seg.Dir == N)
             {
-                AddQuad(buf, color, alpha,
+                AddQuad(buf, LodPackedFace.North, step, color, alpha,
                     a0, seg.YBottom, fixedCoord, a0, seg.YTop, fixedCoord,
                     a1, seg.YTop, fixedCoord, a1, seg.YBottom, fixedCoord);
             }
             else
             {
-                AddQuad(buf, color, alpha,
+                AddQuad(buf, LodPackedFace.South, step, color, alpha,
                     a0, seg.YBottom, fixedCoord, a1, seg.YBottom, fixedCoord,
                     a1, seg.YTop, fixedCoord, a0, seg.YTop, fixedCoord);
             }
@@ -481,7 +490,7 @@ public static class LodMesher
 
     // ---- Emission primitives ----
 
-    static void AddQuad(Buffers buf, int color, byte alpha,
+    static void AddQuad(Buffers buf, LodPackedFace face, int columnBlocks, int color, byte alpha,
         float x0, float y0, float z0, float x1, float y1, float z1,
         float x2, float y2, float z2, float x3, float y3, float z3)
     {
@@ -496,6 +505,24 @@ public static class LodMesher
         buf.Indices.Add(baseVert);
         buf.Indices.Add(baseVert + 2);
         buf.Indices.Add(baseVert + 3);
+
+        if (buf.Pack)
+        {
+            float minX = Math.Min(Math.Min(x0, x1), Math.Min(x2, x3));
+            float maxX = Math.Max(Math.Max(x0, x1), Math.Max(x2, x3));
+            float minY = Math.Min(Math.Min(y0, y1), Math.Min(y2, y3));
+            float maxY = Math.Max(Math.Max(y0, y1), Math.Max(y2, y3));
+            float minZ = Math.Min(Math.Min(z0, z1), Math.Min(z2, z3));
+            float maxZ = Math.Max(Math.Max(z0, z1), Math.Max(z2, z3));
+            LodPackedQuadFormat.Append(
+                buf.Packed, face,
+                (int)MathF.Round(minX / columnBlocks),
+                (int)MathF.Round(maxX / columnBlocks),
+                minY, maxY,
+                (int)MathF.Round(minZ / columnBlocks),
+                (int)MathF.Round(maxZ / columnBlocks),
+                color, alpha);
+        }
     }
 
     static void AddVert(Buffers buf, int color, byte alpha, float x, float y, float z)

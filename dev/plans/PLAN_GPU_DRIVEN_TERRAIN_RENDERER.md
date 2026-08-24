@@ -1,21 +1,16 @@
 # Plan - GPU-driven cached-terrain renderer
 
-**Status:** Phase 0 capability feasibility is complete on the primary machine; controlled
-FPS baselines and noise-floor ownership moved to the owner on 2026-08-21. Phase 1 is
-approved and source/harness-complete. Phase 2 is approved and source/harness-complete: the
-shadow may now own regional GL arenas, and nothing draws from them. Phase 3 is now
-complete in source: the record and command layouts, the batch builder and
-the shadow measurement landed on 2026-08-22, and the drawing half - the vertex array, the
-instanced record attribute, the indirect variant of the terrain shader and the visible
-multi-draw behind `.vhindirect` - landed the same day. **It has never drawn a frame on real
-hardware.** Legacy remains the default and the complete fallback; Phase 3's own gates are
-unmet until a person compares the two in game. No HZB or other fast path exists.
-**Phase 3b was added on 2026-08-22** after the owner asked how hidden terrain could be
-eliminated most cheaply, and shipped the same day in 0.3.58: real section vertical bounds,
-measured from the mesh rather than assumed from the world height. It is the cheapest step in
-the plan and the only one that improves the established renderer regardless of the fast
-path's fate. It was originally justified as a prerequisite for Phase 4; that justification
-was withdrawn on 2026-08-22 and Phase 4 is not gated on it.
+**Status:** Phases 0-5 are implemented and have drawn on the primary AMD driver. Phase 6's
+same-frame near/far depth split is packaged in 0.3.84 and human-accepted: the owner reports
+the previous-frame flicker is gone and it runs very well. Phase 7's exact 12-byte opaque
+quad representation, direct mesher output, bounded regional arena, vertex-pulling shader,
+multi-draw backend, controls and deterministic checks are source-complete on 2026-08-24.
+0.3.86's indexed path is human-accepted on the primary AMD driver: it looks identical and
+holds the exact same FPS as expanded batching in the same scene, recovering all of 0.3.85's
+draw-arrays regression. It remains behind `.vhpacked` pending paired-route and second-driver
+evidence. The GL 3.3 renderer and expanded indirect path remain complete fallbacks. Phase 8
+now proceeds with cluster subdivision because whole-section sky overlap remains the dominant
+measured missed-occlusion cause.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -1051,6 +1046,20 @@ Gate:
 - If neither strategy wins, retain vanilla-only HZB and record the result.
 
 ### Phase 7 - packed opaque quads
+
+**Source complete 2026-08-24; primary-driver gate accepted.** The selected format is three scalar
+32-bit words (12 bytes): four 7-bit X/Z endpoints, two quarter-block 16-bit heights, three
+face bits and exact RGBA/tint. Eight bytes cannot retain all established inputs and sixteen
+adds no fidelity. The 0.3.85 draw-arrays experiment passed visual parity but dropped the same
+scene from about 300 to 260 FPS because it decoded six vertices instead of four indexed corners;
+it is rejected. 0.3.86 retains the scalar-word SSBO and 12-byte stride, using a reusable index
+pattern with four virtual corners per quad. `.vhpacked`, `VINTAGEHORIZONS_GPU_PACKED`, and
+`bench-windows.ps1 -GpuPacked 0|1` select comparisons. The fast tier passes 3,911 assertions,
+including 782 packed-format cases. The owner reports that 0.3.86 is visually identical and holds
+the exact same FPS with packing off and on in the same scene. The topology recovered the complete
+0.3.85 loss; packing is neutral rather than a standalone FPS win there. Paired-route timing,
+actual live-byte reduction after the temporary regional mirror is removed, and a second driver
+remain open.
 
 **Purpose:** Reduce geometry memory, upload bandwidth, and vertex/index processing.
 

@@ -15,6 +15,7 @@ public static class GpuArenaChecks
         CoalescingAndConvergence(c);
         RegionAssignment(c);
         MirrorContent(c);
+        PackedMirrorContent(c);
         MirrorReplacement(c);
         MirrorCeiling(c);
         MirrorStress(c);
@@ -339,6 +340,41 @@ public static class GpuArenaChecks
         c.Eq(0, backend.Pages.Count, "a world change leaves no buffer alive in the driver");
     }
 
+    static void PackedMirrorContent(Check c)
+    {
+        var backend = new FakeArenaBackend();
+        using var mirror = new LodGpuGeometryMirror(backend, 64L * 1024 * 1024, verify: true);
+        long key = LodWorld.SectionKey(3, 4, -2);
+        MeshResult mesh = LodMesher.BuildMesh(Fixtures.Job(
+            Fixtures.SolidSection(yTop: 40, yBottom: 3), key));
+        var publication = new LodRenderPublication(
+            Identity(key), null, null,
+            mesh.VertexCount, mesh.IndexCount, 0, 0, 0,
+            new LodRenderGeometry(mesh.Xyz, mesh.Rgba, mesh.Indices,
+                mesh.PackedOpaqueQuads, mesh.PackedOpaqueQuadCount));
+
+        c.True(mirror.Mirror(publication), "an exact packed payload accompanies the expanded mirror");
+        c.True(mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section),
+            "the packed section is published");
+        c.True(section.PackedQuads.IsLive, "the packed range is live only after upload succeeds");
+        c.Eq(mesh.PackedOpaqueQuadCount, section.PackedQuadCount,
+            "the mirror retains the exact packed quad count");
+        c.Eq(section.PackedQuads.Offset / LodPackedQuadFormat.StrideBytes,
+            section.FirstPackedQuad, "the first pulled quad follows from its byte range");
+        c.True(backend.MatchesPacked(mirror.PackedArena, section,
+                mesh.PackedOpaqueQuads, mesh.PackedOpaqueQuadCount),
+            "packed page bytes match the worker-produced records");
+        c.True(mirror.PackedLiveBytes * 2 < mirror.LiveBytes,
+            "the packed companion is materially smaller than expanded vertices and indices");
+
+        mirror.Remove(key);
+        c.True(mirror.PackedArena.PendingRetireBytes > 0,
+            "packed replacement bytes obey the same fenced lifetime");
+        backend.SignalAll();
+        mirror.Reclaim();
+        c.Eq(0L, mirror.PackedLiveBytes, "packed bytes converge after reclamation");
+    }
+
     static void MirrorCeiling(Check c)
     {
         const long ceiling = 16L * 1024 * 1024;
@@ -654,6 +690,20 @@ public static class GpuArenaChecks
             for (int i = 0; i < section.IndexCount; i++)
                 if (LodGpuGeometryFormat.DecodeIndex(stored, i) != indices[i]) return false;
             return true;
+        }
+
+        public bool MatchesPacked(
+            LodGpuArena arena,
+            in LodGpuGeometryMirror.MirroredSection section,
+            uint[] words,
+            int quadCount)
+        {
+            byte[] page = Pages[(LodGpuArenaKind.PackedQuad,
+                arena.PageHandle(section.PackedQuads))];
+            int bytes = (int)LodPackedQuadFormat.Bytes(quadCount);
+            var expected = new byte[bytes];
+            LodPackedQuadFormat.EncodeBytes(words, quadCount, expected);
+            return page.AsSpan((int)section.PackedQuads.Offset, bytes).SequenceEqual(expected);
         }
     }
 

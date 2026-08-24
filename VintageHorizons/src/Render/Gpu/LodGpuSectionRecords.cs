@@ -189,6 +189,82 @@ internal readonly record struct LodGpuDrawBatch(
     int CommandCount);
 
 /// <summary>
+/// The measured Phase 6 boundary. Offline runs found no meaningful difference between
+/// 384 and 768 blocks, so the midpoint is kept explicit and testable instead of being
+/// buried in the renderer's draw loop.
+/// </summary>
+internal static class LodGpuDepthSplitPolicy
+{
+    public const float NearRadiusBlocks = 512f;
+
+    public static bool IsNear(float horizontalDistanceBlocks) =>
+        float.IsFinite(horizontalDistanceBlocks)
+        && horizontalDistanceBlocks <= NearRadiusBlocks;
+}
+
+/// <summary>
+/// One indexed indirect command over a reusable 0,1,2,0,2,3 quad pattern. `baseVertex`
+/// selects four virtual corners per packed record, so the post-transform cache shades four
+/// vertices rather than the six invocations the first draw-arrays experiment required.
+/// The ordinary five-word layout also lets the existing cull shader keep zeroing word one.
+/// </summary>
+internal static class LodGpuPackedIndirectCommand
+{
+    public const int StrideBytes = LodGpuIndirectCommand.StrideBytes;
+    public const int CountOffset = 0;
+    public const int InstanceCountOffset = 4;
+    public const int FirstIndexOffset = 8;
+    public const int BaseVertexOffset = 12;
+    public const int BaseInstanceOffset = 16;
+
+    public static void Encode(
+        Span<byte> destination,
+        int quadCount,
+        bool visible,
+        long firstQuad,
+        int recordSlot)
+    {
+        if (destination.Length < StrideBytes)
+            throw new ArgumentException("short packed indirect command", nameof(destination));
+        if (quadCount < 0 || quadCount > uint.MaxValue / LodPackedQuadFormat.IndicesPerQuad)
+            throw new ArgumentOutOfRangeException(nameof(quadCount));
+        if (firstQuad < 0
+            || firstQuad > int.MaxValue / LodPackedQuadFormat.PulledVerticesPerQuad)
+            throw new ArgumentOutOfRangeException(nameof(firstQuad));
+
+        LodGpuIndirectCommand.Encode(
+            destination,
+            quadCount * LodPackedQuadFormat.IndicesPerQuad,
+            visible,
+            firstIndex: 0,
+            baseVertex: firstQuad * LodPackedQuadFormat.PulledVerticesPerQuad,
+            recordSlot);
+    }
+}
+
+/// <summary>Reusable topology shared by every packed section draw.</summary>
+internal static class LodGpuPackedIndexPattern
+{
+    public static void Fill(Span<uint> destination, int quadCount)
+    {
+        if (quadCount < 0 || destination.Length < quadCount * LodPackedQuadFormat.IndicesPerQuad)
+            throw new ArgumentOutOfRangeException(nameof(quadCount));
+
+        for (int quad = 0; quad < quadCount; quad++)
+        {
+            uint corner = (uint)(quad * LodPackedQuadFormat.PulledVerticesPerQuad);
+            int index = quad * LodPackedQuadFormat.IndicesPerQuad;
+            destination[index] = corner;
+            destination[index + 1] = corner + 1;
+            destination[index + 2] = corner + 2;
+            destination[index + 3] = corner;
+            destination[index + 4] = corner + 2;
+            destination[index + 5] = corner + 3;
+        }
+    }
+}
+
+/// <summary>
 /// Turns the CPU's already-approved, already-ordered candidate list into indirect commands.
 /// Commands for one page set are consecutive, because a multi-draw reads a contiguous run;
 /// the sets themselves are emitted in the order their nearest section arrived, so the
@@ -210,6 +286,10 @@ internal sealed class LodGpuIndirectBuilder
     byte[] records = [];
     byte[] boxes = [];
     int bucketCount;
+
+    public bool Packed { get; }
+
+    public LodGpuIndirectBuilder(bool packed = false) => Packed = packed;
 
     public IReadOnlyList<LodGpuDrawBatch> Batches => batches;
     public int CommandCount { get; private set; }
@@ -268,15 +348,18 @@ internal sealed class LodGpuIndirectBuilder
     /// Adds one CPU-approved candidate, in the traversal's own front-to-back order.
     /// A section with no geometry is dropped rather than turned into an empty command.
     /// </summary>
-    public void Add(
+    public bool Add(
         in LodGpuGeometryMirror.MirroredSection section,
         in LodGpuSectionFacts facts,
         bool visible = true)
     {
-        if (section.IndexCount <= 0 || !section.Indices.IsLive || !section.Vertices.IsLive)
+        bool geometryReady = Packed
+            ? section.PackedQuadCount > 0 && section.PackedQuads.IsLive
+            : section.IndexCount > 0 && section.Indices.IsLive && section.Vertices.IsLive;
+        if (!geometryReady)
         {
             CandidatesDropped++;
-            return;
+            return false;
         }
 
         if (!bucketOfGroup.TryGetValue(section.GroupId, out int bucket))
@@ -287,6 +370,7 @@ internal sealed class LodGpuIndirectBuilder
         }
 
         buckets[bucket].Add(new Entry(section, facts, visible));
+        return true;
     }
 
     /// <summary>
@@ -295,6 +379,15 @@ internal sealed class LodGpuIndirectBuilder
     /// that could drift out of step with the commands.
     /// </summary>
     public void End(LodGpuArena vertexArena, LodGpuArena indexArena)
+    {
+        if (Packed) throw new InvalidOperationException("packed commands need a packed arena");
+        EndCore(vertexArena, indexArena, null);
+    }
+
+    public void End(LodGpuGeometryMirror mirror) => EndCore(
+        mirror.VertexArena, mirror.IndexArena, mirror.PackedArena);
+
+    void EndCore(LodGpuArena vertexArena, LodGpuArena indexArena, LodGpuArena? packedArena)
     {
         int total = 0;
         for (int i = 0; i < bucketCount; i++) total += buckets[i].Count;
@@ -306,25 +399,41 @@ internal sealed class LodGpuIndirectBuilder
             if (bucket.Count == 0) continue;
 
             int first = CommandCount;
-            int vertexPage = vertexArena.PageHandle(bucket[0].Section.Vertices);
-            int indexPage = indexArena.PageHandle(bucket[0].Section.Indices);
-            if (vertexPage == 0 || indexPage == 0)
+            int vertexPage = Packed
+                ? packedArena?.PageHandle(bucket[0].Section.PackedQuads) ?? 0
+                : vertexArena.PageHandle(bucket[0].Section.Vertices);
+            int indexPage = Packed ? 0 : indexArena.PageHandle(bucket[0].Section.Indices);
+            if (vertexPage == 0 || (!Packed && indexPage == 0))
             {
-                // The page went away between publication and this frame. Dropping the whole
-                // set is correct: every command in it would address a deleted buffer.
-                CandidatesDropped += bucket.Count;
-                continue;
+                // This can only happen if publication changed during command construction.
+                // Refusing the complete build lets the renderer repair every recorded key
+                // through legacy drawing; silently dropping this bucket would make holes.
+                throw new InvalidOperationException("an indirect arena page vanished during command construction");
             }
 
             foreach (Entry entry in bucket)
             {
-                LodGpuIndirectCommand.Encode(
-                    commands.AsSpan(CommandCount * LodGpuIndirectCommand.StrideBytes),
-                    entry.Section.IndexCount,
-                    entry.Visible,
-                    entry.Section.FirstIndex,
-                    entry.Section.BaseVertex,
-                    CommandCount);
+                Span<byte> command = commands.AsSpan(
+                    CommandCount * LodGpuIndirectCommand.StrideBytes);
+                if (Packed)
+                {
+                    LodGpuPackedIndirectCommand.Encode(
+                        command,
+                        entry.Section.PackedQuadCount,
+                        entry.Visible,
+                        entry.Section.FirstPackedQuad,
+                        CommandCount);
+                }
+                else
+                {
+                    LodGpuIndirectCommand.Encode(
+                        command,
+                        entry.Section.IndexCount,
+                        entry.Visible,
+                        entry.Section.FirstIndex,
+                        entry.Section.BaseVertex,
+                        CommandCount);
+                }
                 LodGpuSectionRecord.Encode(
                     entry.Facts,
                     records.AsSpan(CommandCount * LodGpuSectionRecord.StrideBytes));

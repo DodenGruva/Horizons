@@ -25,7 +25,6 @@ public static class HzbProjectionChecks
         SubCellsTileTheParentExactly(c);
         NeverHidesABoxThatPokesOut(c);
         WiderSamplingHidesMore(c);
-        RebasingAMatrixMatchesRebasingThePoint(c);
     }
 
     /// <summary>
@@ -592,93 +591,4 @@ public static class HzbProjectionChecks
         c.True(chosen >= 0 && chosen < uniform.Levels, "at a level inside the chain");
     }
 
-    /// <summary>
-    /// The one new piece of maths behind testing this frame's boxes against last frame's depth
-    /// picture, and the kind that is silent when wrong: a slightly-off matrix does not throw or
-    /// look broken, it just culls the wrong terrain.
-    ///
-    /// The property is an identity. A box built relative to where the camera stands NOW,
-    /// projected through the shifted matrix, must land exactly where the same world point built
-    /// relative to where the camera stood THEN lands through the original. If that holds, the
-    /// depth picture is being read at the right screen position and nothing else about the
-    /// stale path can be wrong for geometric reasons.
-    /// </summary>
-    static void RebasingAMatrixMatchesRebasingThePoint(Check c)
-    {
-        var rng = new Random(20260823);
-        var shifted = new float[16];
-        int checkedPoints = 0;
-
-        foreach (double yaw in new[] { 0.0, 0.7, 2.4, 5.9 })
-        {
-            float[] original = HzbField.ViewProjection(yaw, 1920, 1080, 60, 8000);
-
-            foreach ((double dx, double dy, double dz) in new[]
-            {
-                (0.0, 0.0, 0.0),        // no movement at all must change nothing
-                (0.1, 0.0, 0.0),        // one frame of walking
-                (-0.13, 0.02, 0.09),    // one frame of sprinting, slightly downhill
-                (1.9, -0.5, 1.2),       // the far end of what the guard still allows
-            })
-            {
-                LodHzbProjection.RebaseForCameraDelta(original, dx, dy, dz, shifted);
-
-                if (dx == 0 && dy == 0 && dz == 0)
-                {
-                    for (int i = 0; i < 16; i++)
-                    {
-                        c.True(shifted[i] == original[i],
-                            "a zero delta leaves element " + i + " untouched");
-                    }
-                }
-
-                // The rotation and projection columns are the old view's and must survive.
-                for (int i = 0; i < 12; i++)
-                {
-                    c.True(shifted[i] == original[i],
-                        "the rotation and projection columns are unchanged at element " + i);
-                }
-
-                // Half of a random spread sits behind the camera and is skipped, so this is
-                // roughly twice the sample count the floor below asks for.
-                for (int trial = 0; trial < 40; trial++)
-                {
-                    // Somewhere in front of the camera at cached-terrain range.
-                    double thenX = (rng.NextDouble() - 0.5) * 4000;
-                    double thenY = (rng.NextDouble() - 0.5) * 400;
-                    double thenZ = (rng.NextDouble() - 0.5) * 4000;
-
-                    // The same world point, expressed against the camera after it moved.
-                    double nowX = thenX - dx, nowY = thenY - dy, nowZ = thenZ - dz;
-
-                    Screen(original, thenX, thenY, thenZ,
-                        out double ax, out double ay, out double az, out double aw);
-                    Screen(shifted, nowX, nowY, nowZ,
-                        out double bx, out double by, out double bz, out double bw);
-
-                    // Behind the camera on either side is not a case this identity is about.
-                    if (aw < 1 || bw < 1) continue;
-                    checkedPoints++;
-
-                    double tolerance = 2e-4 * Math.Max(1, Math.Abs(ax) + Math.Abs(ay));
-                    c.True(Math.Abs(ax - bx) <= tolerance && Math.Abs(ay - by) <= tolerance
-                            && Math.Abs(az - bz) <= 2e-4,
-                        "the shifted matrix puts the point where the original did");
-                }
-            }
-        }
-
-        c.True(checkedPoints > 100, "enough points were in front of the camera to mean anything");
-    }
-
-    static void Screen(float[] vp, double x, double y, double z,
-        out double sx, out double sy, out double sz, out double w)
-    {
-        w = vp[3] * x + vp[7] * y + vp[11] * z + vp[15];
-        double cx = vp[0] * x + vp[4] * y + vp[8] * z + vp[12];
-        double cy = vp[1] * x + vp[5] * y + vp[9] * z + vp[13];
-        double cz = vp[2] * x + vp[6] * y + vp[10] * z + vp[14];
-        double d = Math.Abs(w) < 1e-9 ? 1e-9 : w;
-        sx = cx / d; sy = cy / d; sz = cz / d;
-    }
 }

@@ -124,6 +124,12 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
 
     public bool Draw(LodGpuIndirectBuilder builder, in LodGpuCullRequest cull)
     {
+        // Per-call state, never the last successful call's state. The renderer can issue two
+        // buckets in one frame now, and an empty/refused second bucket must not report that
+        // its commands were culled merely because the first bucket was.
+        Culled = false;
+        LastBatches = 0;
+        LastCommands = 0;
         if (Failed) return false;
         if (builder.CommandCount == 0 || builder.Batches.Count == 0) return false;
 

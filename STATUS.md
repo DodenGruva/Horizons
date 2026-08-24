@@ -3,12 +3,11 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-24
-**Mod version:** `0.3.83` source metadata, packaged, installed and human-played, with GPU depth
-culling confirmed active and the end-of-frame depth picture played across four viewpoints
-(`0.2.1` is the released version; the next changed playable artifact must increment exactly
-once to `0.3.84`)
+**Mod version:** `0.3.86` source metadata, packaged, installed, and primary-driver accepted;
+0.3.84's same-frame near/far split is human-confirmed flicker-free (`0.2.1` is the public released
+version; the next changed playable artifact must increment exactly once to `0.3.87`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `66` C# files under `VintageHorizons/src`
+**Source files:** `67` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -22,8 +21,8 @@ source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 tracking `origin/render-overhaul`. The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
-**Phase 4 complete**, **Phase 5 complete on both halves** (0.3.69-0.3.83), and **Phase 6 measured,
-half-built, played and redirected**.
+**Phase 4 complete**, **Phase 5 complete on both halves** (0.3.69-0.3.83), **Phase 6 complete and
+human-accepted** in 0.3.84, and **Phase 7 primary-driver accepted behind `.vhpacked`**.
 
 **Depth verdicts stop terrain being drawn, and it is confirmed on hardware.** `cull: on: 67008
 dispatches over 1733784 commands. last frame's commands were culled on the card.` AMD RX 9070 XT
@@ -56,11 +55,28 @@ camera. That is the strongest result the phase produced.
 It was rejected anyway. The owner played it and saw distant terrain flicker **in the middle of the
 screen** while turning from a standing position. Mid-screen means the error is not a boundary
 artefact that a guard can contain, which is what the case for a one-frame-old picture rested on.
-**Phase 6 continues with the near/far split**, whose verdicts are same-frame by construction. The
-pyramid, cull shader, classifier, arena sizing, telemetry and the projection/geometry/teleport
-guards all carry over; the turning guard shipped in 0.3.83 and the camera-delta re-base do not.
-The flicker itself has one disproved explanation and no established one, which is recorded rather
-than assumed away.
+**Phase 6 replaced that experiment with a near/far split**, whose verdicts are same-frame by
+construction. The owner reports that the flicker is gone and it runs very well. The obsolete
+stale-picture policy, camera-delta re-base and turning guard are removed; the pyramid, cull shader,
+classifier, arena sizing and telemetry carry over.
+
+**Phase 7 now has an exact 12-byte opaque quad path in source.** The previous form uses four
+16-byte vertices plus six 4-byte indices, or 88 bytes per greedy rectangle. Eight bytes cannot
+retain four 0-64 endpoints, two quarter-block heights, six face windings and full RGBA/tint;
+sixteen buys no fidelity over twelve. Workers emit the three packed words beside the accepted
+arrays, a bounded packed regional arena publishes them, and an indexed pulling shader decodes four
+unique corners through one reusable six-index pattern. `.vhpacked` and
+`VINTAGEHORIZONS_GPU_PACKED` select it only when
+the shader, arena and drawer are all ready; any refusal uses expanded batching or the established
+renderer in the same frame. 3,911 fast-tier assertions pass, including 782 packed-format checks.
+The 0.3.85 draw-arrays shader compiled and looked identical on the primary driver, closing visual
+parity for that representation, but dropped the same scene from about 300 to 260 FPS (roughly
+0.51 ms or 13%). It is rejected. 0.3.86 retains the 12-byte records and replaces six shader
+invocations per quad with four indexed unique corners. The owner reports exact visual parity and
+the exact same FPS as expanded batching in the same scene. That closes the primary-driver format
+and draw-topology gate: packing is neutral rather than an FPS optimization there, while preserving
+the compact representation that Phase 8 clusters will address. The second-driver gate and removal
+of the temporary expanded regional mirror remain open.
 
 **A class of testing lives off the owner's machine.** `HzbField` reconstructs the in-game
 measurement from a real cache with no game process, and now also models a full-scene occluder
@@ -1110,13 +1126,12 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Not yet established
 
-- **Everything about Phase 3's visible path (0.3.57).** The drawer, the split shader body,
-  the indirect pass, `.vhindirect` and `VINTAGEHORIZONS_GPU_INDIRECT` are built, checked and
-  packaged, and have never drawn a pixel. The visual gate, the CPU-submission gate and the
-  open-horizon GPU check are all open, and so is whether the indirect shader variant
-  compiles: there is no GLSL validator on this machine, so the include splice and both
-  preprocessor branches were simulated offline rather than compiled. `LoadShader` names the
-  failure explicitly if the shader body is ever missing from the engine's include table.
+- **Phase 7 portability and final memory policy.** On the primary AMD driver, 0.3.86's indexed
+  `lodterrainpacked` path matches the expanded picture and frame rate. No second driver has run it,
+  and paired route telemetry has not yet separated upload, opaque-GPU and total-frame effects.
+  Both regional representations intentionally remain live for the A/B, so the 86.4% format
+  reduction is not yet a total-process-memory reduction. Expanded batching and the legacy
+  renderer remain complete fallbacks.
 - The frame timeline and the join stall line are source- and harness-tested only. Neither
   has been read against a real client.
 - The join anomaly has one sample. Five joins of 2,183-3,291 cached sections reach their

@@ -53,6 +53,8 @@ public static class StaticAssetChecks
         string mod = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
             "VintageHorizonsModSystem.cs"));
         string bench = File.ReadAllText(Path.Combine(root, "scripts", "bench-windows.ps1"));
+        string packedBackend = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "Gpu", "LodGpuPackedDrawBackend.cs"));
 
         // Default off, with an explicit on override, and reachable from a scripted run.
         // The phase gate is a controlled A/B; a switch that can only be typed in game
@@ -66,6 +68,16 @@ public static class StaticAssetChecks
         c.True(bench.Contains("VINTAGEHORIZONS_GPU_INDIRECT", StringComparison.Ordinal)
             && bench.Contains("$GpuIndirect", StringComparison.Ordinal),
             "the benchmark runner can pin either side of the comparison for a whole run");
+        c.True(renderer.Contains("VINTAGEHORIZONS_GPU_PACKED", StringComparison.Ordinal)
+            && mod.Contains("ChatCommands.Create(\"vhpacked\")", StringComparison.Ordinal)
+            && bench.Contains("$GpuPacked", StringComparison.Ordinal),
+            "packed drawing has live and whole-run comparison controls");
+        c.True(packedBackend.Contains("GL.MultiDrawElementsIndirect(", StringComparison.Ordinal)
+            && packedBackend.Contains(
+                "GL.BindBuffer(BufferTarget.ElementArrayBuffer, sharedIndexBuffer);",
+                StringComparison.Ordinal)
+            && !packedBackend.Contains("GL.MultiDrawArraysIndirect(", StringComparison.Ordinal),
+            "the packed backend shades four indexed corners rather than six array vertices");
 
         // Delayed occlusion cannot run under batching, so the pair must stay comparable
         // only when it is off on both sides. The renderer enforces that itself.
@@ -79,6 +91,7 @@ public static class StaticAssetChecks
         {
             string plain = File.ReadAllText(Path.Combine(shaders, "lodterrain." + stage));
             string indirect = File.ReadAllText(Path.Combine(shaders, "lodterrainindirect." + stage));
+            string packed = File.ReadAllText(Path.Combine(shaders, "lodterrainpacked." + stage));
 
             c.True(plain.Contains("#include lodterrainbody." + stage, StringComparison.Ordinal),
                 $"the established {stage} program includes the shared body");
@@ -88,6 +101,10 @@ public static class StaticAssetChecks
                 $"the established {stage} program does not define the indirect switch");
             c.True(indirect.Contains("#define VH_INDIRECT 1", StringComparison.Ordinal),
                 $"the indirect {stage} program defines the indirect switch");
+            c.True(packed.Contains("#include lodterrainbody." + stage, StringComparison.Ordinal)
+                && packed.Contains("#define VH_INDIRECT 1", StringComparison.Ordinal)
+                && packed.Contains("#define VH_PACKED 1", StringComparison.Ordinal),
+                $"the packed {stage} program changes only both shared-body switches");
 
             // A wrapper is a version line, an extension line, comments, and an include.
             // Anything else in one is shader code that exists in only one variant.
@@ -95,6 +112,8 @@ public static class StaticAssetChecks
                 $"the established {stage} wrapper is only a version, an extension and an include");
             c.Eq(4, CodeLines(indirect),
                 $"the indirect {stage} wrapper adds only the define");
+            c.Eq(4, CodeLines(packed),
+                $"the packed {stage} wrapper is version, two defines, and the shared include");
         }
 
         string vertex = ShaderBody("vsh");
@@ -147,11 +166,22 @@ public static class StaticAssetChecks
             "the vertex body branches on the variant exactly twice");
         c.Eq(1, Occurrences(fragment, "#ifdef VH_INDIRECT"),
             "the fragment body branches on the variant exactly once");
+        c.Eq(1, Occurrences(vertex, "#ifndef VH_PACKED"),
+            "only the vertex inputs change for packed pulling");
+        c.Eq(1, Occurrences(vertex, "#ifdef VH_PACKED"),
+            "and one main block decodes the pulled quad");
+        c.True(vertex.Contains("uint vhQuad = uint(gl_VertexID) / 4u;", StringComparison.Ordinal)
+            && vertex.Contains("uint vhLogicalCorner = uint(gl_VertexID) % 4u;", StringComparison.Ordinal)
+            && vertex.Contains("uint vhBase = vhQuad * 3u;", StringComparison.Ordinal)
+            && vertex.Contains("layout(std430, binding = 0) readonly buffer VhPackedQuadBuffer",
+                StringComparison.Ordinal),
+            "the packed variant pulls three scalar words for four reusable corners");
 
         // One #else per stage: the declaration block. The second vertex branch only fills
         // the varyings and has no established-path half, and the SSAO branches the engine
         // includes bring in are #if, not #ifdef, so they are not counted here.
-        c.Eq(1, Occurrences(vertex, "#else"), "only the declaration block has two halves");
+        c.Eq(2, Occurrences(vertex, "#else"),
+            "only the input and per-section declaration blocks have two halves");
         c.Eq(1, Occurrences(fragment, "#else"), "and the same in the fragment body");
     }
 

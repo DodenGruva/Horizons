@@ -176,8 +176,11 @@ internal sealed class LodGpuTelemetry : IDisposable
     readonly Action<string> log;
     readonly Action<string> warn;
     readonly LodGpuTimerRing opaqueTimer;
+    readonly LodGpuTimerRing splitNearTimer;
+    readonly LodGpuTimerRing splitFarTimer;
     readonly LodGpuTimerRing waterTimer;
     readonly LodGpuTimerRing hzbTimer;
+    readonly LodGpuTimerRing splitHzbTimer;
     readonly LodGpuTimerRing classifyTimer;
     bool probeAttempted;
     bool timingFailureReported;
@@ -192,6 +195,8 @@ internal sealed class LodGpuTelemetry : IDisposable
     public LodGpuDepthFacts Depth { get; private set; }
     public LodGpuPathDecision Decision { get; private set; }
     public LodPhaseCost OpaqueCost;
+    public LodPhaseCost SplitNearCost;
+    public LodPhaseCost SplitFarCost;
     public LodPhaseCost WaterCost;
 
     /// <summary>
@@ -200,6 +205,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     /// removes, and CPU time cannot answer that because none of the work is on the CPU.
     /// </summary>
     public LodPhaseCost HzbGpuCost;
+    public LodPhaseCost SplitHzbGpuCost;
 
     /// <summary>
     /// GPU time for the classification dispatch, kept apart from the pyramid build because
@@ -211,12 +217,17 @@ internal sealed class LodGpuTelemetry : IDisposable
     public LodPhaseCost ClassifyGpuCost;
 
     public int PendingResults =>
-        opaqueTimer.PendingCount + waterTimer.PendingCount + hzbTimer.PendingCount
+        opaqueTimer.PendingCount + splitNearTimer.PendingCount + splitFarTimer.PendingCount
+        + waterTimer.PendingCount + hzbTimer.PendingCount + splitHzbTimer.PendingCount
         + classifyTimer.PendingCount;
     public int UnavailableSlots =>
-        opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots
+        opaqueTimer.UnavailableSlots + splitNearTimer.UnavailableSlots
+        + splitFarTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots
+        + splitHzbTimer.UnavailableSlots
         + classifyTimer.UnavailableSlots;
-    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy
+    public int TargetBusy => opaqueTimer.TargetBusy + splitNearTimer.TargetBusy
+        + splitFarTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy
+        + splitHzbTimer.TargetBusy
         + classifyTimer.TargetBusy;
 
     public LodGpuTelemetry(
@@ -232,8 +243,11 @@ internal sealed class LodGpuTelemetry : IDisposable
         this.warn = warn;
         timerApi ??= new LodOpenGlTimerApi();
         opaqueTimer = new LodGpuTimerRing(timerApi);
+        splitNearTimer = new LodGpuTimerRing(timerApi);
+        splitFarTimer = new LodGpuTimerRing(timerApi);
         waterTimer = new LodGpuTimerRing(timerApi);
         hzbTimer = new LodGpuTimerRing(timerApi);
+        splitHzbTimer = new LodGpuTimerRing(timerApi);
         classifyTimer = new LodGpuTimerRing(timerApi);
     }
 
@@ -302,8 +316,11 @@ internal sealed class LodGpuTelemetry : IDisposable
         try
         {
             opaqueTimer.Poll(ref OpaqueCost);
+            splitNearTimer.Poll(ref SplitNearCost);
+            splitFarTimer.Poll(ref SplitFarCost);
             waterTimer.Poll(ref WaterCost);
             hzbTimer.Poll(ref HzbGpuCost);
+            splitHzbTimer.Poll(ref SplitHzbGpuCost);
             classifyTimer.Poll(ref ClassifyGpuCost);
         }
         catch (Exception e)
@@ -314,10 +331,16 @@ internal sealed class LodGpuTelemetry : IDisposable
 
     public bool BeginOpaque() => Begin(opaqueTimer);
     public void EndOpaque() => End(opaqueTimer);
+    public bool BeginSplitNear() => Begin(splitNearTimer);
+    public void EndSplitNear() => End(splitNearTimer);
+    public bool BeginSplitFar() => Begin(splitFarTimer);
+    public void EndSplitFar() => End(splitFarTimer);
     public bool BeginWater() => Begin(waterTimer);
     public void EndWater() => End(waterTimer);
     public bool BeginHzb() => Begin(hzbTimer);
     public void EndHzb() => End(hzbTimer);
+    public bool BeginSplitHzb() => Begin(splitHzbTimer);
+    public void EndSplitHzb() => End(splitHzbTimer);
 
     /// <summary>Closes the pyramid's timer without recording it, for a build that did not run.</summary>
     public void DiscardHzb()
@@ -326,18 +349,30 @@ internal sealed class LodGpuTelemetry : IDisposable
         try { hzbTimer.Discard(); }
         catch (Exception e) { DisableTiming(e); }
     }
+    public void DiscardSplitHzb()
+    {
+        if (!TimingActive) return;
+        try { splitHzbTimer.Discard(); }
+        catch (Exception e) { DisableTiming(e); }
+    }
     public bool BeginClassify() => Begin(classifyTimer);
     public void EndClassify() => End(classifyTimer);
 
     public void ResetInterval()
     {
         OpaqueCost.Reset();
+        SplitNearCost.Reset();
+        SplitFarCost.Reset();
         WaterCost.Reset();
         HzbGpuCost.Reset();
+        SplitHzbGpuCost.Reset();
         ClassifyGpuCost.Reset();
         opaqueTimer.ResetInterval();
+        splitNearTimer.ResetInterval();
+        splitFarTimer.ResetInterval();
         waterTimer.ResetInterval();
         hzbTimer.ResetInterval();
+        splitHzbTimer.ResetInterval();
         classifyTimer.ResetInterval();
     }
 
@@ -432,8 +467,11 @@ internal sealed class LodGpuTelemetry : IDisposable
     public void Dispose()
     {
         opaqueTimer.Dispose();
+        splitNearTimer.Dispose();
+        splitFarTimer.Dispose();
         waterTimer.Dispose();
         hzbTimer.Dispose();
+        splitHzbTimer.Dispose();
         classifyTimer.Dispose();
         TimingActive = false;
     }

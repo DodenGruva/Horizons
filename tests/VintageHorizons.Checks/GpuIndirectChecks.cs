@@ -12,6 +12,8 @@ public static class GpuIndirectChecks
     {
         RecordLayout(c);
         CommandLayout(c);
+        PackedCommandLayout(c);
+        PackedBatching(c);
         Batching(c);
         BatchOrdering(c);
         PagePairing(c);
@@ -20,6 +22,57 @@ public static class GpuIndirectChecks
         CullBoxesFollowCommandOrder(c);
         CullRunsBetweenUploadAndDraw(c);
         ADeclinedCullStillDrawsEverything(c);
+        DepthSplitBoundary(c);
+        TwoSameFrameBucketsStayIndependent(c);
+    }
+
+    static void DepthSplitBoundary(Check c)
+    {
+        c.Eq(512f, LodGpuDepthSplitPolicy.NearRadiusBlocks,
+            "the measured Phase 6 split stays at 512 blocks");
+        c.True(LodGpuDepthSplitPolicy.IsNear(0), "the camera origin is in the near bucket");
+        c.True(LodGpuDepthSplitPolicy.IsNear(511.999f),
+            "a section just inside the boundary is near");
+        c.True(LodGpuDepthSplitPolicy.IsNear(512f),
+            "the boundary itself draws before the second picture");
+        c.False(LodGpuDepthSplitPolicy.IsNear(512.001f),
+            "a section beyond the boundary is culled against the second picture");
+        c.False(LodGpuDepthSplitPolicy.IsNear(float.NaN),
+            "an invalid distance cannot become a near occluder");
+        c.False(LodGpuDepthSplitPolicy.IsNear(float.PositiveInfinity),
+            "an unbounded distance cannot become a near occluder");
+    }
+
+    static void TwoSameFrameBucketsStayIndependent(Check c)
+    {
+        var backend = new FakeDrawBackend();
+        using var drawer = new LodGpuIndirectDrawer(backend, _ => { });
+        LodGpuIndirectBuilder builder = BuiltList(out LodGpuGeometryMirror mirror);
+
+        c.True(drawer.Draw(builder, Cull()), "the near bucket draws against the first picture");
+        backend.Calls.Add("mid-depth-picture");
+        c.True(drawer.Draw(builder, Cull()), "the far bucket draws against the fresh picture");
+
+        int firstUpload = backend.Calls.IndexOf("upload");
+        int firstDraw = backend.Calls.IndexOf("draw");
+        int picture = backend.Calls.IndexOf("mid-depth-picture");
+        int secondUpload = backend.Calls.IndexOf("upload", firstUpload + 1);
+        int secondCull = backend.Calls.IndexOf("cull-begin", picture + 1);
+        int secondDraw = backend.Calls.IndexOf("draw", picture + 1);
+        c.True(firstUpload >= 0 && firstDraw > firstUpload,
+            "the near commands upload and draw before the second picture");
+        c.True(picture > firstDraw, "the second picture follows the complete near draw");
+        c.True(secondUpload > picture && secondCull > secondUpload && secondDraw > secondCull,
+            "the far commands upload, cull, and draw only after the second picture");
+
+        backend.Calls.Clear();
+        builder.Begin();
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+        c.False(drawer.Draw(builder, Cull()), "an empty far bucket draws nothing");
+        c.False(drawer.Culled, "and cannot inherit the near bucket's cull report");
+        c.Eq(0, drawer.LastBatches, "and cannot inherit its batch count");
+        c.Eq(0, drawer.LastCommands, "or its command count");
+        mirror.Dispose();
     }
 
     /// <summary>
@@ -369,7 +422,8 @@ public static class GpuIndirectChecks
 
         // A section the mirror never stored cannot become a command.
         builder.Begin();
-        builder.Add(default, Facts(near));
+        c.False(builder.Add(default, Facts(near)),
+            "a section with no arena geometry reports that it needs fallback");
         builder.End(mirror.VertexArena, mirror.IndexArena);
         c.Eq(0, builder.CommandCount, "a section with no arena span produces no command");
         c.Eq(1, builder.CandidatesDropped, "the dropped candidate is counted");
@@ -379,7 +433,8 @@ public static class GpuIndirectChecks
         // and the builder has to be able to say so.
         builder.Begin();
         mirror.TryGet(near, out LodGpuGeometryMirror.MirroredSection held);
-        builder.Add(held, Facts(near));
+        c.True(builder.Add(held, Facts(near)),
+            "a live arena section reports that it was recorded");
         builder.AddMissing();
         builder.AddMissing();
         builder.End(mirror.VertexArena, mirror.IndexArena);
@@ -392,6 +447,94 @@ public static class GpuIndirectChecks
         builder.Begin();
         builder.End(mirror.VertexArena, mirror.IndexArena);
         c.Eq(1.0, builder.Coverage, "an empty frame reports full coverage rather than dividing by zero");
+    }
+
+    static void PackedCommandLayout(Check c)
+    {
+        c.Eq(LodGpuIndirectCommand.StrideBytes, LodGpuPackedIndirectCommand.StrideBytes,
+            "packed and indexed commands share the cull shader's five-word slot");
+        var bytes = new byte[LodGpuPackedIndirectCommand.StrideBytes];
+        LodGpuPackedIndirectCommand.Encode(bytes, 9, true, 17, 4);
+        c.Eq(54u, LodGpuIndirectCommand.ReadUInt(bytes, 0,
+                LodGpuPackedIndirectCommand.CountOffset),
+            "one pulled quad expands to six array vertices");
+        c.Eq(1u, LodGpuIndirectCommand.ReadUInt(bytes, 0,
+                LodGpuPackedIndirectCommand.InstanceCountOffset),
+            "a visible packed section draws one instance");
+        c.Eq(0u, LodGpuIndirectCommand.ReadUInt(bytes, 0,
+                LodGpuPackedIndirectCommand.FirstIndexOffset),
+            "every packed command reuses the index pattern from its beginning");
+        c.Eq(68, LodGpuIndirectCommand.ReadInt(bytes, 0,
+                LodGpuPackedIndirectCommand.BaseVertexOffset),
+            "base vertex selects four unique pulled corners per arena quad");
+        c.Eq(4u, LodGpuIndirectCommand.ReadUInt(bytes, 0,
+                LodGpuPackedIndirectCommand.BaseInstanceOffset),
+            "base instance still selects the section record");
+
+        LodGpuPackedIndirectCommand.Encode(bytes, 9, false, 17, 4);
+        c.Eq(0u, LodGpuIndirectCommand.ReadUInt(bytes, 0,
+                LodGpuPackedIndirectCommand.InstanceCountOffset),
+            "the same cull write suppresses packed and expanded commands");
+
+        var pattern = new uint[2 * LodPackedQuadFormat.IndicesPerQuad];
+        LodGpuPackedIndexPattern.Fill(pattern, 2);
+        c.SeqEq(new uint[] { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 }, pattern,
+            "one reusable pattern preserves both triangles and advances four corners per quad");
+    }
+
+    static void PackedBatching(Check c)
+    {
+        var backend = new FakeIndirectBackend();
+        using var mirror = new LodGpuGeometryMirror(backend, 64L * 1024 * 1024);
+        var builder = new LodGpuIndirectBuilder(packed: true);
+        long a = LodWorld.SectionKey(0, 0, 0);
+        long b = LodWorld.SectionKey(0, 1, 0);
+        mirror.Mirror(Publication(a, quads: 3));
+        mirror.Mirror(Publication(b, quads: 5));
+
+        builder.Begin();
+        mirror.TryGet(a, out LodGpuGeometryMirror.MirroredSection first);
+        mirror.TryGet(b, out LodGpuGeometryMirror.MirroredSection second);
+        builder.Add(first, Facts(a));
+        builder.Add(second, Facts(b));
+        builder.End(mirror);
+
+        c.True(builder.Packed, "the builder names the geometry representation it encoded");
+        c.Eq(2, builder.CommandCount, "packed geometry retains one command per section");
+        c.Eq(1, builder.Batches.Count, "packed sections in one page set still batch together");
+        c.True(builder.Batches[0].VertexPage != 0, "the batch names its packed page");
+        c.Eq(0, builder.Batches[0].IndexPage, "packed drawing binds no index page");
+        c.Eq(18u, LodGpuIndirectCommand.ReadUInt(builder.Commands, 0,
+                LodGpuPackedIndirectCommand.CountOffset),
+            "the first command expands all three quads");
+        c.Eq(30u, LodGpuIndirectCommand.ReadUInt(builder.Commands, 1,
+                LodGpuPackedIndirectCommand.CountOffset),
+            "the second command expands all five quads");
+        c.Eq(0u, LodGpuIndirectCommand.ReadUInt(builder.Commands, 0,
+                LodGpuPackedIndirectCommand.FirstIndexOffset),
+            "the command starts at the reusable index pattern");
+        c.Eq((int)(first.FirstPackedQuad * LodPackedQuadFormat.PulledVerticesPerQuad),
+            LodGpuIndirectCommand.ReadInt(builder.Commands, 0,
+                LodGpuPackedIndirectCommand.BaseVertexOffset),
+            "the command rebases virtual corners onto its packed arena range");
+        c.Eq(1u, LodGpuIndirectCommand.ReadUInt(builder.Commands, 1,
+                LodGpuPackedIndirectCommand.BaseInstanceOffset),
+            "the second packed command selects the second section record");
+        c.Eq(builder.CommandCount * LodGpuCullBox.StrideBytes, builder.Boxes.Length,
+            "packed commands preserve the parallel cull-box layout");
+
+        long expandedOnly = LodWorld.SectionKey(0, 2, 0);
+        mirror.Mirror(Publication(expandedOnly, quads: 2, includePacked: false));
+        mirror.TryGet(expandedOnly, out LodGpuGeometryMirror.MirroredSection expandedOnlySection);
+        builder.Begin();
+        c.False(builder.Add(expandedOnlySection, Facts(expandedOnly)),
+            "a section whose optional packed publication was refused requests fallback");
+        c.Eq(1, builder.CandidatesDropped,
+            "the missing packed representation remains visible in telemetry");
+        var expandedBuilder = new LodGpuIndirectBuilder();
+        expandedBuilder.Begin();
+        c.True(expandedBuilder.Add(expandedOnlySection, Facts(expandedOnly)),
+            "the same section remains available to expanded batching");
     }
 
     /// <summary>
@@ -490,17 +633,27 @@ public static class GpuIndirectChecks
 
     // ---- Fixtures ----
 
-    static LodRenderPublication Publication(long key, int quads = 1)
+    static LodRenderPublication Publication(long key, int quads = 1, bool includePacked = true)
     {
         var xyz = new float[quads * 4 * 3];
         var rgba = new byte[quads * 4 * 4];
         var indices = new int[quads * 6];
         for (int i = 0; i < indices.Length; i++) indices[i] = i % (quads * 4);
+        var packedWords = new uint[quads * LodPackedQuadFormat.WordsPerQuad];
+        for (int q = 0; q < quads; q++)
+        {
+            LodPackedQuadFormat.Encode(
+                packedWords.AsSpan(q * LodPackedQuadFormat.WordsPerQuad),
+                LodPackedFace.Top, 0, 1, q, q, 0, 1, q, (byte)(q & 63));
+        }
         return new LodRenderPublication(
             new LodRenderResourceIdentity(1, key, key, key * 2, 0),
             null, null,
             quads * 4, quads * 6, 0, 0, 0,
-            new LodRenderGeometry(xyz, rgba, indices));
+            new LodRenderGeometry(
+                xyz, rgba, indices,
+                includePacked ? packedWords : null,
+                includePacked ? quads : 0));
     }
 
     static LodGpuSectionFacts Facts(long key)

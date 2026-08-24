@@ -4,6 +4,7 @@ internal enum LodGpuArenaKind
 {
     Vertex,
     Index,
+    PackedQuad,
 }
 
 /// <summary>
@@ -120,9 +121,13 @@ internal sealed class LodGpuArena : IDisposable
         this.backend = backend;
         this.limits = limits;
         Kind = kind;
-        alignment = kind == LodGpuArenaKind.Vertex
-            ? LodGpuGeometryFormat.VertexStrideBytes
-            : LodGpuGeometryFormat.IndexStrideBytes;
+        alignment = kind switch
+        {
+            LodGpuArenaKind.Vertex => LodGpuGeometryFormat.VertexStrideBytes,
+            LodGpuArenaKind.Index => LodGpuGeometryFormat.IndexStrideBytes,
+            LodGpuArenaKind.PackedQuad => LodPackedQuadFormat.StrideBytes,
+            _ => throw new ArgumentOutOfRangeException(nameof(kind)),
+        };
     }
 
     /// <summary>
@@ -447,6 +452,13 @@ internal static class LodGpuArenaPolicy
     /// </summary>
     public static long IndexPageBytes => VertexPageBytes / 2;
 
+    /// <summary>
+    /// Packed pages are a quarter of their expanded vertex partner. One quad falls from
+    /// 88 to 12 bytes, so this leaves generous headroom while keeping the temporary dual
+    /// representation bounded independently during Phase 7 validation.
+    /// </summary>
+    public static long PackedPageBytes => Math.Max(256 * 1024, VertexPageBytes / 4);
+
     public static void ConfigurePageBytes(string? vertexPageMegabytes)
     {
         VertexPageBytes = long.TryParse(vertexPageMegabytes, out long value)
@@ -593,6 +605,9 @@ internal static class LodGpuArenaPolicy
 
     public static LodGpuArenaLimits IndexLimits(long ceilingBytes) =>
         new(IndexPageBytes, PageSets(ceilingBytes) * IndexPageBytes, ReclaimPerFrame);
+
+    public static LodGpuArenaLimits PackedLimits(long ceilingBytes) =>
+        new(PackedPageBytes, PageSets(ceilingBytes) * PackedPageBytes, ReclaimPerFrame);
 
     /// <summary>
     /// Page sets the ceiling affords. The split between the two arenas has to follow the

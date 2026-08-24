@@ -2,6 +2,32 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-24 - Phase 7 indexed packed quads accepted on the primary driver
+
+- Greedy opaque rectangles now have an exact 12-byte regional form rather than four expanded
+  vertices plus six indices (88 bytes). Workers emit it directly and a bounded companion arena
+  publishes it behind `.vhpacked`, with expanded batching and the established renderer retained as
+  same-frame fallbacks.
+- The first draw-arrays backend in 0.3.85 matched the picture but reduced the owner's same-scene
+  frame rate from about 300 to 260 FPS because it decoded six unique shader vertices per quad.
+  That topology is rejected.
+- 0.3.86 reuses one `0,1,2,0,2,3` index pattern and decodes four unique corners. The owner reports
+  exact visual and FPS parity with packing off and on, accepting the format and draw topology on the
+  primary AMD driver. Packing is neutral rather than a standalone FPS optimization in this scene.
+- 3,911 fast-tier assertions pass, including 782 packed-format checks. Cross-driver evidence,
+  paired-route telemetry, and removal of the temporary expanded regional mirror remain open; the
+  next implementation branch is Phase 8 cluster subdivision.
+
+## 2026-08-24 - Phase 6 same-frame split accepted
+
+- Opaque cached terrain is divided into near and far buckets. The depth pyramid is rebuilt after
+  the near bucket and the far commands are classified against that same-frame picture.
+- The previous-frame path's stale-picture policy, camera-delta re-base and turning guard are
+  removed rather than tuned; their only purpose was to make an older picture usable.
+- The owner played 0.3.84 and reported that the flickering is gone and it runs very well. This
+  closes Phase 6 on the primary machine. Non-AMD coverage and controlled timing remain ordinary
+  portability/performance debt, not reasons to reopen the stale design.
+
 ## 2026-08-24 - Phase 6 measured, built, played, and redirected
 
 - **Phase 5's cost and correctness halves are both closed.** Culling is confirmed on hardware
