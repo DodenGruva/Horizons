@@ -5,6 +5,7 @@ internal enum LodGpuArenaKind
     Vertex,
     Index,
     PackedQuad,
+    PackedCluster,
 }
 
 /// <summary>
@@ -126,6 +127,7 @@ internal sealed class LodGpuArena : IDisposable
             LodGpuArenaKind.Vertex => LodGpuGeometryFormat.VertexStrideBytes,
             LodGpuArenaKind.Index => LodGpuGeometryFormat.IndexStrideBytes,
             LodGpuArenaKind.PackedQuad => LodPackedQuadFormat.StrideBytes,
+            LodGpuArenaKind.PackedCluster => LodPackedQuadFormat.StrideBytes,
             _ => throw new ArgumentOutOfRangeException(nameof(kind)),
         };
     }
@@ -608,6 +610,14 @@ internal static class LodGpuArenaPolicy
 
     public static LodGpuArenaLimits PackedLimits(long ceilingBytes) =>
         new(PackedPageBytes, PageSets(ceilingBytes) * PackedPageBytes, ReclaimPerFrame);
+
+    /// <summary>
+    /// Cluster splitting can turn one large greedy quad into as many as sixteen exact
+    /// pieces. Give the experiment one vertex-page-sized buffer per regional page set;
+    /// this is a demand-committed cap, not a reservation, and refusals still fall back.
+    /// </summary>
+    public static LodGpuArenaLimits PackedClusterLimits(long ceilingBytes) =>
+        new(VertexPageBytes, PageSets(ceilingBytes) * VertexPageBytes, ReclaimPerFrame);
 
     /// <summary>
     /// Page sets the ceiling affords. The split between the two arenas has to follow the

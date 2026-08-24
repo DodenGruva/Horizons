@@ -17,6 +17,7 @@ public static class HzbProjectionChecks
         SanityOfTheFixture(c);
         HiddenBehindNearerDepth(c);
         VisibleInFrontOfIt(c);
+        BorderlineDepthFailsOpen(c);
         NearPlaneFailsOpen(c);
         OffScreenFailsOpen(c);
         InvalidValuesFailOpen(c);
@@ -139,6 +140,32 @@ public static class HzbProjectionChecks
             x % 2 == 0 ? bounds.NearestDepth - 0.001f : bounds.NearestDepth + 0.001f);
         c.False(LodHzbProjection.IsOccluded(bounds, gap, 1920, 1080, out _),
             "a single farther texel in the covered region keeps the box drawn");
+    }
+
+    /// <summary>
+    /// Projection and rasterization do not calculate depth by the same sequence of floating-
+    /// point operations. A few depth-buffer steps therefore cannot prove that a box is behind
+    /// a surface; treating them as hidden made whole sections alternate at precise angles.
+    /// </summary>
+    static void BorderlineDepthFailsOpen(Check c)
+    {
+        LodHzbScreenBounds bounds = LodHzbProjection.Project(
+            Perspective(), -40, -20, -20000, 40, 20, -19900);
+        float bias = LodHzbProjection.OcclusionDepthBias;
+
+        c.True(bias > 0f, "the occlusion depth safety band is positive");
+        c.False(LodHzbProjection.IsOccluded(
+                bounds, new FlatPyramid(bounds.NearestDepth - bias * 0.5f),
+                1920, 1080, out _),
+            "a sub-bias depth difference fails open");
+        c.False(LodHzbProjection.IsOccluded(
+                bounds, new FlatPyramid(bounds.NearestDepth - bias),
+                1920, 1080, out _),
+            "the safety-band boundary fails open");
+        c.True(LodHzbProjection.IsOccluded(
+                bounds, new FlatPyramid(bounds.NearestDepth - bias * 8f),
+                1920, 1080, out _),
+            "a depth gap well beyond the safety band still hides");
     }
 
     /// <summary>

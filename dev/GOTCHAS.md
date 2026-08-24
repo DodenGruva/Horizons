@@ -1720,6 +1720,122 @@ The result isolates the extra unique vertex work as the 0.3.85 regression and es
 
 **Found:** 2026-08-24, session 46.
 
+### G88 - Strict depth inequality is not a conservative occlusion verdict
+
+**Trigger:** an HZB test compares a projected box's nearest depth with rasterized scene depth,
+especially after one section becomes several independently culled clusters.
+
+**Trap:** projection and triangle rasterization reach depth through different floating-point and
+fixed-point steps. Treating every `nearest > farthest` result as hidden lets a representable rounding
+difference cancel a coplanar draw. The failure looks like a normally shaped terrain piece flickering
+at a very precise camera angle, including while stationary. A 4x4 cluster path multiplied the number
+of independent decisions and made several more pieces show it; `.vhcull off` stopped all old and new
+cases while clusters remained enabled, clearing the geometry ranges.
+
+**Do:** reserve an explicit fail-open depth band and pin it in the CPU reference and shader. Start
+from the actual depth representation rather than an arbitrary world-space distance, then measure
+how much valid rejection remains. A pre-existing offline fixture reproduced the exact one-ULP
+self-occlusion and should remain the regression case. A borderline verdict draws.
+
+**Found:** 2026-08-24, Phase 8 owner playtest.
+
+### G89 - A dependent experiment needs one authoritative switch
+
+**Trigger:** a player-facing A/B requires several feature flags whose meaning depends on each
+other.
+
+**Trap:** Phase 8 accumulated seven controls as separately measurable stages: arenas, batching,
+packed geometry, HZB, culling, same-frame cached depth, and clusters. A 0.3.88 follow-up looked like
+the conservative depth margin had erased performance, but the log showed late depth initially off
+and clusters `on, but idle` because packed drawing was off. Every individual command behaved as
+documented; the experiment as a whole was still invalid, and asking the owner to maintain the
+dependency graph was the defect.
+
+**Do:** expose one master command that changes every prerequisite atomically, reports `ON`, `OFF`,
+or `MIXED`, and logs the same state. Keep component commands for diagnosis, not ordinary setup. A
+performance conclusion taken from a mixed state does not count.
+
+**Found:** 2026-08-24, 0.3.88 Phase 8 follow-up.
+
+### G90 - One command does not mean one experimental variable
+
+**Trigger:** a master command spans several stages that were built and measured separately.
+
+**Trap:** `.vhphase8 on|off` fixed hidden operator state, but it collapsed batching, HZB culling,
+same-frame cached depth, packed geometry, and clusters into one comparison. When the complete stack
+flickered and lost to legacy, that result could not identify which later addition erased the
+substantial wins measured earlier. The state was valid; the experiment was too broad.
+
+**Do:** keep one authoritative command, but give it named cumulative presets in implementation
+order. Every preset must assign every dependent flag, not merely enable its new feature. Compare
+adjacent settled presets and record the first visual or performance regression; only then narrow to
+component diagnostics.
+
+**Found:** 2026-08-24, 0.3.89 complete-stack owner comparison.
+
+### G91 - An idempotent-looking preset can restart expensive publication
+
+**Trigger:** a preset assigns the same enabled resource state already requested.
+
+**Trap:** `RequestGpuShadow("on")` is intentionally an active rebuild request, not a harmless
+boolean assignment. The first preset ladder called it for every active stage, so selecting `late`
+while arenas were already on queued all 1,678 live sections for re-mesh. The flags were correct,
+but the FPS comparison measured warm-up and every adjacent step would have repeated it.
+
+**Do:** compare the requested resource state before invoking transition methods. Cumulative presets
+may freely assign cheap feature flags, but they must preserve shared filled resources until the
+preset actually crosses their ownership boundary. Log queued rebuild counts and treat any nonzero
+unexpected count as a contaminated performance interval.
+
+**Found:** 2026-08-24, first 0.3.90 preset-ladder test.
+
+### G92 - A demand-driven producer cannot require its own first product
+
+**Trigger:** bootstrapping persisted terrain through the ordinary render-selection walk.
+
+**Trap:** stored cache rows register only key metadata, while the renderer skips selection until at
+least one mesh exists. Selection is the path that requests meshes; mesh scheduling is the path that
+starts asynchronous loads. With an empty dirty set the cycle produces no work at all. On a
+5,317-section cache it logged 0 dirty/loads/mesh jobs at ten and thirty seconds, then waited 75.1
+seconds for newly captured data to create the first mesh accidentally.
+
+**Do:** give key-only persisted state an explicit bounded bootstrap planner that runs without an
+existing mesh. Reuse async loading and all owning-thread budgets; do not mistake a zero-work period
+for a throughput problem or solve it by raising queue limits.
+
+**Found:** 2026-08-24, ordinary 0.3.90 join and source trace.
+
+### G93 - Frustum culling before demand makes the camera a load switch
+
+**Trigger:** combining visibility traversal with load/mesh request generation.
+
+**Trap:** `CollectDrawNodes` rejects an out-of-frustum subtree before `RequestMesh` or child descent.
+Residency is correctly independent of visibility, but demand is not: terrain behind the camera
+remains unloaded or coarse until the player turns to look at it. A nearest-first scheduler cannot
+repair obligations it was never given.
+
+**Do:** keep the frustum authoritative for drawing, not for whether persisted coverage/refinement
+can ever become eligible. Make orientation absent from demand ordering; service radial lanes fairly
+and let turning change only which already-planned terrain is drawn.
+
+**Found:** 2026-08-24, owner loading report and source trace.
+
+### G94 - Appearance readiness can lag behind data readiness
+
+**Trigger:** making persisted terrain load and mesh earlier than its client-only tint palette.
+
+**Trap:** the first seasonal refresh can complete before any cache palette has registered its
+grass, foliage, or water slots. New slots default to identity white, but a time-only 30-second
+cadence treats the table as current. Geometry then appears promptly with visibly wrong colours and
+snaps to the correct climate/season palette at the next refresh. Faster loading exposed the race;
+it did not create the colour error.
+
+**Do:** make newly registered appearance state invalidate the cadence immediately, keep its work
+incremental and atomically published, and retain each affected mesh obligation until every tint it
+uses is ready. Data-resident is not necessarily reveal-ready.
+
+**Found:** 2026-08-24, first accepted 0.3.93 radial-loading playtest.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

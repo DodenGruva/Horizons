@@ -1,16 +1,39 @@
 # Plan - GPU-driven cached-terrain renderer
 
 **Status:** Phases 0-5 are implemented and have drawn on the primary AMD driver. Phase 6's
-same-frame near/far depth split is packaged in 0.3.84 and human-accepted: the owner reports
-the previous-frame flicker is gone and it runs very well. Phase 7's exact 12-byte opaque
+same-frame near/far depth split is packaged in 0.3.84 and removed the obvious previous-frame
+motion flicker. Later play found a few normally shaped pieces still alternating at precise angles;
+`.vhcull off` stops every case, and 0.3.88 adds the conservative depth margin step 10.2 required.
+Human verification of that correction remains open. Phase 7's exact 12-byte opaque
 quad representation, direct mesher output, bounded regional arena, vertex-pulling shader,
 multi-draw backend, controls and deterministic checks are source-complete on 2026-08-24.
 0.3.86's indexed path is human-accepted on the primary AMD driver: it looks identical and
 holds the exact same FPS as expanded batching in the same scene, recovering all of 0.3.85's
 draw-arrays regression. It remains behind `.vhpacked` pending paired-route and second-driver
 evidence. The GL 3.3 renderer and expanded indirect path remain complete fallbacks. Phase 8
-now proceeds with cluster subdivision because whole-section sky overlap remains the dominant
-measured missed-occlusion cause.
+cluster subdivision is source- and harness-complete in 0.3.87 behind `.vhclusters`: workers
+produce a separate 4x4 stream of exact contiguous packed ranges, the GPU mirror retains
+conservative per-cluster bounds, and the indirect builder emits one cullable command per
+populated cluster. Whole-section packed, expanded indirect and GL 3.3 rendering remain
+same-frame fallbacks. The first owner scene measured 360 to 390 FPS with clusters enabled, about
+0.21 ms saved, but clusters also exposed more of the shared depth-cull flicker described above.
+Visual stability and paired GPU metadata/dispatch/saving gates are open.
+
+The live comparison uses `.vhphase8` as its sole player-facing authority. Version 0.3.90 makes it a
+chronological `off`, `batch`, `cull`, `late`, `packed`, `clusters` preset ladder; every preset
+assigns all seven dependent switches and reports the exact stage or `MIXED`. The individual
+commands remain diagnostics, not setup instructions. The ladder replaces both a 0.3.88 mixed-state
+run and 0.3.89's over-broad all-on/all-off comparison.
+
+The first 0.3.90 `late` preset reproduced only the older single-section flicker, not the numerous
+cluster flickers, at a reported 362 FPS. The log also caught the preset re-requesting already-on
+arenas and queuing 1,678 live sections for re-mesh, contaminating that performance number. Version
+0.3.91 preserves filled arenas between every active preset and reports the selected stage's
+effective path; only crossing the `off` boundary now performs the expensive mirror transition.
+
+**Phase 8 resumes after human acceptance of cache startup/refinement through 0.3.95.** The next
+adjacent experiment remains `late` versus `cull` in one settled session, without visiting `off`
+between them. Do not repeat earlier diagnosis or mix scheduler changes into the culling comparison.
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -1084,6 +1107,26 @@ Gate:
   tested driver.
 
 ### Phase 8 - optional GPU LOD selection and clusters
+
+**Implementation status, 2026-08-24:** the measured cluster branch is source- and
+harness-complete in 0.3.87; GPU-owned LOD was not implemented. The mesher keeps Phase 7's
+accepted whole-section packed stream as the control and builds a second 4x4 stream whose
+populated cells are contiguous and carry exact section-local geometry bounds. A separate
+demand-committed arena publishes that stream. `.vhclusters` or
+`VINTAGEHORIZONS_GPU_CLUSTERS=0|1` selects up to sixteen commands per CPU-approved section;
+the shader record deliberately remains whole-section so ownership, noise, edge fade and
+mask addressing do not change. Missing cluster data or any draw failure repairs the whole
+section through the established renderer in the same frame. 1,048 focused assertions pin
+coverage area, bounds at L0/L2/L6, ranges, command/box alignment and fail-open behavior.
+The owner measured 360 to 390 FPS in one scene, but more normally shaped pieces flickered at
+precise camera angles. `.vhcull off` stopped all old and new cases with clusters still enabled,
+clearing the geometry/range path and identifying the shared depth verdict. That verdict had no
+quantization or rasterization margin despite step 10.2 requiring one. Version 0.3.88 adds a
+four-step 24-bit fail-open band to the C# reference and both compute uses. In 0.3.89's first valid
+complete-stack comparison, flicker returned and legacy was faster, even though earlier staged work
+had produced substantial gains. Version 0.3.90 therefore exposes the chronological preset ladder
+needed to locate the first visual and performance regression. Human stability, retained
+performance, paired GPU timing/rejection evidence and turning/streaming behavior remain open.
 
 **Purpose:** Remove only a measured remaining bottleneck.
 

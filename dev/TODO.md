@@ -2,6 +2,21 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
+## TOP PRIORITY - resume Phase 8 at the controlled preset boundary
+
+The cache startup/refinement plan is complete and human-accepted through 0.3.95. Cached terrain now
+bootstraps immediately, loads without camera orientation, sharpens radially, prepares L0 beneath the
+player, reveals only after its tint is ready, and gives the closest band the dominant bounded share.
+Its completed narrative is in `dev/history/DONE.md`, Session 48, and
+`PLAN_CACHE_STARTUP_AND_REFINEMENT.md`; do not reopen it without a new observed regression.
+
+Resume `PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` exactly where Session 47 paused it. The next adjacent
+experiment is one settled-session comparison of `.vhphase8 late` against `.vhphase8 cull`, without
+visiting `off` between them. Version 0.3.91 made active preset changes preserve filled arenas; the
+old 362 FPS `late` figure is invalid because 0.3.90 re-meshed 1,678 sections during selection.
+Determine whether the remaining single precise-angle flicker belongs to whole-section HZB culling
+or to the same-frame near/far split before changing any culling code.
+
 ## Cached terrain lighting: the sky band is the only untested part left
 
 The four terrain lighting corrections are **done and human-tested** - shipped in 0.3.51, and
@@ -85,19 +100,61 @@ the primary-driver format/draw-topology gate is accepted.
   packed drawing is the selected product path. Dual representation is intentional for this A/B
   but is not the final memory state; legacy `MeshRef` geometry remains the complete fallback.
 
-### Cluster subdivision is the explicit Phase 8 follow-on
+### Phase 8 cluster/preset results and active resume point
 
-It has not been forgotten or replaced by packing. Whole-section boxes remain the largest measured
+Cache startup/refinement is human-accepted. The active resume point is the adjacent `late` versus
+`cull` comparison described at the top of this document; no earlier rendering diagnosis needs to be
+repeated.
+
+Cluster subdivision has not been forgotten or replaced by packing. Whole-section boxes remain the largest measured
 visibility limitation: in every sampled view most sections the HZB could not hide overlapped open
 sky, at one spot all of them. The offline 4x4 estimate removes a further 13-34% of what remains,
 depending on view. Packing comes first because cluster ranges, commands and bounds should point at
 the compact format rather than force two geometry-layout migrations.
 
-The primary-driver packed gate is now closed and whole-section sky overlap remains the measured
-limiter, so clusters are the next implementation branch. Add moderate mesher-produced clusters
-with conservative bounds and contiguous packed ranges, then measure the same views again. Do not
-combine that change with GPU LOD authority: one measured branch at a time keeps holes, metadata
-cost and regressions attributable.
+The primary-driver packed gate is closed and the measured cluster branch is now source- and
+harness-complete in 0.3.87. Workers produce a separate 4x4 packed stream with contiguous ranges
+and exact local geometry bounds; `.vhclusters` expands each CPU-approved section into up to sixteen
+independently culled commands. The accepted whole-section packed stream remains the immediate
+control, and missing cluster data or a failed draw repairs the whole section through the
+established renderer. GPU LOD authority was deliberately not added.
+
+**First owner result:** one scene improved from 360 to 390 FPS with clusters on, about 0.21 ms.
+Normally shaped terrain pieces also flickered at precise angles; `.vhcull off` stopped every old
+and new case with clusters on, clearing the clustered ranges and isolating the shared depth verdict.
+The comparison had no quantization/rasterization margin despite the GPU plan requiring one. Version
+0.3.88 adds a four-step 24-bit fail-open depth band.
+
+**The first 0.3.88 follow-up was not a valid performance result.** Its log shows `.vhlate` off for
+the initial reports (0.5% hidden), then 4.6% hidden after the same-frame split was enabled, while
+clusters remained `on, but idle` because packed drawing was off. Seven dependent live commands are
+too much operator state. Version 0.3.89 replaces that setup with `.vhphase8 on|off`, which changes
+arenas, batching, packing, HZB, culling, late depth, and clusters together and reports mixed state.
+
+**The valid 0.3.89 all-on/all-off result is negative but does not contradict the earlier wins.**
+The log confirms every prerequisite on, 5,577 cluster commands in 68 multi-draws, then every switch
+off and the arenas released. The owner saw flicker return with the complete stack and higher FPS on
+the legacy baseline. That rejects the complete stack as one candidate; it does not say whether the
+accepted batching/culling/late stages still win before a later addition gives the benefit back.
+
+**Still owed:** use the single-command chronological ladder in one settled scene:
+`.vhphase8 off`, `batch`, `cull`, `late`, `packed`, then `clusters`. Record approximate FPS and the
+first preset at which flicker appears. Do not use any individual GPU commands. Switching up from
+`off` rebuilds the regional mirrors, so wait until a no-argument `.vhphase8` reports the requested
+stage and its path is available before measuring. Once the boundary is known, run only that paired
+scripted comparison and inspect cluster commands, hidden share, classify/opaque GPU time, total
+frame time, arena bytes, uploads, and fallbacks. The extra metadata, split quads, and dispatch must
+cost less than the work they remove; otherwise reject the responsible branch rather than tuning it
+into the default.
+
+**First ladder result and correction:** 0.3.90's `late` preset produced about 362 FPS and the one
+older flickering section, but none of the additional cluster flickers. Its log also showed that
+merely selecting an active preset re-requested already-on arenas and queued 1,678 live sections for
+re-mesh, so that FPS number is not a settled comparison. Version 0.3.91 preserves filled buffers
+between `batch`, `cull`, `late`, `packed`, and `clusters`; only `off` crosses the expensive arena
+boundary. Re-test `late` after warm-up, then select `cull` without visiting `off`. If the old
+flicker remains, it belongs to the shared whole-section HZB verdict; if it stops, it belongs to the
+same-frame near/far split.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
@@ -201,52 +258,6 @@ If a periodic spike remains, capture phase telemetry before changing more cadenc
 readiness tracker/mask still has owning-thread game queries and a once-per-second authority
 resync; GPU uploads and live registry publication also must remain on their owning threads.
 Do not attribute an unmeasured residual to disk merely because its interval is regular.
-
-## Cached terrain slow to appear after joining - live again, on a bigger world
-
-Six joins are on record in the client logs, five of them tightly clustered and one nothing
-like them:
-
-| cached sections | first 100 meshes | resident at 30s | meshes at 30s | version |
-|---:|---:|---:|---:|---|
-| 2,183 | 2.3s | 619 | 609 | 0.3.40 |
-| 2,367 | 7.2s | 600 | 546 | 0.3.40 |
-| 2,388 | 6.9s | 638 | 613 | 0.3.50 |
-| 2,395 | 9.1s | 582 | 545 | 0.3.51 |
-| 3,291 | 6.6s | 617 | 608 | 0.3.40 |
-| **5,143** | **60.2s** | **116** | **0** | 0.3.51 |
-
-The outlier is not a slower version of the others, it is a different shape. At thirty
-seconds that join had **zero** meshes, zero render-dirty sections, zero selected sections,
-zero subtrees traversal-culled, an empty mesh worker, an empty install queue, and the
-storage thread reporting `116 read, 0 async loads in flight`. Nothing was backed up
-anywhere. The mod was not working slowly; it was not asking for anything.
-
-**What is established about the mechanism.** `LodTerrainRenderer.OnRenderFrame` returns
-before the selection walk while no mesh exists, and the selection walk is what calls
-`TryGetForRender` and therefore what asks storage for sections. Until the first mesh is
-built, residency has to be started by the dirty set instead, through `ScheduleMeshJobs`,
-which drains `world.RenderDirty` and requests loads for the keys it finds. If that set is
-empty at join, nothing starts, and the 116 sections that did arrive came from captures as
-the player's own chunks streamed in. Both cache databases were decoded to rule out the
-first suspect: both have a complete L0-L6 pyramid and no pending `ApplyToParent`
-obligations, so a missing coarse level is not the cause.
-
-**What is not established:** why the dirty set was empty in that world and not in the other
-five. Do not spend a session on a theory here - one log cannot distinguish "nothing was
-ever dirtied" from "everything dirtied was drained into loads that had not landed yet",
-and the difference decides the fix. This is the shape of mistake G63 records.
-
-**0.3.56 adds the measurement instead.** If the first mesh has not appeared ten seconds
-after level finalize, the log now carries one `Join:` line naming the bootstrap state -
-sections known and resident, render-dirty count, loads in flight, columns captured and
-pending, mesh jobs queued, and how many render frames were skipped for want of a mesh.
-There is also a `Fill-in: first mesh after Xs` milestone now, because the old series
-started at a hundred and could not distinguish a slow start from a stalled one.
-
-**How to settle it:** join the larger world once, normally, and read that line. If the
-dirty set is empty, the bootstrap never started and the fix belongs at join. If it is
-large with loads in flight, the bootstrap is running and the fix is a throughput one.
 
 ## The mask default is settled; what remains is coverage, not the decision
 

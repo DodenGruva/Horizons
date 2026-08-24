@@ -120,6 +120,12 @@ public class MeshResult
     public uint[] PackedOpaqueQuads = Array.Empty<uint>();
     public int PackedOpaqueQuadCount;
 
+    // Phase 8 comparison stream. Quads are split at a 4x4 section grid and stored
+    // contiguously per populated cell; the accepted whole-section stream above remains
+    // the control and same-frame fallback.
+    public uint[] ClusteredPackedOpaqueQuads = Array.Empty<uint>();
+    public LodPackedCluster[] PackedOpaqueClusters = Array.Empty<LodPackedCluster>();
+
     // Water/translucent geometry, drawn in a second blended pass.
     public float[]? WaterXyz;
     public byte[]? WaterRgba;
@@ -149,6 +155,10 @@ public class MeshResult
 
     public long EstimatedPackedOpaqueBytes =>
         LodPackedQuadFormat.Bytes(PackedOpaqueQuadCount);
+
+    public long EstimatedClusteredPackedOpaqueBytes =>
+        LodPackedQuadFormat.Bytes(
+            ClusteredPackedOpaqueQuads.Length / LodPackedQuadFormat.WordsPerQuad);
 
     static long UploadBytes(int vertexCount, int indexCount)
     {

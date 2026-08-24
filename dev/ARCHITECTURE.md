@@ -199,9 +199,12 @@ tick. Both policies trade slightly later reclamation for the removal of collecti
 frame/tick bursts.
 
 Seasonal/climate sampling uses game APIs and therefore also remains on the owning thread.
-It starts no more than once every 30 seconds, samples one registered tint slot per frame into
-staging arrays, and publishes the completed low/high tables atomically. The visible palette
-is never half old and half new.
+Stable published slots refresh no more than once every 30 seconds. A tint slot registered by a
+later cache load bypasses that cadence immediately; sampling still advances one slot per frame into
+staging arrays and publishes the completed low/high tables atomically. Mesh scheduling retains a
+section's exact dirty obligation while any tint slot in its palette is unpublished, so geometry is
+not first revealed with identity-white tint and recoloured later. Untinted sections do not wait,
+and existing parent coverage remains live during a refined replacement's appearance preparation.
 
 Visibility state is fail-open and remains independent from residency and persistence. A
 projection change or profile-specific camera threshold advances a scene epoch, and results
@@ -255,6 +258,15 @@ Visibility, residency, and persistence are different concerns:
 - Persistence decides whether a section can be reconstructed after eviction.
 
 They must not share one timestamp or state flag if doing so makes turning the camera trigger remesh storms.
+
+Persisted mesh demand is likewise independent of draw visibility. Exact loadable/offered rows are
+tracked separately from structural quadtree ancestors. Two bounded eight-lane planners split one
+fixed allowance: an inner foundation advances the first configured band through L0 even while
+vanilla suppresses it, while the outward wave pipelines nearer refinement with the next coarse
+band. The foundation receives 24 of 32 unresolved slots and six of eight new requests per frame;
+the outward reservation retains at least one unresolved slot per lane, so prioritizing near
+sharpness cannot stop panoramic progress. Camera orientation is not an input. Both feed exact render-dirty ownership before the
+empty-mesh return and never bypass asynchronous loads, snapshot/upload budgets, or parent coverage.
 
 Persistence has its own monotonically increasing per-section revision, separate from the
 content revision used by mip jobs. This distinction is required because clearing the

@@ -32,6 +32,9 @@ param(
     # in both halves of the A/B so this isolates packing rather than batching.
     [ValidateSet('0', '1')]
     [string]$GpuPacked,
+    # Split packed section geometry into a 4x4 grid of independently culled commands.
+    [ValidateSet('0', '1')]
+    [string]$GpuClusters,
     # Build the private depth pyramid every frame. It hides nothing, so an A/B over this
     # measures the mechanism's cost alone - which is exactly the Phase 4 gate.
     [ValidateSet('0', '1')]
@@ -1039,6 +1042,9 @@ if ($GpuIndirect) {
 if ($GpuPacked) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_PACKED = $GpuPacked
 }
+if ($GpuClusters) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_CLUSTERS = $GpuClusters
+}
 if ($Hzb) {
     $clientEnvironment.VINTAGEHORIZONS_DEPTH_PYRAMID = $Hzb
 }
@@ -1200,6 +1206,7 @@ try {
         gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
         gpuIndirect = if ($GpuIndirect) { $GpuIndirect } else { $null }
         gpuPacked = if ($GpuPacked) { $GpuPacked } else { $null }
+        gpuClusters = if ($GpuClusters) { $GpuClusters } else { $null }
         hzb = if ($Hzb) { $Hzb } else { $null }
         gpuRender = $gpuRenderRecord
         completedUtc = [DateTime]::UtcNow.ToString('o')

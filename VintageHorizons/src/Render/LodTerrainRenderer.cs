@@ -556,8 +556,25 @@ public class LodTerrainRenderer : IRenderer
     readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
     readonly LodRenderDirtyScheduler dirtyScheduler = new();
+    // The first LOD band is where the eye judges sharpness first. Give it three quarters
+    // of the unchanged global admission/request allowance while reserving enough outward
+    // capacity to keep all eight lanes moving. This changes priority, not total pressure.
+    internal const int FoundationDemandOutstanding = 24;
+    internal const int FoundationDemandRequestsPerFrame = 6;
+    internal const int OutwardDemandOutstanding = 8;
+    internal const int OutwardDemandRequestsPerFrame = 2;
+    readonly LodRadialDemandPlanner foundationDemand = new(
+        outstandingLimit: FoundationDemandOutstanding,
+        requestsPerFrame: FoundationDemandRequestsPerFrame);
+    readonly LodRadialDemandPlanner radialDemand = new(
+        outstandingLimit: OutwardDemandOutstanding,
+        requestsPerFrame: OutwardDemandRequestsPerFrame);
     readonly Predicate<long> keepRenderDirty;
     readonly Predicate<long> renderDirtyBlocked;
+    readonly Predicate<long> radialDemandReady;
+    readonly Predicate<long> radialDemandPending;
+    readonly Predicate<long> radialDemandTerminal;
+    readonly System.Func<long, bool> startRadialDemand;
     // Visibility is intentionally absent from this state. The camera may stop walking
     // an off-screen subtree, but distance-based residency still keeps appropriate meshes
     // warm for a turn-around (G8).
@@ -950,6 +967,10 @@ public class LodTerrainRenderer : IRenderer
             message => capi.Logger.Warning("{0}", message));
         keepRenderDirty = KeepRenderDirty;
         renderDirtyBlocked = RenderDirtyBlocked;
+        radialDemandReady = HasAnyMesh;
+        radialDemandPending = RadialDemandPending;
+        radialDemandTerminal = RadialDemandTerminal;
+        startRadialDemand = RequestMesh;
         maxWorkerMeshBacklog = worker.MeshThreads * MeshBacklogPerThread;
         world.SectionBecameResident += OnSectionBecameResident;
 
@@ -1187,9 +1208,8 @@ public class LodTerrainRenderer : IRenderer
                 // maintained independently by the distance-based eviction sweep.
                 if (!HasAnyMesh(ck))
                 {
-                    // Missing gate: re-request (evicted, or never built) so descent
-                    // can resume; the parent keeps covering meanwhile.
-                    RequestMesh(ck);
+                    // The radial planner owns demand eligibility. The parent keeps
+                    // covering until that orientation-independent wave reaches this gate.
                     covered = false;
                     CountCoarseWait(ck);
                 }
@@ -1232,12 +1252,6 @@ public class LodTerrainRenderer : IRenderer
         int level = LodWorld.KeyLevel(key);
         int wanted = LodWorld.WantedLevelForSq(NearestDistanceSqTo(key));
 
-        // Demand-driven meshing: request ONLY at the level the walk actually wants
-        // here. Descending through meshless parents must not request every leaf the
-        // recursion happens to reach - coarser/finer nodes on the path stay unmeshed
-        // until the wanted level for their own distance says otherwise.
-        if (!hasMesh && level == wanted) RequestMesh(key);
-
         if (level > 0 && ((level > wanted && AllVisibleChildrenCovered(key)) || !hasMesh))
         {
             bool anyChildDrew = false;
@@ -1271,8 +1285,11 @@ public class LodTerrainRenderer : IRenderer
         long now = Environment.TickCount64;
         if (!seasonalRefreshActive)
         {
-            if (seasonalStateInitialized
-                && now - lastSeasonRefreshMs < SeasonalRefreshIntervalMs) return;
+            if (!LodTintRegistry.RefreshDue(
+                seasonalStateInitialized,
+                tints.HasUnreadySlots,
+                now - lastSeasonRefreshMs,
+                SeasonalRefreshIntervalMs)) return;
 
             seasonalRefreshActive = true;
             seasonalRefreshSlot = 1;
@@ -1329,24 +1346,76 @@ public class LodTerrainRenderer : IRenderer
     }
 
 
-    /// <summary>Demand-driven (re)meshing: the selection walk is the load queue (Voxy's idea, CPU-side).</summary>
-    void RequestMesh(long key)
+    /// <summary>Transfer one planner or content-change obligation into exact dirty ownership.</summary>
+    bool RequestMesh(long key)
     {
-        if (meshJobInFlight.Contains(key)) return;
+        if (meshJobInFlight.Contains(key)) return false;
 
         // RAM-evicted sections still count: HasDataSet says whether the subtree has
         // data at all; the scheduler reloads the row from disk when it picks the job.
         if (world.Sections.TryGetValue(key, out LodSection? section))
         {
-            if (section.CapturedColumns == 0) return;
+            if (section.CapturedColumns == 0) return false;
         }
         else if (!world.HasDataSet.Contains(key))
         {
-            return;
+            return false;
         }
 
-        world.RenderDirty.Add(key);
+        return world.RenderDirty.Add(key);
     }
+
+    bool RadialDemandPending(long key) => world.RenderDirty.Contains(key)
+        || world.LoadsInFlight.Contains(key)
+        || meshJobInFlight.Contains(key);
+
+    bool RadialDemandTerminal(long key) => world.LoadFailed.Contains(key)
+        || (world.Sections.TryGetValue(key, out LodSection? section)
+            && section.CapturedColumns == 0);
+
+    void PlanRadialDemand()
+    {
+        // The first configured transition is exactly the area whose final target is L0.
+        // Prepare it under the player even while vanilla suppresses the cache: movement
+        // may expose those meshes later, and discovering a coarse fallback at that point
+        // looks like terrain regressed. Its independent planner lets this foundation keep
+        // refining while outward coverage also advances.
+        int foundationRadius = (int)Math.Ceiling(LodWorld.ThresholdForLevel(1));
+        int outer = FarViewDistanceCap > 0
+            ? FarViewDistanceCap
+            : LodRadialDemandPlanner.UnlimitedPlanningRadius;
+        foundationDemand.Pump(
+            world.AvailableDataSet,
+            world.AvailableDataRevision,
+            LodWorld.DetailPolicyRevision,
+            camPos.X,
+            camPos.Z,
+            0,
+            foundationRadius,
+            radialDemandReady,
+            radialDemandPending,
+            radialDemandTerminal,
+            startRadialDemand);
+        radialDemand.Pump(
+            world.AvailableDataSet,
+            world.AvailableDataRevision,
+            LodWorld.DetailPolicyRevision,
+            camPos.X,
+            camPos.Z,
+            foundationRadius,
+            outer,
+            radialDemandReady,
+            radialDemandPending,
+            radialDemandTerminal,
+            startRadialDemand);
+    }
+
+    public string DescribeRadialDemand() => $"inner {foundationDemand.Describe()}; "
+        + $"outward {radialDemand.Describe()}";
+
+    public string DescribeTintReadiness() => seasonalRefreshActive
+        ? $"{tints.ReadySlotCount}/{tints.SlotCount} slots ready (sampling)"
+        : $"{tints.ReadySlotCount}/{tints.SlotCount} slots ready";
 
     void EvictStaleMeshes()
     {
@@ -1410,8 +1479,18 @@ public class LodTerrainRenderer : IRenderer
     bool KeepRenderDirty(long key) => HasAnyMesh(key)
         || LodWorld.KeyLevel(key) >= LodWorld.WantedLevelForSq(NearestDistanceSqTo(key));
 
-    bool RenderDirtyBlocked(long key) => meshJobInFlight.Contains(key)
-        || world.LoadsInFlight.Contains(key);
+    bool RenderDirtyBlocked(long key)
+    {
+        if (meshJobInFlight.Contains(key) || world.LoadsInFlight.Contains(key)) return true;
+
+        // Palette resolution can discover a climate/season tint after the last completed
+        // refresh. Keep this exact mesh obligation queued until every slot it uses has a
+        // published value. A coarser parent remains live during replacement; on a cold
+        // start, a few incremental tint frames are preferable to revealing white-tinted
+        // ground and recolouring the whole horizon thirty seconds later.
+        return world.Sections.TryGetValue(key, out LodSection? section)
+            && !tints.SectionTintsReady(section);
+    }
 
     void ScheduleMeshJobs()
     {
@@ -1436,13 +1515,13 @@ public class LodTerrainRenderer : IRenderer
                 out long best))
         {
             // Non-blocking: an evicted section starts a background reload and is
-            // re-requested by the selection walk once it lands, rather than stalling
+            // re-requested by the radial planner once it lands, rather than stalling
             // this frame on a decompress.
             if (!world.TryGetForRender(best, out LodSection section))
             {
                 if (world.LoadsInFlight.Contains(best))
                 {
-                    loadBudget--; // a reload is now under way; the walk re-requests it
+                    loadBudget--; // a reload is under way; radial demand retains responsibility
                 }
                 else
                 {
@@ -1603,7 +1682,8 @@ public class LodTerrainRenderer : IRenderer
                 // this returns; nothing may retain the mesher's arrays.
                 new LodRenderGeometry(
                     result.Xyz, result.Rgba, result.Indices,
-                    result.PackedOpaqueQuads, result.PackedOpaqueQuadCount),
+                    result.PackedOpaqueQuads, result.PackedOpaqueQuadCount,
+                    result.ClusteredPackedOpaqueQuads, result.PackedOpaqueClusters),
                 result.Heights);
         }
 
@@ -2699,6 +2779,7 @@ public class LodTerrainRenderer : IRenderer
         // the two paths disagree about whether per-section queries are issued at all, so
         // the choice must not change between resolving a query and acting on it.
         bool packedWanted = PackedDrawAvailable;
+        bool clustersWanted = packedWanted && ClusterDrawAvailable;
         bool indirectWanted = packedWanted || IndirectDrawAvailable;
         if (indirectWanted != indirectDrawingThisFrame)
         {
@@ -2730,6 +2811,7 @@ public class LodTerrainRenderer : IRenderer
         }
         indirectDrawingThisFrame = indirectWanted;
         packedDrawingThisFrame = packedWanted;
+        clusterDrawingThisFrame = clustersWanted;
         depthSplitThisFrame = LateDepthPyramid
             && GpuCullEnabled
             && DepthPyramidEnabled
@@ -2741,6 +2823,10 @@ public class LodTerrainRenderer : IRenderer
         ReadinessCost.Add(phaseStart);
 
         if (prog == null || !shaderOk || prog.LoadError) return;
+
+        // Demand exists independently of draw visibility. This runs before the empty-mesh
+        // return below, breaking the old no-mesh -> no-walk -> no-request join cycle.
+        PlanRadialDemand();
 
         // Timed apart: pruning/index refresh is normally incremental but deliberately
         // rebuilds when the camera crosses a coarse cell; scheduling then consumes a
@@ -2766,12 +2852,9 @@ public class LodTerrainRenderer : IRenderer
         SeasonalCost.Add(phaseStart);
         if (sectionMeshes.Count == 0 && waterMeshes.Count == 0)
         {
-            // Nothing to draw, so the traversal is skipped - and the traversal is what
-            // asks for sections. Until the first mesh exists the renderer therefore
-            // requests nothing at all, and residency has to be started by the dirty set
-            // above. Counted because a join that produces no meshes for a minute looks
-            // identical from the outside to one that is merely slow, and this is the
-            // number that tells the two apart.
+            // Nothing to draw, so traversal is skipped. Radial demand and scheduling have
+            // already run above; this count now distinguishes a bounded warm-up from an
+            // unexpected failure to produce the first mesh.
             FramesWithoutMeshes++;
             return;
         }
@@ -3017,6 +3100,8 @@ public class LodTerrainRenderer : IRenderer
             splitFarBuilder = new LodGpuIndirectBuilder();
             packedBuilder = new LodGpuIndirectBuilder(packed: true);
             packedFarBuilder = new LodGpuIndirectBuilder(packed: true);
+            clusterBuilder = new LodGpuIndirectBuilder(packed: true, clustered: true);
+            clusterFarBuilder = new LodGpuIndirectBuilder(packed: true, clustered: true);
             // .vhgpu can be run again while a drawer already exists - on to verify, for
             // instance. The mirror disposes its own predecessor; this one has to be told.
             indirectDrawer?.Dispose();
@@ -3031,14 +3116,17 @@ public class LodTerrainRenderer : IRenderer
                 new LodGpuOpenGlPackedDrawBackend(message => capi.Logger.Warning("{0}", message)),
                 message => capi.Logger.Warning("{0}", message));
             long packedCeiling = LodGpuArenaPolicy.PackedLimits(ceiling).CeilingBytes;
+            long clusterCeiling = LodGpuArenaPolicy.PackedClusterLimits(ceiling).CeilingBytes;
             capi.Logger.Notification(
                 "[VintageHorizons] GPU arena shadow on: {0} MiB expanded ceiling plus {1} MiB "
-                + "packed-validation ceiling, {2} MiB vertex pages, {3} page sets, content "
-                + "verification {4}. Sized for a {5} draw distance ({6} sections); each ceiling "
+                + "packed-validation and {2} MiB cluster-validation ceilings, {3} MiB vertex "
+                + "pages, {4} page sets, content verification {5}. Sized for a {6} draw "
+                + "distance ({7} sections); each ceiling "
                 + "is a cap, not a reservation, so pages are only "
                 + "committed as sections arrive.",
                 ceiling / (1024 * 1024),
                 packedCeiling / (1024 * 1024),
+                clusterCeiling / (1024 * 1024),
                 LodGpuArenaPolicy.VertexPageBytes / (1024 * 1024),
                 LodGpuArenaPolicy.PageSets(ceiling),
                 mode == LodGpuArenaMode.Verify ? "on" : "off",
@@ -3105,6 +3193,8 @@ public class LodTerrainRenderer : IRenderer
             splitFarBuilder = null;
             packedBuilder = null;
             packedFarBuilder = null;
+            clusterBuilder = null;
+            clusterFarBuilder = null;
             // The drawer's buffers reference nothing the arenas own, but its whole reason
             // to exist goes away with them, and a stale vertex array would outlive the
             // pages its batches name.
@@ -3118,6 +3208,7 @@ public class LodTerrainRenderer : IRenderer
             cullPass = null;
             GpuCullEnabled = false;
             ShadowIndirectCommands = 0;
+            ShadowIndirectSections = 0;
             ShadowIndirectBatches = 0;
             ShadowIndirectDropped = 0;
             ShadowIndirectMissing = 0;
@@ -3172,8 +3263,8 @@ public class LodTerrainRenderer : IRenderer
 
         return $"on{(mirror.Verifying ? " with content verification" : "")}. "
             + $"{mirror.Count} sections mirrored, {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB live. "
-            + $"Last frame {ShadowIndirectCommands} of {ShadowIndirectCommands + ShadowIndirectMissing} "
-            + $"drawn sections would have been {ShadowIndirectBatches} multi-draw batches "
+            + $"Last frame {ShadowIndirectCommands} draw commands for {ShadowIndirectSections} "
+            + $"sections would have been {ShadowIndirectBatches} multi-draw batches "
             + $"({ShadowIndirectCoverage:P0} of drawn terrain covered"
             + (ShadowIndirectDropped > 0 ? $", {ShadowIndirectDropped} spans stale" : "")
             + "). Nothing is drawn from the arenas.";
@@ -3479,8 +3570,11 @@ public class LodTerrainRenderer : IRenderer
                 + (depthSplitThisFrame ? farBuilder?.CandidatesDropped ?? 0 : 0);
             ShadowIndirectMissing = nearBuilder.MissingSections
                 + (depthSplitThisFrame ? farBuilder?.MissingSections ?? 0 : 0);
-            int total = ShadowIndirectCommands + ShadowIndirectMissing;
-            ShadowIndirectCoverage = total == 0 ? 1 : ShadowIndirectCommands / (double)total;
+            int addedSections = nearBuilder.AddedSections
+                + (depthSplitThisFrame ? farBuilder?.AddedSections ?? 0 : 0);
+            ShadowIndirectSections = addedSections;
+            int total = addedSections + ShadowIndirectMissing;
+            ShadowIndirectCoverage = total == 0 ? 1 : addedSections / (double)total;
         }
         catch (Exception e)
         {
@@ -3488,6 +3582,8 @@ public class LodTerrainRenderer : IRenderer
             splitFarBuilder = null;
             packedBuilder = null;
             packedFarBuilder = null;
+            clusterBuilder = null;
+            clusterFarBuilder = null;
             capi.Logger.Warning(
                 "[VintageHorizons] Shadow indirect command building disabled; visible legacy "
                 + "rendering is unchanged: {0}", e.Message);
@@ -3495,6 +3591,7 @@ public class LodTerrainRenderer : IRenderer
     }
 
     public int ShadowIndirectCommands { get; private set; }
+    public int ShadowIndirectSections { get; private set; }
     public int ShadowIndirectBatches { get; private set; }
     public int ShadowIndirectDropped { get; private set; }
     public int ShadowIndirectMissing { get; private set; }
@@ -3589,6 +3686,14 @@ public class LodTerrainRenderer : IRenderer
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_PACKED") == "1";
 
     /// <summary>
+    /// Phase 8 comparison: draw the packed stream as moderate 4x4 spatial clusters, each
+    /// with its own conservative geometry bounds and cull command. Session-only and
+    /// default-off until the extra commands and split quads beat their measured cost.
+    /// </summary>
+    public bool ClusterDrawEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_CLUSTERS") == "1";
+
+    /// <summary>
     /// Everything that has to hold before a frame may take the fast path. Read once per
     /// frame into <see cref="indirectDrawingThisFrame"/>.
     /// </summary>
@@ -3604,7 +3709,12 @@ public class LodTerrainRenderer : IRenderer
         && packedBuilder != null
         && gpuShadow.Mirror != null;
 
+    bool ClusterDrawAvailable => ClusterDrawEnabled
+        && clusterBuilder != null
+        && gpuShadow.Mirror != null;
+
     bool packedDrawingThisFrame;
+    bool clusterDrawingThisFrame;
 
     public string DescribePackedDraw()
     {
@@ -3624,6 +3734,24 @@ public class LodTerrainRenderer : IRenderer
             + $"versus {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB expanded. "
             + $"Last frame {LastIndirectBatches} multi-draws covered {LastIndirectCommands} sections, "
             + $"{LastIndirectLeftovers} used the established fallback";
+    }
+
+    public string DescribeClusterDraw()
+    {
+        LodGpuGeometryMirror? mirror = gpuShadow.Mirror;
+        if (!ClusterDrawEnabled)
+            return mirror == null
+                ? "off"
+                : $"off: clustered packed geometry ready "
+                    + $"{mirror.ClusteredPackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
+        if (!PackedDrawEnabled || !IndirectDrawEnabled)
+            return "on, but idle: turn on .vhindirect and .vhpacked first";
+        if (mirror == null || clusterBuilder == null)
+            return "unavailable: the regional arenas are not attached. Turn them on with .vhgpu on";
+        return $"on: each section is up to {LodPackedClusterBuilder.CellCount} exact draw clusters. "
+            + $"Last frame {LastIndirectCommands} cluster commands in {LastIndirectBatches} "
+            + $"multi-draws, {LastIndirectLeftovers} whole sections used the established fallback. "
+            + $"Cluster geometry uses {mirror.ClusteredPackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
     }
 
     /// <summary>
@@ -4160,12 +4288,18 @@ public class LodTerrainRenderer : IRenderer
     LodGpuIndirectBuilder? splitFarBuilder;
     LodGpuIndirectBuilder? packedBuilder;
     LodGpuIndirectBuilder? packedFarBuilder;
+    LodGpuIndirectBuilder? clusterBuilder;
+    LodGpuIndirectBuilder? clusterFarBuilder;
 
     LodGpuIndirectBuilder? ActiveNearBuilder =>
-        packedDrawingThisFrame ? packedBuilder : shadowBuilder;
+        clusterDrawingThisFrame ? clusterBuilder
+        : packedDrawingThisFrame ? packedBuilder
+        : shadowBuilder;
 
     LodGpuIndirectBuilder? ActiveFarBuilder =>
-        packedDrawingThisFrame ? packedFarBuilder : splitFarBuilder;
+        clusterDrawingThisFrame ? clusterFarBuilder
+        : packedDrawingThisFrame ? packedFarBuilder
+        : splitFarBuilder;
 
     LodGpuIndirectDrawer? ActiveDrawer =>
         packedDrawingThisFrame ? packedDrawer : indirectDrawer;
@@ -4916,6 +5050,7 @@ public class LodTerrainRenderer : IRenderer
         seasonalRefreshActive = false;
         seasonalStateInitialized = false;
         seasonalRefreshSlot = 0;
+        tints.InvalidateReadiness();
         snowLineY = pendingSnowLineY = 99999;
         DisposeTemporalOcclusionQueries();
         ClearReadiness();

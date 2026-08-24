@@ -156,17 +156,22 @@ internal static class LodGpuCullBox
 
     public static void Encode(in LodGpuSectionFacts facts, Span<byte> destination)
     {
+        Encode(LodGpuCullBounds.FromSection(facts), destination);
+    }
+
+    public static void Encode(in LodGpuCullBounds bounds, Span<byte> destination)
+    {
         if (destination.Length < StrideBytes)
             throw new ArgumentException("short cull box", nameof(destination));
 
-        Write(destination, MinOffset, facts.OriginRelX);
-        Write(destination, MinOffset + 4, facts.BoxMinY);
-        Write(destination, MinOffset + 8, facts.OriginRelZ);
+        Write(destination, MinOffset, bounds.MinX);
+        Write(destination, MinOffset + 4, bounds.MinY);
+        Write(destination, MinOffset + 8, bounds.MinZ);
         Write(destination, MinOffset + 12, 0f);
 
-        Write(destination, MaxOffset, facts.OriginRelX + facts.SectionSize);
-        Write(destination, MaxOffset + 4, facts.BoxMaxY);
-        Write(destination, MaxOffset + 8, facts.OriginRelZ + facts.SectionSize);
+        Write(destination, MaxOffset, bounds.MaxX);
+        Write(destination, MaxOffset + 4, bounds.MaxY);
+        Write(destination, MaxOffset + 8, bounds.MaxZ);
         Write(destination, MaxOffset + 12, 0f);
     }
 
@@ -200,6 +205,32 @@ internal static class LodGpuDepthSplitPolicy
     public static bool IsNear(float horizontalDistanceBlocks) =>
         float.IsFinite(horizontalDistanceBlocks)
         && horizontalDistanceBlocks <= NearRadiusBlocks;
+}
+
+internal readonly record struct LodGpuCullBounds(
+    float MinX,
+    float MinY,
+    float MinZ,
+    float MaxX,
+    float MaxY,
+    float MaxZ)
+{
+    public static LodGpuCullBounds FromSection(in LodGpuSectionFacts facts) => new(
+        facts.OriginRelX,
+        facts.BoxMinY,
+        facts.OriginRelZ,
+        facts.OriginRelX + facts.SectionSize,
+        facts.BoxMaxY,
+        facts.OriginRelZ + facts.SectionSize);
+
+    public static LodGpuCullBounds FromCluster(
+        in LodGpuSectionFacts facts, in LodPackedCluster cluster) => new(
+        facts.OriginRelX + cluster.MinX,
+        facts.OriginRelY + cluster.MinY,
+        facts.OriginRelZ + cluster.MinZ,
+        facts.OriginRelX + cluster.MaxX,
+        facts.OriginRelY + cluster.MaxY,
+        facts.OriginRelZ + cluster.MaxZ);
 }
 
 /// <summary>
@@ -277,6 +308,10 @@ internal sealed class LodGpuIndirectBuilder
     readonly record struct Entry(
         LodGpuGeometryMirror.MirroredSection Section,
         LodGpuSectionFacts Facts,
+        LodGpuCullBounds Bounds,
+        LodGpuArenaRange PackedRange,
+        long FirstPackedQuad,
+        int PackedQuadCount,
         bool Visible);
 
     readonly List<List<Entry>> buckets = new();
@@ -288,14 +323,22 @@ internal sealed class LodGpuIndirectBuilder
     int bucketCount;
 
     public bool Packed { get; }
+    public bool Clustered { get; }
 
-    public LodGpuIndirectBuilder(bool packed = false) => Packed = packed;
+    public LodGpuIndirectBuilder(bool packed = false, bool clustered = false)
+    {
+        if (clustered && !packed)
+            throw new ArgumentException("cluster commands require packed geometry", nameof(clustered));
+        Packed = packed;
+        Clustered = clustered;
+    }
 
     public IReadOnlyList<LodGpuDrawBatch> Batches => batches;
     public int CommandCount { get; private set; }
     public int VisibleCommands { get; private set; }
     public int ZeroedCommands { get; private set; }
     public int CandidatesDropped { get; private set; }
+    public int AddedSections { get; private set; }
 
     /// <summary>
     /// Sections the visible path drew that the arenas do not hold. Counted explicitly
@@ -305,7 +348,7 @@ internal sealed class LodGpuIndirectBuilder
     /// </summary>
     public int MissingSections { get; private set; }
 
-    public int DrawnSections => CommandCount + MissingSections;
+    public int DrawnSections => AddedSections + MissingSections;
 
     public double Coverage => DrawnSections == 0 ? 1 : CommandCount / (double)DrawnSections;
 
@@ -339,6 +382,7 @@ internal sealed class LodGpuIndirectBuilder
         ZeroedCommands = 0;
         CandidatesDropped = 0;
         MissingSections = 0;
+        AddedSections = 0;
     }
 
     /// <summary>Records a drawn section the mirror does not hold at all.</summary>
@@ -353,7 +397,9 @@ internal sealed class LodGpuIndirectBuilder
         in LodGpuSectionFacts facts,
         bool visible = true)
     {
-        bool geometryReady = Packed
+        bool geometryReady = Clustered
+            ? section.ClusteredPackedQuads.IsLive && section.PackedClusters.Length > 0
+            : Packed
             ? section.PackedQuadCount > 0 && section.PackedQuads.IsLive
             : section.IndexCount > 0 && section.Indices.IsLive && section.Vertices.IsLive;
         if (!geometryReady)
@@ -362,15 +408,53 @@ internal sealed class LodGpuIndirectBuilder
             return false;
         }
 
-        if (!bucketOfGroup.TryGetValue(section.GroupId, out int bucket))
+        int bucket = BucketFor(section.GroupId);
+        if (Clustered)
         {
-            bucket = bucketCount++;
-            if (buckets.Count < bucketCount) buckets.Add(new List<Entry>());
-            bucketOfGroup[section.GroupId] = bucket;
+            foreach (LodPackedCluster cluster in section.PackedClusters)
+            {
+                if (!cluster.HasGeometry)
+                {
+                    CandidatesDropped++;
+                    return false;
+                }
+            }
+
+            foreach (LodPackedCluster cluster in section.PackedClusters)
+            {
+                buckets[bucket].Add(new Entry(
+                    section,
+                    facts,
+                    LodGpuCullBounds.FromCluster(facts, cluster),
+                    section.ClusteredPackedQuads,
+                    section.FirstClusteredPackedQuad + cluster.FirstQuad,
+                    cluster.QuadCount,
+                    visible));
+            }
+        }
+        else
+        {
+            buckets[bucket].Add(new Entry(
+                section,
+                facts,
+                LodGpuCullBounds.FromSection(facts),
+                section.PackedQuads,
+                section.FirstPackedQuad,
+                section.PackedQuadCount,
+                visible));
         }
 
-        buckets[bucket].Add(new Entry(section, facts, visible));
+        AddedSections++;
         return true;
+    }
+
+    int BucketFor(long groupId)
+    {
+        if (bucketOfGroup.TryGetValue(groupId, out int bucket)) return bucket;
+        bucket = bucketCount++;
+        if (buckets.Count < bucketCount) buckets.Add(new List<Entry>());
+        bucketOfGroup[groupId] = bucket;
+        return bucket;
     }
 
     /// <summary>
@@ -385,7 +469,9 @@ internal sealed class LodGpuIndirectBuilder
     }
 
     public void End(LodGpuGeometryMirror mirror) => EndCore(
-        mirror.VertexArena, mirror.IndexArena, mirror.PackedArena);
+        mirror.VertexArena,
+        mirror.IndexArena,
+        Clustered ? mirror.ClusteredPackedArena : mirror.PackedArena);
 
     void EndCore(LodGpuArena vertexArena, LodGpuArena indexArena, LodGpuArena? packedArena)
     {
@@ -400,7 +486,7 @@ internal sealed class LodGpuIndirectBuilder
 
             int first = CommandCount;
             int vertexPage = Packed
-                ? packedArena?.PageHandle(bucket[0].Section.PackedQuads) ?? 0
+                ? packedArena?.PageHandle(bucket[0].PackedRange) ?? 0
                 : vertexArena.PageHandle(bucket[0].Section.Vertices);
             int indexPage = Packed ? 0 : indexArena.PageHandle(bucket[0].Section.Indices);
             if (vertexPage == 0 || (!Packed && indexPage == 0))
@@ -419,9 +505,9 @@ internal sealed class LodGpuIndirectBuilder
                 {
                     LodGpuPackedIndirectCommand.Encode(
                         command,
-                        entry.Section.PackedQuadCount,
+                        entry.PackedQuadCount,
                         entry.Visible,
-                        entry.Section.FirstPackedQuad,
+                        entry.FirstPackedQuad,
                         CommandCount);
                 }
                 else
@@ -438,7 +524,7 @@ internal sealed class LodGpuIndirectBuilder
                     entry.Facts,
                     records.AsSpan(CommandCount * LodGpuSectionRecord.StrideBytes));
                 LodGpuCullBox.Encode(
-                    entry.Facts,
+                    entry.Bounds,
                     boxes.AsSpan(CommandCount * LodGpuCullBox.StrideBytes));
                 CommandCount++;
                 if (entry.Visible) VisibleCommands++;

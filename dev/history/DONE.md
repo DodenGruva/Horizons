@@ -2,6 +2,50 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-24 - Cache startup, panoramic refinement, appearance, and near priority accepted
+
+- Source tracing turned a 75.1-second first-mesh join into a zero-work bootstrap fault: persisted
+  rows provided keys, but the renderer refused to run the traversal that created their first load
+  and mesh obligations. Out-of-frustum rejection separately made camera direction the demand
+  authority. G92-G93.
+- Version 0.3.92 introduced exact-row availability and a bounded eight-lane radial demand planner
+  before the empty-mesh return. Camera orientation is absent; coarse coverage and nearer refinement
+  advance as an outward wave under the existing asynchronous/no-hole policies.
+- Version 0.3.93 added an independent under-player foundation through L0 after the owner found that
+  moving could expose coarse cache beneath vanilla terrain. The owner accepted the spatial loading
+  and sharpening behavior.
+- Version 0.3.94 fixed the appearance race exposed by faster loading: late tint slots bypass the
+  30-second seasonal cadence, and affected meshes retain their exact obligation until every tint
+  they use is published. The owner accepted the proper-colour first reveal. G94.
+- Version 0.3.95 gives the closest foundation 24 of 32 unresolved slots and six of eight new
+  requests per frame. The outward reservation keeps eight/two, including one outstanding slot per
+  radial lane. The owner reports everything good and accepts the final pacing.
+- The complete fast tier passes 5,013 assertions; 0.3.95 was packaged, verified, and installed.
+  Assist protocol 1, blob format 4, and database schema 6 are unchanged. Phase 8 resumes next.
+
+## 2026-08-24 - Phase 8 cluster experiment and controlled preset ladder built
+
+- Workers produce a second 4x4 packed stream with exact contiguous ranges and conservative local
+  bounds. A separate bounded arena publishes it, and up to sixteen independently culled commands
+  retain whole-section shader addressing and complete same-frame fallback.
+- The first owner scene improved from roughly 360 to 390 FPS, but precise-angle flicker affected
+  more normally shaped pieces. `.vhcull off` stopped every old and new case while clusters remained
+  enabled, clearing geometry/range publication and isolating the shared HZB verdict.
+- The CPU reference and both compute uses gained a four-step normalized 24-bit fail-open band,
+  pinned by the existing one-ULP self-occlusion fixture. The complete cluster stack still flickered
+  in the first valid 0.3.89 comparison and lost to the complete legacy baseline; this rejects the
+  composition, not the earlier staged wins.
+- Seven live controls became the cumulative `.vhphase8 off`, `batch`, `cull`, `late`, `packed`, and
+  `clusters` ladder. Every preset assigns all prerequisites, reports/logs the exact state, and
+  preserves filled arenas while moving among active stages. Only crossing `off` attaches/releases
+  arenas. G89-G91.
+- The first `late` result retained only the single older flickering section, not the numerous
+  cluster flickers. Its 362 FPS observation is invalid because the 0.3.90 command unnecessarily
+  re-meshed 1,678 sections; 0.3.91 fixes that transition but remains unplayed.
+- The cluster suite contributes 1,048 focused assertions; the full fast tier passed 4,980 at that
+  boundary. The cache startup/refinement priority is now resolved; Phase 8 resumes at `late` versus
+  `cull`.
+
 ## 2026-08-24 - Phase 7 indexed packed quads accepted on the primary driver
 
 - Greedy opaque rectangles now have an exact 12-byte regional form rather than four expanded

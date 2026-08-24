@@ -155,6 +155,15 @@ public class LodWorld
     /// <summary>Every key (all levels) that holds data or has any descendant with data. Drives quadtree descent.</summary>
     public readonly HashSet<long> HasDataSet = new();
 
+    /// <summary>
+    /// Keys that name an actual resident, local-store, or offered remote section.
+    /// Structural ancestors synthesised only for quadtree descent are deliberately absent.
+    /// </summary>
+    public readonly HashSet<long> AvailableDataSet = new();
+
+    /// <summary>Changes only when exact section availability changes.</summary>
+    public int AvailableDataRevision { get; private set; }
+
     /// <summary>Top-level (MaxLevel) ancestor keys - the quadtree roots.</summary>
     public readonly HashSet<long> TopLevelKeys = new();
 
@@ -217,6 +226,7 @@ public class LodWorld
         Sections[key] = section = new LodSection();
         TrackResident(key);
         LoadFailed.Remove(key); // it has data again; a past miss must not block reloads
+        RegisterAvailableData(key);
         RegisterInTree(key);
         return section;
     }
@@ -253,15 +263,15 @@ public class LodWorld
 
     /// <summary>
     /// Keys whose reload came back empty (row missing, or deleted as unreadable).
-    /// Without this the selection walk would re-request them every single frame
-    /// forever, since the section never becomes resident.
+    /// Without this the demand planner would re-request them every frame forever,
+    /// since the section never becomes resident.
     /// </summary>
     public readonly HashSet<long> LoadFailed = new();
 
     /// <summary>
     /// Non-blocking variant for the render path: returns false and starts a background
-    /// reload rather than stalling the frame on a decompress. The selection walk
-    /// re-requests the mesh on later frames, so the section is picked up once it lands.
+    /// reload rather than stalling the frame on a decompress. Exact dirty ownership or
+    /// the radial demand planner re-requests the mesh once the section lands.
     /// </summary>
     public bool TryGetForRender(long key, out LodSection section)
     {
@@ -295,11 +305,12 @@ public class LodWorld
 
         Sections[key] = section;
         TrackResident(key);
+        RegisterAvailableData(key);
 
-        // Deliberately not marked render-dirty: reloads are requested by the render
-        // path AND by mip propagation, and the selection walk re-requests a mesh by
-        // itself on the next frame if it still wants one here. Marking every arrival
-        // would mesh sections that only propagation asked for.
+        // Deliberately not marked render-dirty: reloads are requested by rendering AND
+        // by mip propagation, and the radial planner re-requests a mesh if it still owns
+        // demand here. Marking every arrival would mesh sections that only propagation
+        // asked for.
         //
         // Neighbours are a different question, and the answer is not "all four" for the
         // same reason. Only a neighbour that actually built a mesh against our absence
@@ -445,6 +456,11 @@ public class LodWorld
         }
     }
 
+    void RegisterAvailableData(long key)
+    {
+        if (AvailableDataSet.Add(key)) AvailableDataRevision++;
+    }
+
     /// <summary>
     /// Record that a section's content changed.
     ///
@@ -540,6 +556,7 @@ public class LodWorld
     public void InstallStoredKey(int level, int sx, int sz, bool applyToParent)
     {
         long key = SectionKey(level, sx, sz);
+        RegisterAvailableData(key);
         RegisterInTree(key);
         if (applyToParent && level < MaxLevel) MipDirty.Add(key);
     }
@@ -656,6 +673,8 @@ public class LodWorld
         persistenceRevisions.Clear();
         queuedSaveRevisions.Clear();
         HasDataSet.Clear();
+        AvailableDataSet.Clear();
+        AvailableDataRevision++;
         TopLevelKeys.Clear();
         LoadsInFlight.Clear();
         LoadFailed.Clear();

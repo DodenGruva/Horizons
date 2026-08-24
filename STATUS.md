@@ -3,11 +3,11 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-24
-**Mod version:** `0.3.86` source metadata, packaged, installed, and primary-driver accepted;
-0.3.84's same-frame near/far split is human-confirmed flicker-free (`0.2.1` is the public released
-version; the next changed playable artifact must increment exactly once to `0.3.87`)
+**Mod version:** `0.3.95`; the complete cache startup/refinement protocol is packaged, installed,
+and human-accepted (`0.2.1` is the public released version; the next changed playable artifact must
+increment exactly once to `0.3.96`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `67` C# files under `VintageHorizons/src`
+**Source files:** `69` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -22,7 +22,77 @@ tracking `origin/render-overhaul`. The work now comprises the Phase 0 telemetry/
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
 **Phase 4 complete**, **Phase 5 complete on both halves** (0.3.69-0.3.83), **Phase 6 complete and
-human-accepted** in 0.3.84, and **Phase 7 primary-driver accepted behind `.vhpacked`**.
+human-accepted** in 0.3.84, **Phase 7 primary-driver accepted behind `.vhpacked`**, and
+**Phase 8's measured cluster branch source- and harness-complete behind `.vhclusters`**. The owner
+first measured 360 to 390 FPS in one scene with clusters on, about 0.21 ms saved, but found more
+pieces flickering at precise camera angles. `.vhcull off` stopped every old and new case while
+retaining normally shaped cluster geometry, isolating the fault to the depth verdict rather than
+the cluster ranges. Version 0.3.88 added the plan's missing fail-open depth margin, but its first
+follow-up was accidentally mixed: late depth was initially off and clusters were idle because
+packing was off. Version 0.3.89's all-on/all-off command then produced the first valid complete-stack
+comparison. The log records 5,577 cluster commands in 68 multi-draws with every prerequisite on,
+followed by every switch off and the arenas released. The owner saw flicker return in the complete
+stack and measured higher FPS on the legacy baseline. This rejects the complete stack as currently
+composed, not the earlier individually measured wins. Version 0.3.90 turns `.vhphase8` into the
+chronological `off`, `batch`, `cull`, `late`, `packed`, `clusters` ladder so one command can locate
+the first regressing stage without hidden state.
+
+The first 0.3.90 `late` preset reproduced only the single older flickering section, not the more
+numerous cluster flickers. It reported about 362 FPS, but the log exposed a command-side confound:
+selecting `late` re-requested already-active arenas and queued all 1,678 live sections for re-mesh.
+The visual result counts; the performance number is provisional. Version 0.3.91 makes transitions
+between active presets preserve the filled arenas and adds an effective-path report. Only moving to
+or from `off` now triggers the documented mirror fill/release.
+
+**Cache startup and camera-independent refinement are complete; Phase 8 is the top priority again.**
+The owner reports spending most testing time waiting 30-60 seconds for cached terrain, then seeing
+no coherent sharpening progression and having to turn around before rear terrain loads or leaves
+its coarsest level. The latest 5,317-section join proves the bootstrap failure: at ten seconds there
+were 38 resident sections but 0 render-dirty, 0 loads, 0 mesh jobs, and 5,101 frames skipped for
+want of a mesh; at thirty seconds all work queues remained empty. First mesh arrived at 75.1
+seconds, followed by 100/300/600/1,200 at 79.0/89.3/189.3/217.8 seconds.
+
+This is source-traced as three distinct policy failures. Stored rows register only keys; while no
+mesh exists the renderer returns before the selection walk, but that same walk is what creates mesh
+and asynchronous load demand. Once bootstrapped, `CollectDrawNodes` rejects an out-of-frustum
+subtree before requesting its data, making camera direction the demand authority. Visible nodes
+request only their distance-wanted level and wait only on visible replacement children, so the
+nearest-first scheduler cannot create a stable panoramic refinement order from obligations it was
+never given. `dev/plans/PLAN_CACHE_STARTUP_AND_REFINEMENT.md` is the completed design record:
+bounded immediate bootstrap, coarse hole-free 360-degree coverage, then stable near-to-far radial
+refinement, all under the existing async/budget/residency/no-hole invariants.
+
+Version 0.3.92 implements the first complete policy candidate. An exact availability set excludes
+synthetic quadtree ancestors, and a bounded planner runs before the zero-mesh return. Eight radial
+lanes share each wave equally; wave N+1 combines one nearer refinement step with coarse coverage in
+the next distance band. Camera orientation is not an input. Only exact rows inside the active
+radius and no finer than the distance-wanted level are candidates, and at most 32 unresolved rows
+are admitted at once. Sixteen focused assertions and the 4,996-assertion fast tier passed at that
+implementation boundary; subsequent owner runs established the visual policy.
+
+The first owner run established a refinement-priority defect rather than rejecting the radial
+model: planning began outside vanilla's range, so suppressed terrain under the player could be
+exposed coarse after movement, and the nearest ring reached final detail later than the eye wanted.
+Version 0.3.93 splits the unchanged 32-row/eight-request allowance between an independent inner
+foundation and the outward wave. The foundation covers the first configured LOD band from the
+player through exact L0 rows; both halves remain eight-direction fair. The owner reports that this
+works great, accepting the under-player detail and outward sharpening behavior.
+
+That faster reveal exposed a separate appearance-readiness race. The first tint refresh could
+publish while only identity slot 0 existed; later cache loads registered grass, foliage, and water
+slots as identity white, then the ordinary 30-second cadence left geometry visibly untinted until
+the next refresh. Version 0.3.94 makes new slots wake the existing incremental sampler immediately
+and keeps a section's exact mesh obligation queued until all tints in its palette are published.
+Untinted terrain and existing parent coverage proceed normally. `.vhinfo` reports ready/registered
+tint slots. Eight focused checks and the 5,009-assertion fast tier pass. The owner accepted the
+correct-colour first reveal in game.
+
+Version 0.3.95 makes the final requested pacing adjustment. The closest L0 foundation receives 24
+of the unchanged 32 unresolved slots and six of eight new requests per frame; the outward wave keeps
+eight/two, including one outstanding reservation per direction. This should bring the eye-priority
+band to final detail sooner without increasing total loading pressure or stopping panoramic
+progress. Twenty-five focused radial assertions and the 5,013-assertion fast tier pass; runtime
+pacing is human-accepted. The next work is Phase 8's controlled `late` versus `cull` comparison.
 
 **Depth verdicts stop terrain being drawn, and it is confirmed on hardware.** `cull: on: 67008
 dispatches over 1733784 commands. last frame's commands were culled on the card.` AMD RX 9070 XT
@@ -56,9 +126,17 @@ It was rejected anyway. The owner played it and saw distant terrain flicker **in
 screen** while turning from a standing position. Mid-screen means the error is not a boundary
 artefact that a guard can contain, which is what the case for a one-frame-old picture rested on.
 **Phase 6 replaced that experiment with a near/far split**, whose verdicts are same-frame by
-construction. The owner reports that the flicker is gone and it runs very well. The obsolete
-stale-picture policy, camera-delta re-base and turning guard are removed; the pyramid, cull shader,
-classifier, arena sizing and telemetry carry over.
+construction. It removed the obvious motion flicker and ran very well, but later observation found
+a few normally shaped pieces still flickering at very precise angles, including while stationary.
+Phase 8 clusters multiplied those independent verdicts and made the latent defect clear.
+`.vhcull off` stops all cases. Source tracing found that the shared HZB comparison had no safety
+margin despite the plan requiring one: any positive depth difference could cancel a draw, including
+quantization/rasterization noise. Version 0.3.88 reserves four normalized 24-bit depth steps as a
+fail-open band. That mixed run had no reported artifacts, but the valid 0.3.89 complete-cluster run
+flickered again. The margin is therefore not sufficient for the cluster verdict population, and
+simply widening it would discard more of the culling benefit. The obsolete stale-picture policy,
+camera-delta re-base and turning guard remain removed; the preset ladder now has to identify
+whether whole-section culling remains stable and where the cluster stack stops paying.
 
 **Phase 7 now has an exact 12-byte opaque quad path in source.** The previous form uses four
 16-byte vertices plus six 4-byte indices, or 88 bytes per greedy rectangle. Eight bytes cannot
@@ -89,6 +167,19 @@ catching a safety percentage quoted over the wrong population.
 majority of sections the test could not hide were refused because part of the box overlaps open
 sky - at one spot, 100% of them. Cluster subdivision would take a further 13-34% of what remains
 depending on the view, and no work on when the picture is taken addresses it.
+
+**Phase 8 now implements that measured branch without GPU-owned LOD.** The worker retains the
+accepted whole-section packed stream and also splits its opaque geometry into a 4x4 grid of exact,
+contiguous packed ranges. Each populated cell carries conservative local geometry bounds and
+becomes one independent cull command under `.vhclusters`; shader addressing remains whole-section,
+so ownership, colour noise, edge fade and the vanilla mask do not change. A separate bounded arena
+keeps the A/B honest. Missing cluster data or any indirect draw failure returns the complete
+section to the established same-frame fallback. The cluster suite passes 1,048 assertions and the
+full fast tier passes 4,980. The first owner scene showed a 360-to-390 FPS cluster gain, but the
+first correctly controlled complete-stack comparison showed returned flicker and lower FPS than
+legacy. The result is internally consistent with an earlier stage winning and a later stage losing.
+Cache startup/refinement is now human-accepted. The next adjacent ladder gate is `late` versus
+`cull`, and Phase 8 resumes there without repeating earlier diagnosis.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -757,23 +848,11 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-0. **Phase 3b: give sections a real vertical extent.** Approved 2026-08-22 and not
-started. Every section is culled with a box running from bedrock to sky, because sections
-never recorded how tall their terrain is - harmless for the frustum test, close to fatal for
-the depth test Phase 4 is built on, which would then reject almost nothing and read as a
-verdict on HZB rather than on its input. `LodMesher` already computes every Y it emits, so
-the bounds are a running min/max over existing work; no cache, protocol or schema change.
-Unlike everything else in the render plan it improves the established renderer on its own,
-so it is testable with batching off. The plan's Phase 3b holds the work list and gate,
-including reporting the height distribution before Phase 4 is argued from it.
-
-0a. **Compare `.vhindirect` off against on.** 0.3.57 can draw opaque cached terrain from the
-regional arenas as one multi-draw per page set instead of one call per section. It is off by
-default and has never drawn a frame on hardware, so all four of Phase 3's gates are open -
-including whether its shader variant compiles. Same view, both ways: the picture must be
-identical. For the CPU-time gate, run the scripted pair over
-`bench/routes/bodanboys-gpu-baseline.txt` with `-GpuIndirect 0` and `1` and delayed
-occlusion off on both sides, because it is suspended while batching is on.
+0. **Resume Phase 8 with `.vhphase8 late` versus `.vhphase8 cull`.** Use one settled session and
+do not visit `off` between samples. Version 0.3.91 preserves the filled arenas across active
+presets; the older 362 FPS `late` observation is warm-up-contaminated and does not count. This
+adjacent comparison decides whether the remaining precise-angle flicker belongs to whole-section
+HZB culling or the same-frame near/far split. `dev/TODO.md` and the GPU plan carry the exact setup.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against

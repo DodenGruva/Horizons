@@ -147,7 +147,9 @@ internal readonly record struct LodRenderGeometry(
     byte[]? Rgba,
     int[]? Indices,
     uint[]? PackedQuads = null,
-    int PackedQuadCount = 0);
+    int PackedQuadCount = 0,
+    uint[]? ClusteredPackedQuads = null,
+    LodPackedCluster[]? PackedClusters = null);
 
 internal readonly record struct LodRenderPublication(
     LodRenderResourceIdentity Identity,

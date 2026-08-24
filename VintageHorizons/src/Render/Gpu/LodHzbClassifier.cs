@@ -151,6 +151,11 @@ const int SUBDIVISIONS_PER_AXIS = 4;
 const int TEXELS_PRIMARY = 8;
 const int TEXELS_NARROW = 2;
 
+// Four normalized steps of a 24-bit depth buffer. Box corners and rasterized triangles
+// arrive at depth through different arithmetic, so values inside this band are coplanar for
+// visibility purposes and must draw. Matches LodHzbProjection.OcclusionDepthBias.
+const float OCCLUSION_DEPTH_BIAS = 4.0 / 16777215.0;
+
 // One box, one verdict. Shared by the section and by each of its sub-cells so a cell can
 // never be judged by looser rules than the whole - the measurement would be meaningless if
 // the two disagreed about what hidden means.
@@ -247,8 +252,9 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
         }
     }
 
-    // Strictly greater. Equality is the coplanar case and must draw.
-    if (nearestDepth > farthest) return VERDICT_OCCLUDED;
+    // Equality and the quantization/rasterization band around it are coplanar cases and
+    // must draw. Without the band, whole commands flicker at precise camera angles.
+    if (nearestDepth > farthest + OCCLUSION_DEPTH_BIAS) return VERDICT_OCCLUDED;
     if (farthest >= 1.0) return VERDICT_BACKGROUND;
     return VERDICT_VISIBLE;
 }

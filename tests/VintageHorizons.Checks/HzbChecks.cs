@@ -125,6 +125,12 @@ public static class HzbChecks
             "the shader takes its verdict at the same width as the C# default");
         c.True(source.Contains($"TEXELS_NARROW = {LodHzbProjection.NarrowTexelsPerAxis}"),
             "and its comparison baseline is the width the test used before it was widened");
+        c.True(source.Contains("OCCLUSION_DEPTH_BIAS = 4.0 / 16777215.0"),
+            "the shader carries the four-step 24-bit depth safety band used by its C# twin");
+        c.Near(4.0 / 16777215.0, LodHzbProjection.OcclusionDepthBias, 1e-12,
+            "the C# safety band remains exactly four normalized 24-bit depth steps");
+        c.True(source.Contains("nearestDepth > farthest + OCCLUSION_DEPTH_BIAS"),
+            "the shader fails open inside the depth safety band");
 
         // The verdict and the sub-cells must be taken at the same width. They were both
         // narrow before the switch and both primary after it; one moving without the other

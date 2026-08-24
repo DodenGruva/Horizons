@@ -65,6 +65,30 @@ public static class StaticAssetChecks
             "batched drawing is off unless the environment turns it on");
         c.True(mod.Contains("ChatCommands.Create(\"vhindirect\")", StringComparison.Ordinal),
             "and can still be flipped live for a side-by-side look");
+        c.True(mod.Contains("ChatCommands.Create(\"vhphase8\")", StringComparison.Ordinal),
+            "the complete Phase 8 experiment has one player-facing preset command");
+        foreach ((string setting, string value) in new[]
+        {
+            ("IndirectDrawEnabled", "batching"),
+            ("PackedDrawEnabled", "packed"),
+            ("DepthPyramidEnabled", "depthCull"),
+            ("GpuCullEnabled", "depthCull"),
+            ("LateDepthPyramid", "late"),
+            ("ClusterDrawEnabled", "clusters"),
+        })
+        {
+            c.True(mod.Contains($"renderer.{setting} = {value};", StringComparison.Ordinal),
+                $"every Phase 8 preset explicitly controls {setting}");
+        }
+        c.True(mod.Contains("if (renderer.GpuShadowRequested != arenas)", StringComparison.Ordinal)
+            && mod.Contains("renderer.RequestGpuShadow(arenas ? \"on\" : \"off\");",
+                StringComparison.Ordinal),
+            "every Phase 8 preset explicitly controls the regional arenas too");
+        foreach (string preset in new[] { "off", "batch", "cull", "late", "packed", "clusters" })
+        {
+            c.True(mod.Contains($"\"{preset}\"", StringComparison.Ordinal),
+                $"the one-command Phase 8 ladder includes the {preset} stage");
+        }
         c.True(bench.Contains("VINTAGEHORIZONS_GPU_INDIRECT", StringComparison.Ordinal)
             && bench.Contains("$GpuIndirect", StringComparison.Ordinal),
             "the benchmark runner can pin either side of the comparison for a whole run");

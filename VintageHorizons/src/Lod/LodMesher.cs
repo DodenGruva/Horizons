@@ -45,9 +45,14 @@ public static class LodMesher
         public readonly List<byte> Rgba = new(8192);
         public readonly List<int> Indices = new(12288);
         public readonly List<uint> Packed = new(3072);
+        public readonly LodPackedClusterBuilder? ClusteredPacked;
         public readonly bool Pack;
 
-        public Buffers(bool pack) => Pack = pack;
+        public Buffers(bool pack)
+        {
+            Pack = pack;
+            if (pack) ClusteredPacked = new LodPackedClusterBuilder();
+        }
 
         // Running vertical extent of everything emitted into this pass. Free: every Y
         // here was computed anyway, and AddVert is the single funnel every vertex passes
@@ -63,6 +68,7 @@ public static class LodMesher
             Rgba.Clear();
             Indices.Clear();
             Packed.Clear();
+            ClusteredPacked?.Clear();
             MinY = float.PositiveInfinity;
             MaxY = float.NegativeInfinity;
         }
@@ -166,6 +172,9 @@ public static class LodMesher
 
         EmitHorizontalGreedy(hf, self, opaque, water, step);
         EmitVerticalMerged(vf, self, opaque, water, step);
+        opaque.ClusteredPacked!.Finish(
+            out uint[] clusteredPackedQuads,
+            out LodPackedCluster[] packedClusters);
 
         return new MeshResult
         {
@@ -177,6 +186,8 @@ public static class LodMesher
             IndexCount = opaque.Indices.Count,
             PackedOpaqueQuads = opaque.Packed.ToArray(),
             PackedOpaqueQuadCount = opaque.Packed.Count / LodPackedQuadFormat.WordsPerQuad,
+            ClusteredPackedOpaqueQuads = clusteredPackedQuads,
+            PackedOpaqueClusters = packedClusters,
             WaterXyz = water.Xyz.Count > 0 ? water.Xyz.ToArray() : null,
             WaterRgba = water.Xyz.Count > 0 ? water.Rgba.ToArray() : null,
             WaterIndices = water.Xyz.Count > 0 ? water.Indices.ToArray() : null,
@@ -521,6 +532,15 @@ public static class LodMesher
                 minY, maxY,
                 (int)MathF.Round(minZ / columnBlocks),
                 (int)MathF.Round(maxZ / columnBlocks),
+                color, alpha);
+            buf.ClusteredPacked!.Append(
+                face,
+                (int)MathF.Round(minX / columnBlocks),
+                (int)MathF.Round(maxX / columnBlocks),
+                minY, maxY,
+                (int)MathF.Round(minZ / columnBlocks),
+                (int)MathF.Round(maxZ / columnBlocks),
+                columnBlocks,
                 color, alpha);
         }
     }

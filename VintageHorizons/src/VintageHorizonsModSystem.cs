@@ -1050,8 +1050,7 @@ public class VintageHorizonsModSystem : ModSystem
             "Join: no cached terrain built after {0:0.0}s. {1} sections known, {2} resident, "
             + "{3} render-dirty, {4} loads in flight, {5} columns captured ({6} pending), "
             + "{7} mesh jobs queued, {8} render frames skipped for want of a mesh. "
-            + "The selection walk does not run until the first mesh exists, so if the "
-            + "dirty set is empty here, nothing is going to ask for one.",
+            + "Radial demand: {9}.",
             joinClock.Elapsed.TotalSeconds,
             pipeline.CachedSectionsLoaded,
             pipeline.World.Sections.Count,
@@ -1060,7 +1059,8 @@ public class VintageHorizonsModSystem : ModSystem
             pipeline.ColumnsCaptured,
             pipeline.PendingColumns,
             pipeline.Worker.PendingMeshes,
-            renderer.FramesWithoutMeshes);
+            renderer.FramesWithoutMeshes,
+            renderer.DescribeRadialDemand());
     }
 
     void OnLevelFinalize()
@@ -1434,15 +1434,16 @@ public class VintageHorizonsModSystem : ModSystem
             {
                 Mod.Logger.Notification("  gpu arena shadow: {0}", arena);
                 Mod.Logger.Notification("  packed opaque: {0}", renderer.DescribePackedDraw());
-                // One command per legacy opaque draw call, so commands against batches is
-                // the draw-call reduction a regional multi-draw would deliver - but only
-                // over the terrain the arenas actually hold, which is why coverage is
-                // reported beside it and not inferred.
+                Mod.Logger.Notification("  packed clusters: {0}", renderer.DescribeClusterDraw());
+                // Phase 8 may emit several commands per section, so both counts are named.
+                // Coverage stays section-based: a missing clustered section falls back as
+                // one complete legacy draw rather than being flattered by command count.
                 Mod.Logger.Notification(
-                    "  gpu indirect shadow: last frame {0} of {1} drawn sections would be {2} "
-                    + "multi-draw batches, coverage {3:P0}, {4} spans stale",
+                    "  gpu indirect shadow: last frame {0} commands for {1} of {2} drawn "
+                    + "sections would be {3} multi-draw batches, coverage {4:P0}, {5} spans stale",
                     renderer.ShadowIndirectCommands,
-                    renderer.ShadowIndirectCommands + renderer.ShadowIndirectMissing,
+                    renderer.ShadowIndirectSections,
+                    renderer.ShadowIndirectSections + renderer.ShadowIndirectMissing,
                     renderer.ShadowIndirectBatches,
                     renderer.ShadowIndirectCoverage,
                     renderer.ShadowIndirectDropped);
@@ -1635,6 +1636,92 @@ public class VintageHorizonsModSystem : ModSystem
         }
     }
 
+    /// <summary>
+    /// One command for the complete GPU-renderer experiment. The named presets are a
+    /// chronological ladder: each adds exactly one accepted or experimental stage to the
+    /// previous preset. That retains the convenience of one player-facing command without
+    /// collapsing seven variables into an all-or-nothing comparison.
+    /// </summary>
+    bool TrySetPhase8TestStack(string requested, out string preset)
+    {
+        preset = requested.Trim().ToLowerInvariant() switch
+        {
+            "off" or "legacy" => "off",
+            "batch" or "batching" => "batch",
+            "cull" or "culling" => "cull",
+            "late" => "late",
+            "packed" => "packed",
+            "on" or "cluster" or "clusters" => "clusters",
+            _ => "",
+        };
+        if (preset.Length == 0) return false;
+
+        bool arenas = preset != "off";
+        bool batching = preset != "off";
+        bool depthCull = preset is "cull" or "late" or "packed" or "clusters";
+        bool late = preset is "late" or "packed" or "clusters";
+        bool packed = preset is "packed" or "clusters";
+        bool clusters = preset == "clusters";
+
+        // The arena request is applied on the render thread next frame; every other flag can
+        // be set now and will become effective as soon as those buffers are ready. Every
+        // preset assigns all seven controls so a later test cannot inherit a hidden switch.
+        // Re-requesting an already-on shadow is not a no-op: it queues every live section
+        // for re-meshing. Presets above "off" share the same arenas, so moving between
+        // them must preserve the filled mirror or the comparison measures warm-up work.
+        if (renderer.GpuShadowRequested != arenas)
+            renderer.RequestGpuShadow(arenas ? "on" : "off");
+        renderer.IndirectDrawEnabled = batching;
+        renderer.PackedDrawEnabled = packed;
+        renderer.DepthPyramidEnabled = depthCull;
+        renderer.GpuCullEnabled = depthCull;
+        renderer.LateDepthPyramid = late;
+        renderer.ClusterDrawEnabled = clusters;
+        renderer.ResetDepthPyramidInterval();
+        return true;
+    }
+
+    string DescribePhase8TestStack()
+    {
+        bool[] flags =
+        {
+            renderer.GpuShadowRequested,
+            renderer.IndirectDrawEnabled,
+            renderer.PackedDrawEnabled,
+            renderer.DepthPyramidEnabled,
+            renderer.GpuCullEnabled,
+            renderer.LateDepthPyramid,
+            renderer.ClusterDrawEnabled,
+        };
+        string state = flags.All(value => !value) ? "OFF"
+            : flags.SequenceEqual(new[] { true, true, false, false, false, false, false }) ? "BATCH"
+            : flags.SequenceEqual(new[] { true, true, false, true, true, false, false }) ? "CULL"
+            : flags.SequenceEqual(new[] { true, true, false, true, true, true, false }) ? "LATE"
+            : flags.SequenceEqual(new[] { true, true, true, true, true, true, false }) ? "PACKED"
+            : flags.All(value => value) ? "CLUSTERS"
+            : "MIXED";
+
+        string active = state switch
+        {
+            "OFF" => "Legacy path: arenas " + renderer.DescribeGpuShadow(),
+            "BATCH" => "Batch path: " + renderer.DescribeIndirectDraw(),
+            "CULL" => "Cull path: " + renderer.DescribeGpuCull(),
+            "LATE" => "Cull path: " + renderer.DescribeGpuCull()
+                + " Picture: " + renderer.DescribeLateDepthPyramid(),
+            "PACKED" => "Packed path: " + renderer.DescribePackedDraw()
+                + " Culling: " + renderer.DescribeGpuCull(),
+            "CLUSTERS" => "Cluster path: " + renderer.DescribeClusterDraw()
+                + " Culling: " + renderer.DescribeGpuCull(),
+            _ => "Cluster path: " + renderer.DescribeClusterDraw(),
+        };
+
+        static string Bit(bool value) => value ? "on" : "off";
+        return $"{state}: arenas {Bit(flags[0])}, batching {Bit(flags[1])}, "
+            + $"packed {Bit(flags[2])}, HZB {Bit(flags[3])}, culling {Bit(flags[4])}, "
+            + $"same-frame near/far {Bit(flags[5])}, clusters {Bit(flags[6])}. "
+            + active;
+    }
+
     void RegisterCommands()
     {
         capi.ChatCommands.Create("vhinfo")
@@ -1658,6 +1745,8 @@ public class VintageHorizonsModSystem : ModSystem
                 $"unsaved: {pipeline.World.SaveDirty.Count}, persistence: {(pipeline.Persisting ? "on" : "off")}, " +
                 $"render distance: {(renderer.FarViewDistanceCap > 0 ? renderer.FarViewDistanceCap + " (capped)" : "unlimited")}, " +
                 $"current far edge: {(int)renderer.EffectiveFarDistance}, " +
+                $"radial demand: {renderer.DescribeRadialDemand()}, " +
+                $"tints: {renderer.DescribeTintReadiness()}, " +
                 $"LOD thresholds: {string.Join('/', LodWorld.GetLevelThresholds())} (.vhconfig to change), " +
                 $"occlusion order: {renderer.DescribeOcclusionCulling()}, " +
                 $"delayed occlusion: {renderer.DescribeTemporalOcclusion()}, " +
@@ -1909,6 +1998,37 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success($"[VintageHorizons] lighting: {DescribeLight()}. {note}");
             });
 
+        // The player-facing control for the current experiment. The individual phase
+        // commands remain useful diagnostics, but the ordinary performance bisect uses one
+        // chronological preset ladder and cannot silently inherit a mixed state.
+        capi.ChatCommands.Create("vhphase8")
+            .WithDescription("Select one GPU terrain test stage. off | batch | cull | late | packed | clusters. 'on' means clusters.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("preset"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                string? applied = null;
+                if (!args.Parsers[0].IsMissing)
+                {
+                    if (!TrySetPhase8TestStack((string)args[0], out applied))
+                        return TextCommandResult.Error(
+                            "[VintageHorizons] use: .vhphase8 off | batch | cull | late | packed | clusters");
+                    SaveConfig();
+                }
+
+                string status = DescribePhase8TestStack();
+                LogReportLines("phase8", status);
+                return TextCommandResult.Success(
+                    "[VintageHorizons] Phase 8 test stack " + status
+                    + (args.Parsers[0].IsMissing
+                        ? " Presets: off, batch, cull, late, packed, clusters. No other GPU commands are needed."
+                        : applied == "off"
+                            ? " The regional buffers are released on the next frame; this is the complete legacy baseline."
+                            : $" Applied the {applied} preset. After switching up from off, let the regional buffers fill and run .vhphase8 once more before measuring."));
+            });
+
         // Measurement only. The shadow copies cached geometry into the regional buffers a
         // future renderer would draw from and reports how far draw calls would fall, while
         // the established renderer keeps drawing every pixel exactly as before.
@@ -1980,6 +2100,33 @@ public class VintageHorizonsModSystem : ModSystem
                     "[VintageHorizons] packed opaque drawing " + renderer.DescribePackedDraw()
                     + " This switch is not saved yet. Compare the same view against off; "
                     + "the picture must remain identical.");
+            });
+
+        // Phase 8 changes the HZB draw unit from one section box to a moderate 4x4 grid
+        // of exact packed ranges. It remains session-only so its metadata/command cost can
+        // be measured against the accepted whole-section path before any default decision.
+        capi.ChatCommands.Create("vhclusters")
+            .WithDescription("Split packed distant terrain into 4x4 depth-culling clusters. Needs .vhgpu, .vhindirect and .vhpacked. Experimental and session-only.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                if (args.Parsers[0].IsMissing)
+                {
+                    string status = renderer.DescribeClusterDraw();
+                    LogReportLines("clusters", status);
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] clustered opaque drawing " + status);
+                }
+
+                renderer.ClusterDrawEnabled = (bool)args[0];
+                string changed = renderer.DescribeClusterDraw();
+                LogReportLines("clusters", changed);
+                return TextCommandResult.Success(
+                    "[VintageHorizons] clustered opaque drawing " + changed
+                    + " This switch is not saved. Compare the same view against off; "
+                    + "terrain must never disappear or change shape.");
             });
 
         // The first switch in this mod that can take terrain OFF the screen rather than

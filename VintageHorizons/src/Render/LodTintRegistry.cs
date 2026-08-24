@@ -115,11 +115,20 @@ public class LodTintRegistry
     float pendingSampleYLow;
     float pendingSampleYHigh;
 
+    // Slots are appended, never reordered, so one exclusive upper bound is the complete
+    // readiness set. Slot 0 is the identity tint and is valid from construction. A later
+    // palette load can append a climate/season slot after the current table was published;
+    // that slot must not be used by a first-visible mesh until the next incremental sample
+    // has atomically published it.
+    int readySlotCount = 1;
+
     /// <summary>Bumped by Refresh; lets the renderer skip re-uploading unchanged tints.</summary>
     public int Version { get; private set; }
     public float[] TintsLow => tintsLow;
     public float[] TintsHigh => tintsHigh;
     public int SlotCount => representative.Count;
+    public int ReadySlotCount => readySlotCount;
+    public bool HasUnreadySlots => readySlotCount < representative.Count;
 
     /// <summary>World Y the two tint tables were sampled at.</summary>
     public float SampleYLow { get; private set; }
@@ -216,8 +225,41 @@ public class LodTintRegistry
         Array.Copy(pendingTintsHigh, tintsHigh, tintsHigh.Length);
         SampleYLow = pendingSampleYLow;
         SampleYHigh = pendingSampleYHigh;
+        readySlotCount = representative.Count;
         Version++;
     }
+
+    /// <summary>
+    /// True when every live tint used by this section has been sampled and published.
+    /// Out-of-range slots are treated as identity because the mesher normalizes them to
+    /// SlotNone; withholding such a section would disagree with what its mesh can encode.
+    /// </summary>
+    public bool SectionTintsReady(LodSection section) =>
+        SectionTintsReady(section, readySlotCount);
+
+    internal static bool SectionTintsReady(LodSection section, int readySlotCount)
+    {
+        for (int i = 0; i < section.Palette.Count; i++)
+        {
+            int slot = section.Palette[i].TintSlot;
+            if (slot > SlotNone && slot < MaxSlots && slot >= readySlotCount) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// New slots are appearance work, not an ordinary seasonal update: they bypass the
+    /// cadence immediately. Stable published tables retain the 30-second cadence.
+    /// </summary>
+    internal static bool RefreshDue(bool initialized, bool hasUnreadySlots,
+        long elapsedMilliseconds, long intervalMilliseconds) =>
+        !initialized || hasUnreadySlots || elapsedMilliseconds >= intervalMilliseconds;
+
+    /// <summary>
+    /// A new world must not briefly inherit the previous world's climate table. Existing
+    /// slots stay registered, but tinted meshes wait until this world publishes them.
+    /// </summary>
+    public void InvalidateReadiness() => readySlotCount = 1;
 
     /// <summary>
     /// Positions each tint is averaged over, on a lattice of this many blocks. A seasonal

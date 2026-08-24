@@ -221,6 +221,15 @@ internal static class LodHzbProjection
     /// </summary>
     public const int NarrowTexelsPerAxis = 2;
 
+    /// <summary>
+    /// Four normalized steps of a 24-bit depth buffer. A projected box and the rasterized
+    /// surface it coincides with reach depth through different arithmetic, so strict
+    /// greater-than alone can call the box hidden when the two differ only by rounding.
+    /// That verdict flickers at a precise camera angle and cluster subdivision multiplies
+    /// how many independently visible pieces can hit it. Treat this band as undecidable.
+    /// </summary>
+    public const float OcclusionDepthBias = 4f / 16777215f;
+
     public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
         LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);
 
@@ -300,8 +309,10 @@ internal static class LodHzbProjection
 
         if (!float.IsFinite(farthest)) return false;
 
-        // Strictly greater. Equality means the box's nearest point is exactly on the
-        // surface already drawn, which is the coplanar case, and drawing it is correct.
-        return bounds.NearestDepth > farthest;
+        // A narrow fail-open band around equality covers fixed-point depth quantization and
+        // the different arithmetic used by box projection and triangle rasterization. The
+        // old strict comparison flickered whole commands at precise camera angles; clusters
+        // made it more obvious by creating up to sixteen independent verdicts per section.
+        return bounds.NearestDepth > farthest + OcclusionDepthBias;
     }
 }

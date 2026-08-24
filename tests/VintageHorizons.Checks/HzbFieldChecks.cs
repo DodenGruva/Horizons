@@ -185,17 +185,13 @@ public static class HzbFieldChecks
     /// including the one being tested - and if a surface could hide itself, the tool would
     /// report near enough 100% hidden and the number would be pure artefact.
     ///
-    /// The argument says it cannot: the reduction takes the FARTHEST depth in a region, a
-    /// surface's own pixels are never farther than its own box's near face, and the comparison
-    /// is strictly greater, so the exactly-coplanar case is a tie and a tie draws.
-    ///
-    /// The argument has a hole, and this check is what found it. Run at sixteen texels per
-    /// axis the tie breaks the wrong way and the surface DOES hide itself, because the two
-    /// sides of the comparison are computed differently - a box corner transformed in doubles
-    /// against a depth the rasteriser interpolated - and at a fine enough level no sliver of
-    /// background is pooled into the texel to separate them. So the property holds with any
-    /// real margin and at every width the harness reports, and fails by one ULP in the exactly
-    /// flat, exactly square-on case. Both halves are pinned below.
+    /// The strict comparison originally failed this property. At sixteen texels per axis the
+    /// nominal tie broke the wrong way because the two sides are computed differently - a box
+    /// corner transformed in doubles against a depth the rasteriser interpolated. At a fine
+    /// enough level no sliver of background is pooled into the texel to separate them, and the
+    /// surface hid itself by one ULP. The Phase 8 owner playtest supplied the matching real
+    /// symptom: normally shaped pieces flickering at precise angles, all stopped by disabling
+    /// the depth cull. The explicit fail-open depth band now closes that hole at every width.
     /// </summary>
     static void ASurfaceInTheDepthBufferDoesNotHideItself(Check c)
     {
@@ -221,22 +217,12 @@ public static class HzbFieldChecks
                 "a surface does not hide itself at " + texels + " texels per axis");
         }
 
-        // Sixteen texels is where the argument runs out, and this is the finding rather than
-        // an oversight. The comparison is strictly greater, so an exactly coplanar surface is
-        // meant to be a tie and a tie draws. But the box's near depth is computed from a
-        // corner in doubles and the surface's depth is interpolated by the rasteriser, and at
-        // a fine enough level a texel lands wholly inside the surface with no sliver of
-        // background to raise its farthest value. The two numbers then differ in the last
-        // bits, the tie breaks the wrong way, and the surface hides itself by one ULP.
-        //
-        // It needs all three conditions at once - coplanar with its own box face, square to
-        // the camera, and a texel entirely inside it - which is why real terrain almost never
-        // meets it and a flat plateau viewed from straight above can. Pinned rather than
-        // fixed: the repair belongs in LodHzbProjection as a margin on the comparison, which
-        // is a change to shipped suppression, and this check exists to keep the reason for it
-        // from being lost. Recorded honestly - it says the slip HAPPENS, not that it is right.
-        c.True(LodHzbProjection.IsOccluded(own, pyramid, Width, Height, 16, out _),
-            "known slip: at 16 texels an exactly coplanar surface hides itself by one ULP");
+        // Sixteen texels is the width that exposed the old one-ULP slip: a texel can land
+        // wholly inside the surface with no background to raise its farthest depth. This is
+        // now the regression case for the safety band rather than an assertion that the known
+        // defect remains present.
+        c.False(LodHzbProjection.IsOccluded(own, pyramid, Width, Height, 16, out _),
+            "the depth safety band stops the old one-ULP self-occlusion at 16 texels");
 
         // With any real margin between the box's near face and the drawn surface it stops,
         // at every width, which is the property the field harness's --occlude-all mode is

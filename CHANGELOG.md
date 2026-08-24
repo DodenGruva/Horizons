@@ -8,6 +8,149 @@ first.
 
 ## [Unreleased]
 
+## [0.3.95] - 2026-08-24
+
+**The closest terrain band now receives most of the bounded sharpening allowance.** The accepted
+inner foundation previously split loading pressure evenly with the outward wave, even though the
+player judges the nearby L0 result first. The total ceiling remains unchanged at 32 unresolved rows
+and eight new requests per frame, but the foundation now receives 24/six while the outward wave
+retains eight/two.
+
+The outward reservation is deliberately one outstanding row per radial lane, so accelerating the
+near band cannot freeze a direction or return to camera-dependent loading. Four additional policy
+assertions pin the dominant near share, unchanged total pressure, and continued outward progress;
+the complete fast tier passes 5,013 assertions. The owner reports everything good and accepts the
+final pacing; cache startup/refinement is complete and Phase 8 resumes.
+
+## [0.3.94] - 2026-08-24
+
+**Newly loaded cached terrain now waits for its real climate and seasonal colours before its
+first reveal.** Faster radial loading exposed a second startup race: the initial tint refresh could
+finish before any cached palette registered its grass, foliage, or water maps. Those later slots
+started as identity white, then remained that way until the ordinary 30-second refresh, making the
+horizon visibly snap into colour long after its geometry appeared.
+
+New tint slots now bypass the ordinary cadence and enter the existing one-slot-per-frame sampler
+immediately. A section whose palette uses an unpublished slot retains its exact mesh obligation;
+coarser parent coverage remains live, while untinted terrain proceeds normally. The completed tint
+table is still published atomically, and `.vhinfo` reports ready versus registered slots. Eight
+focused assertions pin late-slot wakeup and the appearance gate; the complete fast tier passes
+5,009 assertions. The owner accepted the result in game: terrain now reveals with its proper
+colours while the radial loading behavior remains intact.
+
+## [0.3.93] - 2026-08-24
+
+**The terrain beneath the player now has its own fast refinement foundation.** The first radial
+candidate began outside vanilla's draw range, so cached terrain hidden under vanilla could remain
+coarse until movement exposed it. The owner found that reveal jarring and also found the nearest
+visible ring took longer than the eye expected to reach final detail.
+
+The first configured LOD band now plans from the player outward through L0 independently of the
+larger radial wave. It and the outward planner each retain eight-direction fairness while splitting
+the previous allowance: 16 outstanding rows and four new requests per frame apiece, preserving the
+same combined 32-row/eight-request ceiling. The inner foundation can therefore finish its required
+parent gates and finest rows without waiting behind every outward band, while distant coverage
+continues progressing. The complete fast tier passes 5,001 assertions. The owner accepted the
+under-player detail and outward sharpening behavior in game; the faster reveal then exposed the
+separate delayed-tint race fixed in 0.3.94.
+
+## [0.3.92] - 2026-08-24
+
+**Cached terrain now starts and refines as an orientation-independent radial wave.** Exact stored
+rows are separated from synthetic quadtree ancestors, then admitted through eight equally serviced
+radial lanes. Nearby coarse coverage starts first; each next wave combines one nearer refinement
+step with the next outward band's coarse arrival. Camera direction is absent from demand ordering,
+so turning can change what is drawn but cannot create a previously untouched load wave.
+
+The planner runs before the renderer's empty-mesh return, breaking the zero-work join cycle. It
+filters work to exact rows in the active radius and levels no finer than distance currently needs,
+retains the existing parent-until-children-ready rule, and admits at most 32 unresolved rows rather
+than dirtying the complete cache. The Release build is warning-free and the complete fast tier
+passes 4,996 assertions. Runtime timing, visual wave quality, memory, and turn-around behavior await
+the owner's 5,317-section playtest.
+
+**Cache startup and refinement are now the top development priority; Phase 8 testing is paused.**
+The owner's 5,317-section cache reproduced the loading failure decisively: at ten seconds the mod
+knew every cache key but had 0 render-dirty sections, 0 loads, 0 mesh jobs, and 5,101 frames skipped
+for want of any mesh; at thirty seconds it still had no mesh or queued work. The first mesh arrived
+at 75.1 seconds. Source tracing confirms a circular bootstrap—the selection walk creates mesh/load
+demand but refuses to run until a mesh exists—and a separate orientation rule that rejects
+behind-camera subtrees before they can request data. A dedicated plan now targets bounded immediate
+bootstrap, 360-degree coarse coverage, then stable near-to-far refinement without requiring the
+player to turn around. Version 0.3.92 is the first source/harness-complete implementation and now
+awaits in-game evaluation.
+
+## [0.3.91] - 2026-08-24
+
+**Moving between Phase 8 presets no longer rebuilds every regional mesh.** The first 0.3.90
+`late` test correctly selected that stage, but the command also re-requested arenas that were
+already on and queued all 1,678 live sections for re-meshing. That made the 362 FPS observation a
+warm-up-contaminated number and would have repeated at every ladder step. Active presets now share
+their filled buffers; only a transition to or from `off` changes arena ownership. The no-argument
+report also describes the effective path for the selected stage instead of always describing the
+disabled cluster path.
+
+The visual observation remains valid: the `late` preset reproduced the single older flickering
+section but not the more numerous flickers introduced by `clusters`. The next clean adjacent test
+is `cull`, which removes the same-frame near/far split while retaining whole-section HZB culling.
+
+## [0.3.90] - 2026-08-24
+
+**The single Phase 8 command now preserves the experiment's stages.** `.vhphase8` accepts
+`off`, `batch`, `cull`, `late`, `packed`, and `clusters` as a chronological preset ladder. Each
+preset assigns every dependent switch, reports the exact stage and component states, and writes
+that evidence to the log. `.vhphase8 on` remains an alias for the complete `clusters` preset.
+
+This follows the first valid 0.3.89 comparison: the log confirms the complete cluster stack was
+active, then the complete legacy baseline was active. The owner saw cluster flicker return and the
+legacy baseline run faster. That does not erase the substantial wins measured in earlier renderer
+phases; it proves only that one or more additions between those winning stages and the complete
+stack regressed the result. The preset ladder can locate that boundary without asking the player
+to reconstruct seven commands or treating all Phase 8 work as one variable.
+
+## [0.3.89] - 2026-08-24
+
+**Phase 8 now has one master switch.** `.vhphase8 on` enables the entire experiment in dependency
+order: regional arenas, batched drawing, packed quads, HZB, GPU depth culling, the same-frame
+near/far picture, and 4x4 clusters. `.vhphase8 off` disables the complete stack for the legacy
+baseline. With no argument it reports `ON`, `OFF`, or `MIXED`, names every component, says whether
+the cluster path is actually active, and writes the same evidence to the log.
+
+This replaces an error-prone seven-command setup. The first 0.3.88 performance follow-up was not a
+valid cluster comparison: its log shows late depth initially off, then the hidden share rising from
+0.5% to 4.6% after it was enabled, while clusters remained `on, but idle` because packed drawing was
+off. The artifact fix remains in place; its retained performance now needs a correctly controlled
+master-switch comparison.
+
+## [0.3.88] - 2026-08-24
+
+**GPU depth culling now fails open on borderline depth.** The owner found that normally shaped
+terrain pieces could flicker at precise camera angles, and that `.vhcull off` stopped every case
+with clusters both on and off. This clears the cluster geometry and identifies the shared depth
+verdict as the fault: it treated any difference greater than zero as proof that a draw was hidden,
+even when projection, rasterization, and depth-buffer rounding differed by only a few representable
+steps.
+
+The CPU reference and both compute paths now reserve a four-step 24-bit depth safety band. A box
+inside that band draws; terrain with a real depth separation can still be cancelled. An existing
+offline fixture already reproduced the exact one-last-bit self-occlusion and now pins its repair,
+along with the shader/reference agreement. The cluster path remains opt-in while visual stability
+and the retained performance gain are tested.
+
+## [0.3.87] - 2026-08-24
+
+**Phase 8 clustered terrain is ready for an opt-in playtest.** The packed renderer can now
+split each opaque section into a 4x4 grid of exact geometry ranges. Each populated cell has
+its own conservative bounds and indirect command, so a ridge that overlaps open sky in one
+part of a section no longer forces every hidden part of that section to draw.
+
+Turn it on with `.vhclusters on` after `.vhgpu on`, `.vhindirect on`, `.vhpacked on`,
+`.vhhzb on`, and `.vhcull on`; `.vhclusters off` returns immediately to the accepted
+whole-section packed path. The benchmark equivalent is `-GpuClusters 0|1`. The old packed
+stream, expanded batching, and the established renderer remain complete same-frame fallbacks.
+The clustered geometry and command path pass 1,048 focused assertions, and the full fast tier
+passes 4,959 assertions. Visual parity and real GPU cost/saving remain human-test gates.
+
 ## [0.3.86] - 2026-08-24
 
 **Packed terrain now reuses four decoded corners per quad.** The first 0.3.85 experiment looked
