@@ -1557,6 +1557,107 @@ the terrain is actually occupied - the centre column's surface, not the section'
 validate the harness against a real in-game figure at the same settings before trusting it;
 this one matched the game's 0-1k band to within a point once corrected.
 
+### G78 - A pass that activates a shader cannot be dropped between two draw passes
+
+**Trigger:** inserting any GL work that binds its own program into the middle of a render pass.
+
+**Trap:** the depth-pyramid build was moved between the opaque and water passes so the picture
+would contain cached terrain but not depth-writing water. The engine refuses to activate a second
+shader while one is in use - "Already a different shader (lodterrain) in use!" - so the build
+failed on **every frame of an entire playtest**: 0 of 4,047. It failed safe, because a frame with
+no picture draws everything, which is exactly why nobody would have noticed from the screen.
+
+**Do:** release the current program around the insertion and take it back afterwards. Uniforms
+belong to the program object rather than to the binding, so the pass that follows finds its values
+untouched. And count the successes: `builds completed` against `builds attempted` is what turned a
+silent total failure into a one-line diagnosis.
+
+**Found:** 2026-08-24, session 45.
+
+### G79 - A fence asked once and then deleted throws the work away
+
+**Trigger:** any GPU readback polled with a zero timeout.
+
+**Trap:** the classifier fenced each dispatch, asked once on the following frame, and deleted the
+fence when the answer was "not yet" - abandoning that dispatch's results forever. It read **2 of
+2,212** dispatches while paying 149us a frame for all of them, six times the cost of the pyramid it
+was reporting on, and most of a 30 FPS drop. G71 says to ask and never wait, which is right; it
+does not say to discard.
+
+**Do:** keep the fence and ask again next frame, and do not start another dispatch while a result
+is still outstanding. That alone makes the pass self-throttling at the readback rate. Report reads
+against skips so a pass that is collecting almost nothing says so.
+
+**Found:** 2026-08-24, session 45.
+
+### G80 - Timing a pass that did not run dilutes the number it exists to produce
+
+**Trigger:** a delayed GPU timer wrapped around work that can be skipped.
+
+**Trap:** the pyramid timer opened and closed around builds that never happened - a minimised
+window, a refused depth attachment - filing a near-zero sample each time. The client reported
+**4.8us over 256,368 timed builds when 50,733 had actually run**, dragging a genuine 24us down
+fivefold. That figure is the gate for the whole phase, and it was wrong in the flattering
+direction.
+
+**Do:** close the query but discard its result when the work did not happen, and print the sample
+count beside the average so the two can be compared. A ring already tracking a measurement epoch
+can discard by stamping the slot stale, which reuses a path that is already tested.
+
+**Found:** 2026-08-24, session 45.
+
+### G81 - A resource ceiling that silently refuses turns every measurement into a measurement of the ceiling
+
+**Trigger:** any fixed pool the renderer falls back from gracefully.
+
+**Trap:** the GPU arena's fixed 256 MiB refused 322 sections and left **35% of drawn terrain**
+outside the batched path. Everything still drew, correctly, by the slower route - so the only
+symptom was that batching and depth culling could not affect two thirds of the screen, and two
+sessions of A/B comparisons through it measured the pool rather than the feature. Raising it took
+coverage to 100% and the owner from 300 to 480 FPS.
+
+**Do:** size the pool from the setting that determines the work, not from a constant, and check
+the refusal counter before trusting any comparison taken through it. A ceiling that is a cap with
+demand-driven commitment costs nothing when generous, so there is no reason to run one tight.
+
+**Found:** 2026-08-24, session 45.
+
+### G82 - Never infer where on screen a visual defect appeared
+
+**Trigger:** the owner reports terrain flickering, vanishing or tearing.
+
+**Trap:** a previous-frame depth test produced flicker while the camera turned. The obvious
+mechanism is screen-edge clamping - the projection clamps a box's rectangle to the visible part
+and applies that verdict to the whole section - and a guard was designed, built, checked and
+shipped on that theory. The owner had seen the failures in the **middle** of the screen, and said
+so as soon as the assumption was stated. The guard was aimed at the wrong place entirely, and the
+inference had also been used to argue the underlying design was salvageable.
+
+**Do:** ask where on the screen, at what distance, and whether it recovers on its own, before
+proposing a mechanism. He answers precisely and immediately; the question costs one exchange and
+this one would have saved a build, a guard, a set of checks and a wrong conclusion about the
+design.
+
+**Found:** 2026-08-24, session 45.
+
+### G83 - A model that agrees with a sparse world is not validated by it
+
+**Trigger:** checking a capacity or coverage model against this machine's caches.
+
+**Trap:** the arena sizing model predicted 560 sections at the owner's draw distance and his
+client reported 580 resident, which was written up as validation and into a check. It was the
+opposite: his world is a partly-explored corridor rather than a full circle, so a model that
+matches a **sparse** world's residency necessarily falls short of a populated one. The same
+mistake had already been made once in the same session, reasoning about how much Phase 6 would
+buy from band populations that a grown world would not have.
+
+**Do:** state what the model counts and what the measurement counted before comparing them. Every
+cache on this machine is far-band starved - the most developed covers 16,384 x 12,288 blocks at L6
+- so no local measurement can confirm a model of a mature world, and the honest move is a margin
+with the reason recorded rather than a number presented as derived.
+
+**Found:** 2026-08-24, session 45.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

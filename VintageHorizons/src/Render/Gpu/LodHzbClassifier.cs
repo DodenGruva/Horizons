@@ -393,6 +393,24 @@ void main()
     int resultCapacity;
     int writeSlot;
     bool pendingRead;
+
+    /// <summary>
+    /// Frames since the last dispatch, and the floor between them.
+    ///
+    /// This pass measures; it does not decide anything. The 2026-08-23 playtest reported it at
+    /// 149us a frame against 24.5us for the pyramid build it reports ON, and of 2,212 dispatches
+    /// exactly 2 results were ever read - the other 2,210 were paid for in full and thrown away
+    /// because the card had not finished them by the time the next frame asked. That is most of
+    /// a 30 FPS drop spent on an instrument.
+    ///
+    /// Thirty frames is about twice a second at the rates this runs at, over roughly six hundred
+    /// sections a sample. A hidden-share percentage settles long before that matters, and the
+    /// figures get MORE trustworthy rather than less, because a sample that is actually read
+    /// beats a hundred that are discarded.
+    /// </summary>
+    const int FramesBetweenDispatches = 30;
+
+    int framesSinceDispatch = int.MaxValue;
     int pendingCount;
 
     float[] boxData = Array.Empty<float>();
@@ -522,6 +540,7 @@ void main()
         int levels)
     {
         LastFrame = default;
+        if (framesSinceDispatch < int.MaxValue) framesSinceDispatch++;
         if (program == 0 || hzbTexture == 0) return;
         if (viewProjection == null || viewProjection.Length < 16) return;
         if (levels <= 0 || screenWidth <= 0 || screenHeight <= 0) return;
@@ -538,6 +557,13 @@ void main()
             stateCaptured = true;
 
             ReadPending();
+
+            // Never two in flight. A dispatch whose result has not been collected yet would
+            // overwrite the slot being waited on, which is how the old arrangement managed to
+            // discard all but two samples: every frame started another and abandoned the last.
+            if (pendingRead) return;
+
+            if (framesSinceDispatch < FramesBetweenDispatches) return;
 
             int count = boxes.Count;
             if (count == 0) return;
@@ -579,6 +605,7 @@ void main()
             pendingRead = true;
             pendingCount = count;
             writeSlot ^= 1;
+            framesSinceDispatch = 0;
 
             ErrorCode error = GL.GetError();
             if (error != ErrorCode.NoError) Disable("classification raised " + error);
@@ -600,10 +627,13 @@ void main()
     void ReadPending()
     {
         if (!pendingRead || pendingCount <= 0) return;
-        pendingRead = false;
 
         int slot = writeSlot ^ 1;
-        if (resultBuffers[slot] == 0) return;
+        if (resultBuffers[slot] == 0)
+        {
+            pendingRead = false;
+            return;
+        }
 
         // Ask, never wait. A zero timeout means the answer is whatever is already true, and
         // an unfinished dispatch simply costs this frame's sample - which a running count
@@ -612,15 +642,21 @@ void main()
         if (resultFences[slot] != IntPtr.Zero)
         {
             WaitSyncStatus status = GL.ClientWaitSync(resultFences[slot], ClientWaitSyncFlags.None, 0);
-            GL.DeleteSync(resultFences[slot]);
-            resultFences[slot] = IntPtr.Zero;
 
             if (status != WaitSyncStatus.AlreadySignaled && status != WaitSyncStatus.ConditionSatisfied)
             {
+                // Still working. The fence is KEPT and asked again next frame - deleting it
+                // here is what threw the sample away, and it threw away 2,210 of 2,212. The
+                // dispatch is already paid for; waiting a frame for it costs nothing.
                 ReadsSkipped++;
                 return;
             }
+
+            GL.DeleteSync(resultFences[slot]);
+            resultFences[slot] = IntPtr.Zero;
         }
+
+        pendingRead = false;
 
         Reads++;
         if (resultData.Length < pendingCount) resultData = new uint[Math.Max(pendingCount, 256)];

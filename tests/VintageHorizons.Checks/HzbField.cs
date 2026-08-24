@@ -23,6 +23,15 @@ namespace VintageHorizons.Checks;
 /// depth opportunity would buy - with the same code and no self-occlusion, because a section
 /// is never in both sets.
 ///
+/// --occlude-all models Phase 6's OTHER candidate instead: a pyramid reduced from the
+/// previous frame's finished depth, which holds vanilla plus every cached section that
+/// actually drew. There the two sets are the same set, and a section being tested against a
+/// buffer containing itself is fine rather than a flaw - the pyramid reduces with max, so the
+/// farthest depth over a section's own footprint is its own far side, which is never nearer
+/// than its box's near side, so it can never hide itself. What this DOES assume is a still
+/// camera: the real thing tests this frame's boxes against last frame's view, and the cost of
+/// that mismatch is a fail-open guard this harness does not model. Read it as the best case.
+///
 /// WHAT IT APPROXIMATES, and these belong in any report of its numbers:
 ///   - The occluder is cached terrain standing in for vanilla's chunks. Inside a short vanilla
 ///     view distance those are L0 sections, which are one column per block and therefore full
@@ -81,6 +90,9 @@ public static class HzbField
         public double MaxDistance = 8000;
         public double Far;
         public double Vanilla;
+        public bool OccludeAll;
+        public double MoveBlocks;
+        public double TurnDegrees;
         public bool Help;
     }
 
@@ -108,7 +120,10 @@ public static class HzbField
             : ReadVanillaViewDistance(out _);
         string vanillaSource = o.Vanilla > 0 ? "given on the command line" : SettingsSource();
 
-        if (o.Radii.Length == 0) o.Radii = new[] { vanilla, 512, 2048 };
+        // One pass, and the radius is not a parameter of it: the occluder is the whole
+        // drawn scene, so there is nothing to sweep.
+        if (o.OccludeAll) o.Radii = new[] { double.PositiveInfinity };
+        else if (o.Radii.Length == 0) o.Radii = new[] { vanilla, 512, 2048 };
         if (o.Far <= 0) o.Far = Math.Max(2000, o.MaxDistance * 1.5);
 
         var clock = System.Diagnostics.Stopwatch.StartNew();
@@ -206,6 +221,17 @@ public static class HzbField
                     o.MaxDistance = double.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--far": o.Far = double.Parse(Next(), CultureInfo.InvariantCulture); break;
                 case "--vanilla": o.Vanilla = double.Parse(Next(), CultureInfo.InvariantCulture); break;
+                case "--occlude-all": o.OccludeAll = true; break;
+                case "--motion":
+                {
+                    string[] parts = Next().Split(',', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length != 2)
+                        throw new ArgumentException("--motion needs <blocks>,<degrees>");
+                    o.MoveBlocks = double.Parse(parts[0].Trim(), CultureInfo.InvariantCulture);
+                    o.TurnDegrees = double.Parse(parts[1].Trim(), CultureInfo.InvariantCulture);
+                    o.OccludeAll = true;
+                    break;
+                }
                 case "--radii":
                     o.Radii = Next().Split(',', StringSplitOptions.RemoveEmptyEntries)
                         .Select(v => double.Parse(v.Trim(), CultureInfo.InvariantCulture)).ToArray();
@@ -233,6 +259,12 @@ public static class HzbField
         Console.WriteLine("    --fov <deg>          vertical field of view (default 60)");
         Console.WriteLine("    --vanilla <blocks>   vanilla view distance to model");
         Console.WriteLine("                         (default: whatever clientsettings.json says today)");
+        Console.WriteLine("    --motion b,d         with --occlude-all: the camera walked b blocks forward and");
+        Console.WriteLine("                         turned d degrees between the snapshot and the test, which is");
+        Console.WriteLine("                         what one frame of play does to a previous-frame pyramid.");
+        Console.WriteLine("    --occlude-all        every drawn section occludes every other, which is what a");
+        Console.WriteLine("                         pyramid built from the PREVIOUS frame's finished depth");
+        Console.WriteLine("                         would see. Ignores --radii; assumes a still camera.");
         Console.WriteLine("    --seed <n>           camera placement seed (default 20260823)");
         Console.WriteLine();
     }
@@ -540,7 +572,44 @@ public static class HzbField
         // choose between once, they are a cheap change and a possible follow-on, and the only
         // number that justifies the follow-on is what it adds AFTER the cheap one is taken.
         public long SubCellsAfterWideTested, SubCellsAfterWideHidden;
+
+        /// <summary>
+        /// Of the sections wide-8 called hidden, how many stop being hidden once the box's
+        /// near face is pulled toward the camera by a hair.
+        ///
+        /// This is the self-occlusion meter. In the radius modes it should be near zero and
+        /// is a control: the occluder set and the tested set are disjoint there, so no
+        /// section can meet its own depth and a verdict resting on a hair means something
+        /// else is wrong. Under --occlude-all every section IS in the buffer, and whatever
+        /// this counts is suppression the real renderer would produce for one frame and then
+        /// undo the next - the section vanishes, so it is no longer in the depth buffer, so
+        /// it comes back. A flicker, not a saving. HzbFieldChecks pins the mechanism.
+        /// </summary>
+        public long HiddenByAHair, HiddenByLessThanCoarse;
+
+        /// <summary>
+        /// The safety number, and the only one that can condemn the previous-frame design:
+        /// sections last frame's picture called hidden that THIS frame's picture would have
+        /// drawn. Each one is terrain a player could see and the renderer would not draw.
+        ///
+        /// It is an upper bound rather than a count of real defects, because the fresh test
+        /// is itself conservative - it refuses plenty that is genuinely hidden - so a
+        /// disagreement is "the stale answer was not reproducible", not "the player saw sky".
+        /// Bounding it from above is the useful direction for a safety question.
+        ///
+        /// Its floor is exactly zero, by construction: with no motion the two cameras are the
+        /// same camera and the two verdicts are the same computation, so a non-zero reading
+        /// at rest is a broken instrument and not a finding (G73).
+        /// </summary>
+        public long StaleHidFreshDrew, StaleHidFreshUndecided, StaleTestedBothWays, StaleHidTotal;
     }
+
+    /// <summary>
+    /// The two margins the meter reports, as fractions of the depth value: one just above
+    /// float precision at these depths, and one wide enough to stand for any real gap
+    /// between a section's bounding face and its own surface.
+    /// </summary>
+    static readonly double[] Margins = { 1e-7, 1e-5 };
 
     static void Measure(Camera camera, long[] keys, MeshCache meshes, Options o,
         double radius, RadiusRun run)
@@ -559,35 +628,67 @@ public static class HzbField
 
         var depth = new float[o.Width * o.Height];
 
+        // Modelling motion is what makes a second, fresh pyramid meaningful; without it the
+        // two cameras coincide and the comparison would compare a thing with itself.
+        bool moving = o.MoveBlocks != 0 || o.TurnDegrees != 0;
+
         var frustum = new LodFrustum();
         var identity = new float[16];
         identity[0] = identity[5] = identity[10] = identity[15] = 1f;
 
         foreach (double yaw in camera.Yaws)
         {
+            // vp is the view the SNAPSHOT was taken from. With --motion it is last frame's;
+            // without it, it is simply this frame's and the two are the same.
             float[] vp = ViewProjection(yaw, o);
+
+            // Where the camera stands NOW. Only the frustum uses it: which sections are in
+            // the draw set is this frame's question, while the depth picture and every box
+            // projected against it belong to the frame that produced it. Getting this
+            // backwards would be the whole error the mode exists to measure.
+            double turn = o.TurnDegrees * Math.PI / 180.0;
+            float[] vpNow = o.TurnDegrees != 0 ? ViewProjection(yaw + turn, o) : vp;
+            double nowX = camera.X + Math.Sin(yaw) * o.MoveBlocks;
+            double nowZ = camera.Z + Math.Cos(yaw) * o.MoveBlocks;
+            var nowCamera = new Camera(nowX, camera.Y, nowZ, camera.Yaws);
 
             // The classifier only ever sees CPU-approved candidates, and approval starts with
             // this test. Without it the population is the whole world including everything
             // behind the camera, which the projection then refuses as near-plane crossings -
             // 70% of the first run's tests were that, and they are not a property of the
             // pyramid at all.
-            frustum.Update(vp, identity);
+            frustum.Update(vpNow, identity);
 
             Array.Fill(depth, 1f);
             foreach ((long key, double distance) in selected)
             {
-                if (distance > radius) continue;
+                if (!o.OccludeAll && distance > radius) continue;
                 MeshCache.Entry? mesh = meshes.Get(key);
                 if (mesh != null) Rasterize(depth, o.Width, o.Height, vp, key, camera, mesh);
             }
 
             ChainPyramid pyramid = ChainPyramid.Build(depth, o.Width, o.Height);
+
+            // The comparison pyramid: the same scene as THIS frame would have drawn it. Only
+            // built when motion is being modelled, because without motion it is the identical
+            // picture and the comparison is a tautology.
+            ChainPyramid? fresh = null;
+            if (moving)
+            {
+                Array.Fill(depth, 1f);
+                foreach ((long key, double _) in selected)
+                {
+                    MeshCache.Entry? m = meshes.Get(key);
+                    if (m != null) Rasterize(depth, o.Width, o.Height, vpNow, key, nowCamera, m);
+                }
+                fresh = ChainPyramid.Build(depth, o.Width, o.Height);
+            }
+
             run.Views++;
 
             foreach ((long key, double distance) in selected)
             {
-                if (distance <= radius) continue;
+                if (!o.OccludeAll && distance <= radius) continue;
                 MeshCache.Entry? mesh = meshes.Get(key);
                 if (mesh == null || !mesh.Span.HasGeometry) continue;
 
@@ -597,7 +698,10 @@ public static class HzbField
                 double minY = mesh.Span.MinY - camera.Y;
                 double maxY = mesh.Span.MaxY - camera.Y;
 
-                if (!frustum.BoxInView(relX, minY, relZ, relX + footprint, maxY, relZ + footprint))
+                double nowRelX = (double)LodWorld.KeySx(key) * footprint - nowX;
+                double nowRelZ = (double)LodWorld.KeySz(key) * footprint - nowZ;
+                if (!frustum.BoxInView(
+                        nowRelX, minY, nowRelZ, nowRelX + footprint, maxY, nowRelZ + footprint))
                     continue;
 
                 Tally band = run.Bands[BandOf(distance)];
@@ -621,6 +725,33 @@ public static class HzbField
                 run.All.Tested++;
                 if (bounds.NearestDepth >= 0.999999f) run.DepthSaturated++;
 
+                // Every tested section, and deliberately BEFORE the baseline filter below.
+                // Behind it the comparison would only ever see sections the narrow test could
+                // not hide, and the rate would be quoted over a subset chosen by a different
+                // test - which is the same population-mismatch mistake that made the figure
+                // this phase was justified by wrong.
+                if (fresh != null)
+                {
+                    band.StaleTestedBothWays++; run.All.StaleTestedBothWays++;
+                    if (LodHzbProjection.IsOccluded(
+                            bounds, pyramid, o.Width, o.Height, WideSamplingChoice, out _))
+                    {
+                        band.StaleHidTotal++; run.All.StaleHidTotal++;
+                        LodHzbScreenBounds now = LodHzbProjection.Project(
+                            vpNow, nowRelX, minY, nowRelZ,
+                            nowRelX + footprint, maxY, nowRelZ + footprint);
+                        if (!now.Usable)
+                        {
+                            band.StaleHidFreshUndecided++; run.All.StaleHidFreshUndecided++;
+                        }
+                        else if (!LodHzbProjection.IsOccluded(
+                                     now, fresh, o.Width, o.Height, WideSamplingChoice, out _))
+                        {
+                            band.StaleHidFreshDrew++; run.All.StaleHidFreshDrew++;
+                        }
+                    }
+                }
+
                 if (LodHzbProjection.IsOccluded(bounds, pyramid, o.Width, o.Height, BaselineTexels, out _))
                 {
                     band.HiddenBaseline++;
@@ -640,6 +771,28 @@ public static class HzbField
                     {
                         band.HiddenWide[w]++;
                         run.All.HiddenWide[w]++;
+                    }
+                }
+
+                // Asked of the shipped width only, because that is the verdict anything real
+                // would act on. Pulling the near face TOWARD the camera can only make the
+                // inequality harder, so a verdict that survives had margin and one that does
+                // not was resting on the last bits.
+                if (LodHzbProjection.IsOccluded(
+                        bounds, pyramid, o.Width, o.Height, WideSamplingChoice, out _))
+                {
+                    for (int m = 0; m < Margins.Length; m++)
+                    {
+                        LodHzbScreenBounds pulled = bounds with
+                        {
+                            NearestDepth = (float)(bounds.NearestDepth * (1.0 - Margins[m])),
+                        };
+                        if (LodHzbProjection.IsOccluded(
+                                pulled, pyramid, o.Width, o.Height, WideSamplingChoice, out _))
+                            continue;
+
+                        if (m == 0) { band.HiddenByAHair++; run.All.HiddenByAHair++; }
+                        else { band.HiddenByLessThanCoarse++; run.All.HiddenByLessThanCoarse++; }
                     }
                 }
 
@@ -936,8 +1089,17 @@ public static class HzbField
 
     static void Report(RadiusRun run, Options o, double vanilla)
     {
-        bool primary = Math.Abs(run.Radius - vanilla) < 0.5;
-        string label = primary
+        bool primary = !o.OccludeAll && Math.Abs(run.Radius - vanilla) < 0.5;
+        string label = o.OccludeAll
+            ? "occluder: every drawn section, near and far   [Phase 6 option 3: a pyramid "
+                + "built from the previous frame's finished depth, "
+                + (o.MoveBlocks == 0 && o.TurnDegrees == 0
+                    ? "camera unmoved]"
+                    : "camera then walked "
+                        + o.MoveBlocks.ToString("0.##", CultureInfo.InvariantCulture)
+                        + " blocks and turned "
+                        + o.TurnDegrees.ToString("0.##", CultureInfo.InvariantCulture) + " deg]")
+            : primary
             ? "occluder: vanilla terrain within "
                 + run.Radius.ToString("0", CultureInfo.InvariantCulture)
                 + " blocks   [the Phase 4/5 question]"
@@ -971,6 +1133,29 @@ public static class HzbField
             + Percent(undecided, all.Candidates) + ": near plane " + all.NearPlane
             + ", off screen " + all.OffScreen + ", degenerate " + all.Degenerate + ")");
 
+        if (all.StaleTestedBothWays > 0)
+        {
+            Console.WriteLine("    SAFETY: " + all.StaleTestedBothWays
+                + " sections judged both ways; last frame's picture hid " + all.StaleHidTotal
+                + " of them. Of those hides, " + all.StaleHidFreshDrew
+                + " (" + Percent(all.StaleHidFreshDrew, all.StaleHidTotal)
+                + ") would have been DRAWN by this frame's picture and "
+                + all.StaleHidFreshUndecided + " ("
+                + Percent(all.StaleHidFreshUndecided, all.StaleHidTotal)
+                + ") refused by it. That is " + Percent(all.StaleHidFreshDrew, all.Candidates)
+                + " of everything on screen. Upper bound on terrain the stale test could"
+                + " wrongly remove; at zero motion it must read 0.");
+        }
+
+        if (o.MoveBlocks != 0 || o.TurnDegrees != 0)
+        {
+            long mustDraw = undecided + (all.Tested - all.HiddenBaseline - all.HiddenWide[1]);
+            Console.WriteLine("    undecided means last frame's picture has no data there, so the"
+                + " section must be drawn; with those counted as drawn, "
+                + Percent(all.Candidates - mustDraw, all.Candidates)
+                + " of everything the frustum approved is still hidden");
+        }
+
         if (all.Remainder > 0)
         {
             Console.WriteLine("    of the " + all.Remainder.ToString(CultureInfo.InvariantCulture)
@@ -986,6 +1171,17 @@ public static class HzbField
                 + " of the pieces that remain - this is what the storage and draw rework"
                 + " would actually buy");
         }
+
+        long wide8 = all.HiddenWide[1];
+        Console.WriteLine("    of the " + wide8.ToString(CultureInfo.InvariantCulture)
+            + " wide-8 hides, " + all.HiddenByAHair.ToString(CultureInfo.InvariantCulture)
+            + " (" + Percent(all.HiddenByAHair, wide8) + ") rest on a margin thinner than 1e-7 and "
+            + all.HiddenByLessThanCoarse.ToString(CultureInfo.InvariantCulture)
+            + " (" + Percent(all.HiddenByLessThanCoarse, wide8) + ") on one thinner than 1e-5"
+            + (o.OccludeAll
+                ? " - under --occlude-all these are sections hiding behind themselves, and each"
+                  + " one is a one-frame flicker rather than a saving"
+                : " - the radius modes cannot self-occlude, so this is the control"));
 
         if (run.DepthSaturated > 0)
         {

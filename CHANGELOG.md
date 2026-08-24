@@ -8,6 +8,29 @@ first.
 
 ## [Unreleased]
 
+**Distant terrain can now hide other distant terrain, and the memory pool grows with your view
+distance.** The mod works out what is hidden by taking a snapshot of how far away everything is.
+That snapshot used to be taken before any distant terrain was drawn, so only the game's own nearby
+hills could hide anything - which meant that from a hilltop looking out, nothing was hidden at all.
+Taken at the end of the frame instead, it hides 8% of pieces within a kilometre, 20% at one to two,
+and 35% at two to four, for the same cost. `.vhlate on`, off by default and remembered per install.
+
+**The pool holding distant terrain now sizes itself from your cached-terrain draw distance.** It
+was a fixed 256 MB, which on a normal view was refusing a third of the terrain and quietly sending
+it down the slower path - so the faster drawing could only ever help part of the screen. It now
+asks for what your own settings imply, and the owner measured 300 to 480 FPS at the same spot after
+the change. It is a limit rather than a reservation, so a distance you never reach costs nothing,
+and a card that cannot afford your setting is a reason to turn the distance down.
+
+**The depth measurements are readable in an ordinary session.** They previously only recorded
+themselves when the game was launched through the benchmark script, so a normal run reported zero
+and looked free rather than unmeasured. Switching the depth feature on now starts the clock, and
+the report says in words whether its own figures are real.
+
+**Known:** with the end-of-frame snapshot on, a few pieces of distant terrain can flicker while the
+camera turns. The next change replaces the one-frame-old snapshot with one taken during the same
+frame, which removes the cause rather than guarding against it.
+
 **Distant terrain hidden behind hills can now actually be skipped.** Until now the mod worked
 out what was hidden and then drew it anyway - the answer arrived a frame too late to use. The
 graphics card now makes that decision and cancels the drawing in the same frame, so there is no
@@ -50,6 +73,37 @@ cached-on-cached depth strategies and packed quads before any default decision. 
 planning and verification artifact only; it changes no runtime rendering behavior.
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+
+## [0.3.83]
+
+Human-played. Twelve versions (0.3.72-0.3.83) covering one feature, one memory fix and four
+diagnostics that were reporting on themselves rather than on the game.
+
+**Distant terrain can hide other distant terrain.** `.vhlate on` takes the depth snapshot at the
+end of the frame instead of before distant terrain is drawn, so the mod's own hills become
+occluders. From a hilltop looking out, the old arrangement hid nothing at all; this hides 8% of
+pieces within a kilometre, 20% at one to two, and 35% at two to four, for the same cost. Off by
+default and remembered per install.
+
+**The pool holding distant terrain sizes itself from your draw distance.** It was a fixed 256 MB,
+which was refusing a third of the terrain and quietly sending it down the slower path, so the
+faster drawing could only help part of the screen. 300 to 480 FPS at the same spot after the
+change. It is a limit rather than a reservation, so a distance you never reach costs nothing.
+
+**Depth measurements are readable in an ordinary session.** They previously recorded themselves
+only under the benchmark script, so a normal run reported zero and looked free rather than
+unmeasured. Switching the depth feature on now starts the clock, and the report says whether its
+own figures are real.
+
+**Fixed:** the end-of-frame snapshot was never being taken at all (the engine refuses a second
+shader mid-pass); the pass that measures hidden terrain was discarding 99.9% of its own results at
+six times the cost of the thing it measured; the culling shader was created too late to report its
+own state; and the timer counted frames where nothing was drawn, reporting a fifth of the real
+cost.
+
+**Known:** with the end-of-frame snapshot on, a few pieces of distant terrain can flicker while the
+camera turns. The next change takes the snapshot during the same frame instead, which removes the
+cause rather than guarding against it.
 
 ## [0.3.71]
 

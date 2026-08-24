@@ -221,6 +221,41 @@ internal static class LodHzbProjection
     /// </summary>
     public const int NarrowTexelsPerAxis = 2;
 
+    /// <summary>
+    /// Shifts a view-projection so it accepts boxes expressed relative to a camera that has
+    /// since moved, without moving the boxes.
+    ///
+    /// This is what lets a depth picture taken last frame be tested against this frame's
+    /// boxes. Cull boxes are always built relative to the CURRENT camera; the picture was
+    /// taken through an older view. Rather than re-base every box, the delta is folded into
+    /// the matrix once: the result is the old view-projection composed with a translation, so
+    /// projecting a box relative to the new camera lands exactly where projecting the same
+    /// world point relative to the old one would have.
+    ///
+    /// Only the translation column changes. The rotation and projection columns must stay the
+    /// old frame's, because those are the ones the picture was taken through - rewriting them
+    /// would describe a view that never produced any depth.
+    /// </summary>
+    public static void RebaseForCameraDelta(
+        float[] source, double dx, double dy, double dz, float[] destination)
+    {
+        if (source == null || destination == null
+            || source.Length < 16 || destination.Length < 16)
+        {
+            throw new ArgumentException("a view-projection needs sixteen elements");
+        }
+
+        for (int i = 0; i < 12; i++) destination[i] = source[i];
+        for (int row = 0; row < 4; row++)
+        {
+            destination[12 + row] = (float)(
+                source[0 + row] * dx
+                + source[4 + row] * dy
+                + source[8 + row] * dz
+                + source[12 + row]);
+        }
+    }
+
     public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
         LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);
 

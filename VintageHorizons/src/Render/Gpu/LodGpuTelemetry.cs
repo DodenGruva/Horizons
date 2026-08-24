@@ -94,13 +94,30 @@ internal sealed class LodGpuTimerRing : IDisposable
         return true;
     }
 
-    public void End()
+    public void End() => Finish(keep: true);
+
+    /// <summary>
+    /// Ends the query but throws its result away.
+    ///
+    /// For a pass that was timed and then did not happen. The GL query has already started and
+    /// must be closed, but recording it would add a near-zero sample to an average of real
+    /// work. On 2026-08-24 the depth pyramid reported 4.8us over 256,368 timed builds when only
+    /// 50,733 builds had actually occurred - the other 205,635 were frames with the window
+    /// minimised, and they dragged a genuine 24us figure down by a factor of five. The gate for
+    /// this whole phase is that number.
+    ///
+    /// Discarding reuses the ring's existing stale-epoch path: the slot is still polled and
+    /// freed, its result simply never reaches the total.
+    /// </summary>
+    public void Discard() => Finish(keep: false);
+
+    void Finish(bool keep)
     {
         if (activeSlot < 0) return;
         api.EndTimeElapsed();
         ref Slot slot = ref slots[activeSlot];
         slot.Pending = true;
-        slot.Epoch = epoch;
+        slot.Epoch = keep ? epoch : long.MinValue;
         nextSlot = (activeSlot + 1) % slots.Length;
         activeSlot = -1;
     }
@@ -165,7 +182,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     bool probeAttempted;
     bool timingFailureReported;
 
-    public bool TimingRequested { get; }
+    public bool TimingRequested { get; private set; }
     public bool RuntimeValidationRequested { get; private set; }
     public bool ProbeAttempted => probeAttempted;
     public bool TimingActive { get; private set; }
@@ -221,6 +238,51 @@ internal sealed class LodGpuTelemetry : IDisposable
     }
 
     /// <summary>
+    /// Arms the delayed GPU timers on a session that started without
+    /// VINTAGEHORIZONS_GPU_STATS.
+    ///
+    /// This exists because the only number that can answer a depth-phase gate is GPU time,
+    /// and until now the only way to obtain it was to restart the game under an environment
+    /// variable the benchmark harness sets. An ordinary session therefore reported 0.0us for
+    /// the pyramid, the classify and the cull, which reads exactly like "it costs nothing"
+    /// rather than "nobody measured". Two playtests have already been spent on instruments
+    /// that could not see what they claimed to (G72).
+    ///
+    /// Whether the timers actually arm is the card's decision, not this one: a driver that
+    /// does not advertise timer queries stays unmeasured and everything else is unchanged.
+    /// Returns whether timing is on NOW; false with <see cref="TimingRequested"/> set means
+    /// the capability probe has not run yet and the next frame will decide.
+    /// </summary>
+    public bool RequestTiming()
+    {
+        TimingRequested = true;
+        if (TimingActive) return true;
+
+        // Not probed yet: BeginFrame probes on the render thread, where GL calls are legal,
+        // and applies the request there. Doing it here would issue GL from the chat thread.
+        if (!probeAttempted) return false;
+
+        // Timing that already failed once is not retried. A ring that threw will throw
+        // again, and re-arming it per request turns one failure into a repeated one.
+        if (timingFailureReported) return false;
+
+        TimingActive = Decision.TimerQueriesAvailable;
+        return TimingActive;
+    }
+
+    /// <summary>
+    /// One line saying whether the GPU-time figures in a report mean anything. Written for
+    /// the person reading the report rather than for a log parser, because a zero with no
+    /// explanation beside it is the failure this whole path exists to prevent.
+    /// </summary>
+    public string DescribeTiming() =>
+        TimingActive ? "on"
+        : !TimingRequested ? "off - nothing has asked for it"
+        : timingFailureReported ? "off - the timers failed and are not retried this session"
+        : !probeAttempted ? "asked for; it arms on the next frame"
+        : "unavailable - this driver does not advertise timer queries";
+
+    /// <summary>
     /// Asks for the runtime resource probes on a context that started without them. The
     /// probes themselves must run on the render thread, so this only records the request;
     /// the next frame performs it. Nothing is re-probed once validation has succeeded.
@@ -256,6 +318,14 @@ internal sealed class LodGpuTelemetry : IDisposable
     public void EndWater() => End(waterTimer);
     public bool BeginHzb() => Begin(hzbTimer);
     public void EndHzb() => End(hzbTimer);
+
+    /// <summary>Closes the pyramid's timer without recording it, for a build that did not run.</summary>
+    public void DiscardHzb()
+    {
+        if (!TimingActive) return;
+        try { hzbTimer.Discard(); }
+        catch (Exception e) { DisableTiming(e); }
+    }
     public bool BeginClassify() => Begin(classifyTimer);
     public void EndClassify() => End(classifyTimer);
 

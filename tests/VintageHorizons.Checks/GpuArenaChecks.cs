@@ -19,6 +19,7 @@ public static class GpuArenaChecks
         MirrorCeiling(c);
         MirrorStress(c);
         ArenaPolicy(c);
+        CeilingFollowsDrawDistance(c);
     }
 
     // ---- Geometry format ----
@@ -654,5 +655,88 @@ public static class GpuArenaChecks
                 if (LodGpuGeometryFormat.DecodeIndex(stored, i) != indices[i]) return false;
             return true;
         }
+    }
+
+    /// <summary>
+    /// The pool has to be able to hold whatever the player's own distance setting asks the mod
+    /// to draw.
+    ///
+    /// A fixed 256 MiB was refusing 322 sections on 2026-08-24 and left 35% of drawn terrain
+    /// outside the batched path, which meant batching and culling could not touch two thirds of
+    /// the screen and no measurement taken through it meant much. The failure was silent in the
+    /// only way that matters: everything still drew, correctly, by the slower route.
+    /// </summary>
+    static void CeilingFollowsDrawDistance(Check c)
+    {
+        // What this model is, stated precisely, because the first version of this check got it
+        // wrong: it counts the sections a FULL CIRCLE of terrain would draw at one level each.
+        // The 2026-08-24 session reported 580 resident against 560 modelled, and that agreement
+        // was a coincidence rather than a validation - that world was a partly-explored corridor,
+        // so a populated one at the same distance would hold considerably more. The model is
+        // therefore a floor, and ResidencyHeadroom is what turns it into a ceiling worth having.
+        double atThreeThousand = LodGpuArenaPolicy.SectionsWithin(3000);
+        c.True(atThreeThousand > 450 && atThreeThousand < 700,
+            "the full-circle model is the right order of magnitude at 3,000 blocks, got "
+            + atThreeThousand.ToString("0"));
+        c.True(LodGpuArenaPolicy.ResidencyHeadroom >= 2.0,
+            "the derived ceiling carries at least the margin the bare model lacks");
+
+        c.Eq(0.0, LodGpuArenaPolicy.SectionsWithin(0), "no distance holds no sections");
+        c.Eq(0.0, LodGpuArenaPolicy.SectionsWithin(-1), "a negative distance holds no sections");
+        c.Eq(0.0, LodGpuArenaPolicy.SectionsWithin(double.NaN), "nonsense holds no sections");
+
+        // Monotonic, or a player who increases their distance could be given a smaller pool.
+        double previous = 0;
+        for (double d = 512; d <= 65536; d *= 1.5)
+        {
+            double sections = LodGpuArenaPolicy.SectionsWithin(d);
+            c.True(sections >= previous,
+                "asking for more distance never models fewer sections at " + d.ToString("0"));
+            previous = sections;
+        }
+
+        // Doubling the distance must not double the pool while the level scheme still has a
+        // coarser level to reach for - that is the whole reason this can be afforded at all.
+        double at4k = LodGpuArenaPolicy.SectionsWithin(4096);
+        double at8k = LodGpuArenaPolicy.SectionsWithin(8192);
+        c.True(at8k < at4k * 1.6,
+            "doubling from 4k to 8k adds a ring rather than multiplying, got "
+            + at4k.ToString("0") + " then " + at8k.ToString("0"));
+
+        // Past the last transition every section is the coarsest size there is, so the count
+        // does start growing with area again. Worth pinning, because that is the regime where
+        // a player's setting can genuinely cost them memory.
+        double at16k = LodGpuArenaPolicy.SectionsWithin(16384);
+        double at64k = LodGpuArenaPolicy.SectionsWithin(65536);
+        c.True(at64k > at16k * 1.5,
+            "past the last level the count grows with area, got "
+            + at16k.ToString("0") + " then " + at64k.ToString("0"));
+
+        // Never smaller than it has always been, whatever the setting.
+        foreach (double d in new[] { 1024.0, 2048, 4096, 16384, 262144 })
+        {
+            c.True(LodGpuArenaPolicy.CeilingBytesFor(d, null)
+                    >= LodGpuArenaPolicy.DefaultCeilingBytes,
+                "a " + d.ToString("0") + "-block distance never shrinks the pool below the "
+                + "old fixed default");
+        }
+
+        c.True(LodGpuArenaPolicy.CeilingBytesFor(262144, null)
+                <= LodGpuArenaPolicy.MaximumCeilingBytes,
+            "an extreme distance is still clamped");
+
+        // The 2026-08-24 configuration - unlimited - must now afford more than it refused at.
+        long unlimited = LodGpuArenaPolicy.CeilingBytesFor(
+            LodGpuArenaPolicy.UnlimitedDrawDistanceBlocks, null);
+        c.True(unlimited > LodGpuArenaPolicy.DefaultCeilingBytes,
+            "an unlimited distance affords more than the fixed 256 MiB that refused 322 sections");
+
+        // An explicit value still wins outright, or the benchmark harness loses the ability to
+        // pin a pool size the way it pins every other path.
+        c.Eq(64L * 1024 * 1024, LodGpuArenaPolicy.CeilingBytesFor(65536, "64"),
+            "an explicit override beats the derived size, even downwards");
+        c.Eq(LodGpuArenaPolicy.CeilingBytesFor(4096, null),
+            LodGpuArenaPolicy.CeilingBytesFor(4096, "not a number"),
+            "an unreadable override falls back to the derived size, not to nothing");
     }
 }

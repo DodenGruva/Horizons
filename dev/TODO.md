@@ -43,92 +43,79 @@ batching-plus-culling against the established path with occlusion queries - not 
 against itself. Nothing has run that, which is why the switches are saved rather than
 defaulted on.
 
-## Phase 5 drew its first culled frame; nothing has shown it pays for itself
+## Phase 6: the split is next, and most of the pieces already exist
 
-Everything below is in 0.3.71. **The owner last ran 0.3.70**, with culling confirmed active.
+**Decided 2026-08-24, reversing this session's own choice.** The depth picture will be taken
+DURING the frame, between a near and a far bucket of cached terrain, so every verdict is
+same-frame. The previous-frame picture was built, measured and played first; it is cheaper and it
+works, but its verdicts are one frame old and the owner saw distant terrain flicker in the MIDDLE
+of the screen while turning. Mid-screen means staleness is not a boundary artefact a guard can
+contain, which is what the whole case for keeping it rested on. See G82 - the edge theory was
+assumed rather than asked, and a guard was built on it.
 
-### What is established
+**What carries over unchanged.** The pyramid, the cull shader, the classifier, the arena sizing,
+the telemetry, and `LodStaleDepthPolicy`'s projection/geometry/teleport guards. The split needs no
+staleness guards at all, so the turning guard added in 0.3.83 should be REMOVED rather than tuned,
+along with the camera-delta re-base (`LodHzbProjection.RebaseForCameraDelta`) if nothing else
+claims it.
 
-**The mechanism works on real hardware.** `cull: on: 8019 dispatches over 336798 commands.
-last frame's commands were culled on the card.` The cull shader compiles, the driver accepts a
-buffer used as both a compute target and a draw-command source, and the barrier holds. AMD RX
-9070 XT, GL 4.3.
+**What the split has to add.** Splitting the command list into a near and a far bucket; two cull
+dispatches and two multi-draw runs; and a second picture taken between them, while the drawer holds
+its bound state. The drawer's current all-or-nothing rule - every batch issues or none, because
+half a horizon is worse than a slow one - is the delicate part.
 
-**Suppression is same-frame, not frame-late.** The commands are built before anything draws, so
-the card classifies and zeroes slots in the same frame. There is no stale-verdict window and
-therefore no edge-flash class of bug to guard against.
+**What is already known about its cost.** A second full-screen copy and reduction, plus a mid-frame
+sync point: the card must finish the near draws before the depth can be read. That stall is the
+thing to watch on the owner's frame-time graph, since he reads hitch frequency off it and his
+stated goal is smoothness rather than throughput.
 
-**Widening was the right lever, and it is doing most of the work.** 404 sections hidden, 248 of
-which the old narrow width would have drawn - 61% of all hides. That lands inside the band the
-offline harness predicted for a 192-block view distance.
+**What is already known about its value.** From an ordinary hilltop with an open view, the picture
+taken before cached terrain hides NOTHING - 0% of 27,229 sections across every band - because
+vanilla's terrain is behind and below the camera. The end-of-frame picture hid 8% within a
+kilometre, 20% at 1-2k and 35% at 2-4k over 40,657 tests at the same spot, for 25.4us against
+22.1us. The split cannot reach the near bucket, so expect less than that; the offline model put a
+split at about an eighth of what is still drawn on this world, and roughly a quarter once
+re-weighted onto a grown one.
 
-**Visual correctness, once.** 0.3.69 and 0.3.70 both played with no missing terrain and no edge
-flashes.
+### The flicker is unexplained, and that should not be lost
 
-### The open question: it costs, and has not yet returned anything
+One cause was proposed - screen-edge clamping under rotation - and the owner's observation
+disproves it. No other mechanism has been established. The split removes staleness entirely, so
+this may never need diagnosing, but if anything similar appears afterwards the cause was never
+found and this note is the only record of that.
 
-**Roughly 115 us per frame**, inferred from 300 to 290 FPS with the pyramid on. The log accounts
-for 13.8 us of that on the CPU; the rest is card-side.
+### Phase 5's own gate is closed
 
-No measurable frame-rate gain from culling on versus off. **Two known reasons, neither a
-defect:**
+Culling is confirmed on hardware - `67008 dispatches over 1733784 commands, last frame's commands
+were culled on the card` - and the depth work costs about 25us of GPU time a frame against a
+2,083us frame. Its correctness half has been human-played across four viewpoints, including a
+bird's-eye view of 27,000 sections with no legitimate occlusion available, where it suppressed
+none.
 
-- The scene was CPU-bound at ~300 FPS. Culling removes card work; the CPU still builds every
-  command. G52 covers exactly this - a fragment-side saving measured in a CPU-bound scene
-  reports its cost and none of its benefit.
-- The occluder is a 192-block bubble, because the depth picture is captured after vanilla
-  terrain and before any cached section. The cached hills that would hide the most cannot
-  occlude anything until Phase 6.
+### Still owed from Phase 5
 
-This is neither a cost-gate pass nor a failure. It is unmeasured in a scene where a benefit
-could appear.
-
-### Owed before Phase 5's gate can close
-
-- **Attribute the 115 us.** GPU timers arm only under the benchmark harness, so a normal session
-  reports 0.0 us and the split between depth copy, mip reduction, classify and cull is unknown.
-  Making timing available in an ordinary session is the cheapest thing on this list.
-- **Measure in a GPU-bound view**, or the cost/benefit question cannot be answered at all.
-- **The rest of the visual matrix.** The gate lists stationary, motion, rotation, teleport,
-  vertical look, streaming, cave/structure and threshold-crossing; roughly "stood on a hill and
-  toggled" has been done.
 - **A non-AMD driver.** Compute writing into a buffer the driver then reads as draw commands is
   precisely where vendors differ, and only one has ever run this.
 - **Head-to-head against delayed occlusion.** Batching suspends the occlusion queries that were
-  worth 170 to 500 FPS in session 34. Until culling is measured against that, the switches
-  cannot become defaults.
+  worth 170 to 500 FPS in session 34. Until culling is measured against that, the switches cannot
+  become defaults.
+- `Culled` reports a single frame's state, so `.vhcull` can say "nothing was culled last frame" on
+  a frame where the indirect draw did not happen at all. Cosmetic, but it invites the wrong
+  conclusion.
+- The frontier curtain remains unaddressed: one missing neighbour walls a section's edge from its
+  surface down to bedrock, so a single open side drops its floor 110 blocks. Real drawn geometry,
+  and a candidate for its own work independent of the depth test.
 
-### Smaller and unverified
+### Cluster subdivision: parked, and now the largest remaining lever
 
-- `Culled` reports a single frame's state, so `.vhcull` can say "nothing was culled last frame"
-  on a frame where the indirect draw did not happen at all. Seen once in the 0.3.70 log while
-  dispatches were still climbing. Cosmetic, but it invites the wrong conclusion.
-- The command count in the indirect report includes zeroed commands, because counting drawn
-  ones would need a readback. The hidden fraction is available from the classifier instead.
-- The frontier curtain remains unaddressed: one missing neighbour walls a section's edge from
-  its surface down to bedrock, so a single open side drops its floor 110 blocks. That is real
-  drawn geometry and a candidate for its own work, independent of the depth test.
+Not discarded, and the case for it grew this session. At every viewpoint measured, the overwhelming
+majority of sections the test could NOT hide were refused for the same reason: part of the box
+overlaps open sky, so the test cannot prove the whole thing is behind anything. At one spot that
+was 100% of the not-hidden population. Splitting each section into 4x4 pieces would take a further
+13-34% of what remains depending on the view, and the in-game counter reports it every run.
 
-## Phase 6 is the phase that makes the depth work pay
-
-The depth picture is captured after vanilla draws and before any cached section, so the only
-occluder is whatever vanilla renders inside its own view distance. At the owner's settings that
-is a bubble of a couple of hundred blocks, and every large cached hill beyond it is invisible to
-the test.
-
-Measured offline over the owner's cache: extending the occluder from 64 to 512 blocks takes the
-hidden share from 38.2% to 61.1%. That is a bigger lever than either of the two the session
-spent its time choosing between, and it is the reason culling currently costs without returning.
-
-Not started. The offline harness already answers this question with the same code - the occluder
-radius is a parameter - so the design can be argued from measurement before any of it is built.
-
-### Cluster subdivision: parked, with a number
-
-Not discarded. After widening is adopted it still hides 13-15% of the pieces that remain -
-offline predicted 13.2%, the 0.3.70 log reported 14.8%. It is a real follow-on rather than an
-alternative, and the in-game counter reports it every run, so the case for starting the storage
-and draw rework can be re-read at any time rather than re-argued.
+That is a shape problem rather than a depth problem, and no amount of work on when the picture is
+taken addresses it.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 

@@ -321,6 +321,23 @@ internal sealed class LodRenderPathCoordinator : IDisposable
     public string VisiblePath => visible.Name;
     public LodRenderIdentityTracker Identities => identities;
 
+    /// <summary>
+    /// Bumped whenever drawable geometry STOPS being what it was: a mesh replaced, a section
+    /// removed, the set cleared, a new world.
+    ///
+    /// It exists for the previous-frame depth picture, which is the one consumer that reads a
+    /// record of the scene taken before those things happened. A section that drew last frame
+    /// and has since been evicted or re-meshed is still standing in that picture, at its old
+    /// distance, able to hide terrain that is now visible - and unlike every other way this
+    /// renderer can be wrong, that one REMOVES terrain rather than merely drawing too much.
+    ///
+    /// Deliberately NOT bumped for a first-time publish. New geometry is absent from the old
+    /// picture, so it can hide nothing, and the worst it costs is a saving never taken.
+    /// Counting it would refuse the cull right through a join, where hundreds of sections
+    /// arrive and not one of them is a hazard.
+    /// </summary>
+    public long GeometryRevision { get; private set; }
+
     public LodRenderPathCoordinator(
         ILodRenderPath visible, ILodRenderPath shadow, Action<string> warn)
     {
@@ -387,6 +404,9 @@ internal sealed class LodRenderPathCoordinator : IDisposable
             opaqueVertices, opaqueIndices, waterVertices, waterIndices,
             assumedCoveredSides, opaqueGeometry, heights);
 
+        // Asked before Commit, which is what makes it mean "there was already a mesh here".
+        if (identities.TryGet(sectionKey, out _)) GeometryRevision++;
+
         visible.Publish(publication);
         identities.Commit(identity);
         TryShadow(() => shadow.Publish(publication), "publication");
@@ -397,7 +417,7 @@ internal sealed class LodRenderPathCoordinator : IDisposable
     {
         AdvanceWorld(worldEpoch);
         visible.Remove(worldEpoch, sectionKey);
-        identities.Remove(worldEpoch, sectionKey);
+        if (identities.Remove(worldEpoch, sectionKey)) GeometryRevision++;
         TryShadow(() => shadow.Remove(worldEpoch, sectionKey), "removal");
     }
 
@@ -416,6 +436,7 @@ internal sealed class LodRenderPathCoordinator : IDisposable
     public void Clear(long worldEpoch)
     {
         identities.ValidateEpoch(worldEpoch);
+        GeometryRevision++;
         visible.Clear(worldEpoch);
         identities.Clear(worldEpoch);
         TryShadow(() => shadow.Clear(worldEpoch), "clear");
@@ -425,7 +446,11 @@ internal sealed class LodRenderPathCoordinator : IDisposable
     {
         bool changed = identities.WorldEpoch != worldEpoch;
         identities.BeginWorld(worldEpoch);
-        if (changed) TryShadow(() => shadow.Clear(worldEpoch), "world transition");
+        if (changed)
+        {
+            GeometryRevision++;
+            TryShadow(() => shadow.Clear(worldEpoch), "world transition");
+        }
     }
 
     void TryShadow(Action action, string operation)

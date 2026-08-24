@@ -25,6 +25,7 @@ public static class HzbFieldChecks
         ClippedTrianglesStayInRange(c);
         AnOccluderHidesWhatIsBehindIt(c);
         AnOccluderDoesNotHideWhatPokesOverIt(c);
+        ASurfaceInTheDepthBufferDoesNotHideItself(c);
     }
 
     // ---- clipper ----
@@ -174,6 +175,84 @@ public static class HzbFieldChecks
             c.False(LodHzbProjection.IsOccluded(bounds, pyramid, Width, Height, texels, out _),
                 "wider sampling at " + texels + " texels still does not hide it");
         }
+    }
+
+    /// <summary>
+    /// The assumption --occlude-all rests on, and the only one that is not shared with the
+    /// radius modes: there the occluder set and the tested set are disjoint by construction,
+    /// so a section can never meet its own depth. Modelling a pyramid built from the previous
+    /// frame's finished depth removes that separation - every drawn section is in the buffer,
+    /// including the one being tested - and if a surface could hide itself, the tool would
+    /// report near enough 100% hidden and the number would be pure artefact.
+    ///
+    /// The argument says it cannot: the reduction takes the FARTHEST depth in a region, a
+    /// surface's own pixels are never farther than its own box's near face, and the comparison
+    /// is strictly greater, so the exactly-coplanar case is a tie and a tie draws.
+    ///
+    /// The argument has a hole, and this check is what found it. Run at sixteen texels per
+    /// axis the tie breaks the wrong way and the surface DOES hide itself, because the two
+    /// sides of the comparison are computed differently - a box corner transformed in doubles
+    /// against a depth the rasteriser interpolated - and at a fine enough level no sliver of
+    /// background is pooled into the texel to separate them. So the property holds with any
+    /// real margin and at every width the harness reports, and fails by one ULP in the exactly
+    /// flat, exactly square-on case. Both halves are pinned below.
+    /// </summary>
+    static void ASurfaceInTheDepthBufferDoesNotHideItself(Check c)
+    {
+        var depth = new float[Width * Height];
+        Array.Fill(depth, 1f);
+
+        float[] vp = HzbField.ViewProjection(0, Width, Height, Fov, Far);
+
+        // One wall, and then the box that wall belongs to. The box is bounded generously in
+        // Z the way a real section box is - the wall is its near face, and there is nothing
+        // else in the scene.
+        RasterQuad(depth, vp, -400, -200, 100, 400, 10, 100);
+
+        var pyramid = HzbField.ChainPyramid.Build(depth, Width, Height);
+
+        LodHzbScreenBounds own = LodHzbProjection.Project(
+            vp, -400, -200, 100, 400, 10, 132);
+
+        c.True(own.Usable, "the occluder's own box projects usably");
+        foreach (int texels in new[] { 2, 4, 8 })
+        {
+            c.False(LodHzbProjection.IsOccluded(own, pyramid, Width, Height, texels, out _),
+                "a surface does not hide itself at " + texels + " texels per axis");
+        }
+
+        // Sixteen texels is where the argument runs out, and this is the finding rather than
+        // an oversight. The comparison is strictly greater, so an exactly coplanar surface is
+        // meant to be a tie and a tie draws. But the box's near depth is computed from a
+        // corner in doubles and the surface's depth is interpolated by the rasteriser, and at
+        // a fine enough level a texel lands wholly inside the surface with no sliver of
+        // background to raise its farthest value. The two numbers then differ in the last
+        // bits, the tie breaks the wrong way, and the surface hides itself by one ULP.
+        //
+        // It needs all three conditions at once - coplanar with its own box face, square to
+        // the camera, and a texel entirely inside it - which is why real terrain almost never
+        // meets it and a flat plateau viewed from straight above can. Pinned rather than
+        // fixed: the repair belongs in LodHzbProjection as a margin on the comparison, which
+        // is a change to shipped suppression, and this check exists to keep the reason for it
+        // from being lost. Recorded honestly - it says the slip HAPPENS, not that it is right.
+        c.True(LodHzbProjection.IsOccluded(own, pyramid, Width, Height, 16, out _),
+            "known slip: at 16 texels an exactly coplanar surface hides itself by one ULP");
+
+        // With any real margin between the box's near face and the drawn surface it stops,
+        // at every width, which is the property the field harness's --occlude-all mode is
+        // actually relying on.
+        RasterQuad(depth, vp, -400, -200, 100, 400, 10, 100);
+        var again = HzbField.ChainPyramid.Build(depth, Width, Height);
+        LodHzbScreenBounds ahead = LodHzbProjection.Project(
+            vp, -400, -200, 96, 400, 10, 132);
+        c.True(ahead.Usable, "a box whose near face stands in front of its surface projects usably");
+        foreach (int texels in new[] { 2, 4, 8, 16 })
+        {
+            c.False(LodHzbProjection.IsOccluded(ahead, again, Width, Height, texels, out _),
+                "a surface four blocks behind its own box face does not hide itself at "
+                + texels + " texels per axis");
+        }
+
     }
 
     // ---- helpers ----

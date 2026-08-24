@@ -13,6 +13,8 @@ public static class GpuRendererChecks
         GlStateOwnership(c);
         DelayedTimerRing(c);
         BenchmarkWiring(c);
+        GeometryRevisionTracksOnlyLosses(c);
+        DiscardedTimingNeverReachesTheTotal(c);
     }
 
     static void DepthCopyPolicy(Check c)
@@ -579,5 +581,140 @@ public static class GpuRendererChecks
             DrawIndirectBuffer = value;
             Operations.Add("draw-indirect-buffer");
         }
+    }
+
+    /// <summary>
+    /// What the previous-frame depth picture is told about the scene changing under it.
+    ///
+    /// The distinction being pinned here is a judgement call and the whole value of the guard
+    /// rests on it: geometry APPEARING is harmless, because an old picture simply does not
+    /// contain it and it can hide nothing. Geometry DISAPPEARING or being replaced is the
+    /// hazard - it is still standing in the old picture, at its old distance, able to hide
+    /// terrain that is now visible.
+    ///
+    /// Getting this backwards in either direction is silent. Counting arrivals would refuse
+    /// the cull right through a join, when hundreds of sections stream in and none is a
+    /// hazard, and the feature would look useless. Not counting losses would let it hide
+    /// terrain behind a hill that is no longer there.
+    /// </summary>
+    static void GeometryRevisionTracksOnlyLosses(Check c)
+    {
+        var legacy = new FakeRenderPath("legacy", ownsGlResources: true);
+        var shadow = new LodGpuShadowRenderPath();
+        var warnings = new List<string>();
+        using var coordinator = new LodRenderPathCoordinator(legacy, shadow, warnings.Add);
+        coordinator.Configure(new LodRenderPathSelection(
+            LodRenderPathPreference.Off, false, LodRenderPathSelection.LegacyPath, "test"));
+
+        // The world has to be established BEFORE the baseline is read. Entering a world is
+        // itself a loss - every picture from the previous one is void - so a coordinator that
+        // has never seen a world counts its first publication as a world transition, and
+        // reading the baseline before that would measure the transition rather than the
+        // publication.
+        coordinator.PrepareFrame(new LodRenderFrame(1, 0, 0, 100));
+        long start = coordinator.GeometryRevision;
+
+        coordinator.Publish(1, 100, null, null, 3, 6, 0, 0, 0);
+        coordinator.Publish(1, 200, null, null, 3, 6, 0, 0, 0);
+        coordinator.Publish(1, 300, null, null, 3, 6, 0, 0, 0);
+        c.Eq(start, coordinator.GeometryRevision,
+            "sections arriving for the first time do not disturb an older picture");
+
+        long afterArrivals = coordinator.GeometryRevision;
+        coordinator.Publish(1, 200, null, null, 9, 12, 0, 0, 0);
+        c.Eq(afterArrivals + 1, coordinator.GeometryRevision,
+            "replacing an existing section's mesh counts, because the old one is in the picture");
+
+        long afterReplace = coordinator.GeometryRevision;
+        coordinator.Remove(1, 300);
+        c.Eq(afterReplace + 1, coordinator.GeometryRevision,
+            "evicting a section counts");
+
+        long afterRemove = coordinator.GeometryRevision;
+        coordinator.Remove(1, 999);
+        c.Eq(afterRemove, coordinator.GeometryRevision,
+            "removing a section that was never there changes nothing");
+
+        long beforeEpoch = coordinator.GeometryRevision;
+        coordinator.PrepareFrame(new LodRenderFrame(2, 1, 0, 100));
+        c.True(coordinator.GeometryRevision > beforeEpoch,
+            "a new world invalidates every picture taken in the old one");
+
+        long beforeClear = coordinator.GeometryRevision;
+        coordinator.Clear(2);
+        c.Eq(beforeClear + 1, coordinator.GeometryRevision,
+            "clearing the set counts");
+
+        // Monotonic, because the picture's recorded value is compared for INEQUALITY. A
+        // counter that could return to an earlier value would let a stale picture be accepted
+        // after the scene had changed and changed back.
+        c.True(coordinator.GeometryRevision > start,
+            "the revision only ever moves forward");
+    }
+
+    /// <summary>
+    /// A timed pass that then did not happen must leave no trace in the average.
+    ///
+    /// The 2026-08-24 log reported the depth pyramid at 4.8us over 256,368 timed builds when
+    /// 50,733 builds had actually run; the rest were frames with the window minimised, each
+    /// contributing a near-zero sample, and they dragged a genuine 24us figure down fivefold.
+    /// The gate for the whole phase is that number, so a sample that means nothing is worse
+    /// than a missing one.
+    /// </summary>
+    static void DiscardedTimingNeverReachesTheTotal(Check c)
+    {
+        var api = new FakeTimerApi();
+        var ring = new LodGpuTimerRing(api, slotCount: 4);
+        LodPhaseCost cost = default;
+
+        // One real sample, so there is something to dilute.
+        c.True(ring.TryBegin(), "a free ring starts a query");
+        api.NextResultNanoseconds = 24_000;
+        ring.End();
+        ring.Poll(ref cost);
+        c.Eq(1L, cost.Calls, "the real build is counted");
+
+        // Then several that were timed and abandoned.
+        for (int i = 0; i < 3; i++)
+        {
+            c.True(ring.TryBegin(), "a discarded query still opens normally");
+            api.NextResultNanoseconds = 5;
+            ring.Discard();
+            ring.Poll(ref cost);
+        }
+
+        c.Eq(1L, cost.Calls,
+            "discarded builds add no samples, so the average stays an average of real work");
+
+        // And the slots they used are released rather than leaked, or the ring would stop
+        // timing altogether after a handful of minimised frames.
+        c.Eq(0, ring.PendingCount, "discarded slots are freed by the poll like any other");
+        c.True(ring.TryBegin(), "the ring still accepts work after discards");
+        api.NextResultNanoseconds = 30_000;
+        ring.End();
+        ring.Poll(ref cost);
+        c.Eq(2L, cost.Calls, "a later real build is still counted");
+    }
+
+    sealed class FakeTimerApi : ILodGpuTimerApi
+    {
+        int next = 1;
+        readonly Dictionary<int, long> results = new();
+        public long NextResultNanoseconds { get; set; } = 1000;
+
+        public int CreateQuery() => next++;
+        public bool TimeElapsedTargetIsFree() => true;
+        public void BeginTimeElapsed(int queryId) { }
+        public void EndTimeElapsed() { }
+
+        public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
+        {
+            if (!results.ContainsKey(queryId)) results[queryId] = NextResultNanoseconds;
+            nanoseconds = results[queryId];
+            results.Remove(queryId);
+            return true;
+        }
+
+        public void DeleteQuery(int queryId) => results.Remove(queryId);
     }
 }

@@ -50,6 +50,13 @@ public class VintageHorizonsConfig
     public bool GpuArenas = false;
     public bool IndirectDraw = false;
     public bool DepthCull = false;
+
+    /// <summary>
+    /// Take the depth picture at the end of the frame and cull against it on the next one, so
+    /// cached terrain can hide cached terrain. Saved alongside the others because it is the
+    /// same kind of choice: off for everyone by default, remembered for whoever turns it on.
+    /// </summary>
+    public bool LateDepthPicture = false;
 }
 
 /// <summary>
@@ -205,6 +212,10 @@ public class VintageHorizonsModSystem : ModSystem
                 {
                     renderer.DepthPyramidEnabled = true;
                     renderer.GpuCullEnabled = true;
+
+                    // Last, and inside the cull branch: where the picture is taken only
+                    // means anything to something that reads it.
+                    if (config.LateDepthPicture) renderer.LateDepthPyramid = true;
                 }
             }
         }
@@ -1965,6 +1976,7 @@ public class VintageHorizonsModSystem : ModSystem
 
                 bool wanted = (bool)args[0];
                 renderer.GpuCullEnabled = wanted;
+                renderer.ResetDepthPyramidInterval();
 
                 // Culling has no meaning without a pyramid to test against, and asking
                 // someone to know that is how a switch ends up on with nothing under it -
@@ -1980,6 +1992,51 @@ public class VintageHorizonsModSystem : ModSystem
                     + " Look for terrain that should be there and is not, especially while "
                     + "turning: that is the failure this can cause and the only one worth "
                     + "reporting. Turn it off in the same spot to compare.");
+            });
+
+        // The Phase 6 switch, and the reason it is a switch rather than a second build: the
+        // question it settles is a comparison, and a comparison whose two halves are different
+        // builds is one nobody can run while looking at the same hillside.
+        capi.ChatCommands.Create("vhlate")
+            .WithDescription("Take the depth picture at the end of the frame so distant cached terrain can hide other cached terrain. Needs .vhcull on. Off by default; remembered between sessions.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                if (args.Parsers[0].IsMissing)
+                {
+                    string status = renderer.DescribeLateDepthPyramid();
+                    LogReportLines("late", status);
+                    return TextCommandResult.Success("[VintageHorizons] depth picture " + status);
+                }
+
+                renderer.LateDepthPyramid = (bool)args[0];
+
+                // Always, not only when the value changed. Someone typing the command is
+                // starting a measurement, and the commonest way to run this comparison is to
+                // set the arrangement, play, read, set it again. If setting it to what it
+                // already is left the counters running, that second reading would cover both
+                // halves and look entirely reasonable.
+                renderer.ResetDepthPyramidInterval();
+
+                // Same coupling as .vhcull on, and for the same reason: moving where the
+                // picture is taken does nothing at all unless something reads it, and a switch
+                // sitting on with nothing underneath it is how a playtest gets spent measuring
+                // an instrument (G72).
+                if (renderer.LateDepthPyramid && !renderer.DepthPyramidEnabled)
+                    renderer.DepthPyramidEnabled = true;
+
+                SaveConfig();
+                LogReportLines("late", renderer.DescribeLateDepthPyramid());
+                return TextCommandResult.Success(
+                    "[VintageHorizons] depth picture " + renderer.DescribeLateDepthPyramid()
+                    + (renderer.LateDepthPyramid
+                        ? " The picture is one frame old, so the thing to watch for is distant "
+                          + "terrain blinking out while you turn quickly. Turn it off in the "
+                          + "same spot to compare."
+                        : ""));
             });
 
         capi.ChatCommands.Create("vhskip")
@@ -2062,11 +2119,14 @@ public class VintageHorizonsModSystem : ModSystem
                     return TextCommandResult.Error("[VintageHorizons] use: .vhhzb on | off | why");
 
                 renderer.DepthPyramidEnabled = word == "on";
+                renderer.ResetDepthPyramidInterval();
+
                 return TextCommandResult.Success(
                     $"[VintageHorizons] depth pyramid {(renderer.DepthPyramidEnabled ? "on" : "off")} "
                     + "(off by default, not saved). It copies the depth buffer and reduces it every "
                     + "frame, and nothing reads the result yet. Turn it on, play, and read the "
-                    + "hzb line in the log: the question is what it costs, not what it hides.");
+                    + "hzb line in the log: the question is what it costs, not what it hides. "
+                    + "GPU timing " + renderer.DescribeGpuTiming() + ".");
             });
 
         capi.ChatCommands.Create("vhheight")
@@ -2256,6 +2316,7 @@ public class VintageHorizonsModSystem : ModSystem
             config.GpuArenas = renderer.GpuShadowRequested;
             config.IndirectDraw = renderer.IndirectDrawEnabled;
             config.DepthCull = renderer.GpuCullEnabled;
+            config.LateDepthPicture = renderer.LateDepthPyramid;
         }
 
         capi.StoreModConfig(config, "vintagehorizons.json");

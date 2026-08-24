@@ -474,6 +474,120 @@ internal static class LodGpuArenaPolicy
         return Math.Clamp(bytes, MinimumCeilingBytes, MaximumCeilingBytes);
     }
 
+    /// <summary>
+    /// Bytes one cached section occupies across both arenas, vertices and indices together.
+    ///
+    /// Measured, not guessed: the 2026-08-24 client log reported 147 live sections holding
+    /// 118.98 MiB of vertices and 44.62 MiB of indices, which is 1.11 MiB each, and that figure
+    /// already includes the space replaced sections leave behind before reclamation. Rounded
+    /// down to an even mebibyte because the ceiling is a cap rather than a reservation - pages
+    /// are committed only as sections actually arrive - so the cost of aiming slightly low is a
+    /// refused section, while the cost of aiming high is nothing at all.
+    ///
+    /// It does not vary with level. A coarse section covers far more ground than a fine one but
+    /// carries the same 64x64 column grid, which is the whole point of the level scheme.
+    ///
+    /// Read as a floor rather than an average. That log was taken from an arena that was FULL
+    /// and refusing sections, so the 147 it held were the ones that happened to fit, not a fair
+    /// sample of what a section costs.
+    /// </summary>
+    internal const long EstimatedSectionBytes = 1024L * 1024;
+
+    /// <summary>
+    /// How much more the arena is asked to hold than <see cref="SectionsWithin"/> models.
+    ///
+    /// The model counts the sections a full circle of terrain would DRAW at one level each. The
+    /// arena holds what is RESIDENT, and that is a larger set for reasons that all point the
+    /// same way: residency extends past the drawn radius, coarse parents stay resident over
+    /// ground their finer children have already taken over, and replaced geometry occupies its
+    /// old space until reclamation catches up.
+    ///
+    /// Two, chosen by the owner rather than measured, and the honest description is a margin
+    /// rather than a prediction. The measurement that looked like it validated the bare model -
+    /// 560 modelled against 580 resident on 2026-08-24 - could not have done: that world was a
+    /// partly-explored corridor rather than a full circle, so a matching number meant the model
+    /// was already at the level of a SPARSE world and would fall short of a populated one. A
+    /// margin costs nothing here, because the ceiling is a cap and pages are committed only as
+    /// sections actually arrive.
+    /// </summary>
+    internal const double ResidencyHeadroom = 2.0;
+
+    /// <summary>
+    /// An unlimited draw distance still has to produce a number. Twice the last transition
+    /// threshold: past that point every section is the coarsest size the scheme has, so the
+    /// count per unit area stops falling and the honest answer is to size for a generous
+    /// horizon rather than an infinite one.
+    /// </summary>
+    internal const double UnlimitedDrawDistanceBlocks = 2 * 16384.0;
+
+    /// <summary>
+    /// Sections the level scheme puts inside a draw distance, over a full circle.
+    ///
+    /// Each level owns a ring, and its section count is that ring's area divided by the square
+    /// of its footprint. Because the footprint doubles at every transition and the transitions
+    /// double with it, the rings past the first hold roughly the same number of sections each -
+    /// which is why doubling the draw distance adds a fixed amount rather than quadrupling it,
+    /// until the last level is reached and the count starts growing with area again.
+    ///
+    /// Checked against reality: at the 3,000-block effective distance of the 2026-08-24 session
+    /// this returns about 561, and the client reported 580 sections resident.
+    /// </summary>
+    public static double SectionsWithin(double drawDistanceBlocks)
+    {
+        if (!double.IsFinite(drawDistanceBlocks) || drawDistanceBlocks <= 0) return 0;
+
+        double total = 0;
+        for (int level = 0; level <= LodWorld.MaxLevel; level++)
+        {
+            double inner = level == 0 ? 0 : LodWorld.ThresholdForLevel(level);
+            if (drawDistanceBlocks <= inner) break;
+
+            double outer = level == LodWorld.MaxLevel
+                ? drawDistanceBlocks
+                : Math.Min(drawDistanceBlocks, LodWorld.ThresholdForLevel(level + 1));
+
+            double footprint = LodSection.SectionBlocks << level;
+            total += Math.PI * (outer * outer - inner * inner) / (footprint * footprint);
+        }
+        return total;
+    }
+
+    /// <summary>
+    /// The ceiling a given draw distance deserves, so the pool can hold whatever the player's
+    /// own settings ask the mod to draw.
+    ///
+    /// A fixed 256 MiB was refusing 322 sections on 2026-08-24 and left only 35% of drawn
+    /// terrain in the batched path - so batching and culling could not affect two thirds of the
+    /// screen, and no measurement taken through it meant much. Deriving it from the setting puts
+    /// the decision where it belongs: someone who asks for terrain to the horizon gets a pool
+    /// that can hold it, and someone whose card cannot afford that turns the distance down,
+    /// which is a control they already have and understand.
+    ///
+    /// Costless when generous. The ceiling is a cap and pages are committed only as sections
+    /// arrive, so a distance nobody reaches never allocates a byte.
+    /// </summary>
+    public static long CeilingBytesFor(double drawDistanceBlocks, string? megabytesOverride)
+    {
+        // An explicit value still wins outright, so the benchmark harness can pin a pool size
+        // the way it pins every other path.
+        if (long.TryParse(megabytesOverride, out _)) return CeilingBytes(megabytesOverride);
+
+        double distance = drawDistanceBlocks > 0
+            ? drawDistanceBlocks
+            : UnlimitedDrawDistanceBlocks;
+
+        double bytes = SectionsWithin(distance) * EstimatedSectionBytes * ResidencyHeadroom;
+        if (!double.IsFinite(bytes) || bytes <= 0) return DefaultCeilingBytes;
+
+        long clamped = bytes >= MaximumCeilingBytes
+            ? MaximumCeilingBytes
+            : (long)bytes;
+
+        // Never below the old fixed default: a very short distance should not make the pool
+        // smaller than it has always been and turn this into a regression for someone.
+        return Math.Clamp(clamped, DefaultCeilingBytes, MaximumCeilingBytes);
+    }
+
     public static LodGpuArenaLimits VertexLimits(long ceilingBytes) =>
         new(VertexPageBytes, PageSets(ceilingBytes) * VertexPageBytes, ReclaimPerFrame);
 

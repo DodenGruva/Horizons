@@ -2,6 +2,37 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-24 - Phase 6 measured, built, played, and redirected
+
+- **Phase 5's cost and correctness halves are both closed.** Culling is confirmed on hardware
+  (`67008 dispatches over 1733784 commands, last frame's commands were culled on the card`), the
+  depth work costs about 25us of GPU time a frame, and the picture has been human-played across
+  four viewpoints - including a bird's-eye view of 27,000 sections with no legitimate occlusion
+  available, where it suppressed none. A non-AMD driver and the head-to-head against delayed
+  occlusion remain open and are recorded in `dev/TODO.md`.
+
+- **The GPU arena ceiling is derived from the player's draw distance.** The fixed 256 MiB was
+  refusing 322 sections and capping the batched path at 35% coverage; the owner measured 300 to
+  480 FPS after the change, at 100% coverage with zero failures. G81.
+
+- **GPU timing is available in an ordinary session**, and a pass that did not run no longer files
+  a near-zero sample. G80.
+
+- **The classify pass no longer discards the work it pays for.** It read 2 of 2,212 dispatches at
+  149us a frame; it now keeps its fence until signalled, never dispatches while a result is
+  outstanding, and costs about 1us. G79.
+
+- **Phase 6's option 3 (previous-frame depth) was built, measured and then rejected.** From an
+  ordinary hilltop it turned 0% hidden into 8/20/35% by band at the same cost, which is the
+  strongest result the phase produced. It was rejected anyway: the owner saw mid-screen flicker
+  while turning, and mid-screen means staleness is not containable by a guard. Phase 6 continues
+  with the near/far split. The pyramid, cull shader, classifier, arena sizing and most guards
+  carry over; the turning guard and the camera-delta re-base do not. G82.
+
+- **The offline harness gained the modes that made the choice arguable without a playtest**:
+  `--occlude-all`, `--motion b,d`, a self-occlusion meter, and a stale-versus-fresh safety
+  comparison whose floor is exactly zero by construction.
+
 ## 2026-08-23 — Phase 3b closed, Phase 4 answered, Phase 5 built and culling frames
 
 - **Phase 3b (section vertical extent) is complete and human-played.** Sections record how

@@ -27,6 +27,7 @@ public static class Program
         ("pure", "GPU indirect layout", GpuIndirectChecks.Run),
         ("pure", "depth pyramid", HzbChecks.Run),
         ("pure", "hzb projection", HzbProjectionChecks.Run),
+        ("pure", "stale depth policy", StaleDepthChecks.Run),
         ("pure", "hzb field harness", HzbFieldChecks.Run),
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),
