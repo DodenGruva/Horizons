@@ -162,6 +162,13 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>GPU time to copy the depth buffer and reduce every pyramid level.</summary>
     public LodPhaseCost GpuHzbCost => gpuTelemetry.HzbGpuCost;
+
+    /// <summary>
+    /// GPU time for the classification dispatch alone. Separate from the build because
+    /// only this one scales with the sampling width, and the width was widened ninefold
+    /// in fetch count; a combined figure could hide that completely.
+    /// </summary>
+    public LodPhaseCost GpuClassifyCost => gpuTelemetry.ClassifyGpuCost;
     public LodPhaseCost GpuWaterCost => gpuTelemetry.WaterCost;
     public int GpuTimerPendingResults => gpuTelemetry.PendingResults;
     public int GpuTimerUnavailableSlots => gpuTelemetry.UnavailableSlots;
@@ -687,6 +694,19 @@ public class LodTerrainRenderer : IRenderer
 
     /// <summary>Owns the vertex array and the per-frame command and record buffers.</summary>
     LodGpuIndirectDrawer? indirectDrawer;
+    LodGpuCullPass? cullPass;
+    readonly float[] cullViewProjection = new float[16];
+
+    /// <summary>
+    /// Whether depth verdicts may stop a cached section being drawn.
+    ///
+    /// OFF by default and not saved, like every switch that can change what reaches the
+    /// screen. This is the first one whose failure mode is missing terrain rather than a
+    /// slower frame, so it turns on only when someone asks for it, and only for that session.
+    /// It needs the indirect path: culling works by zeroing an indirect command, and the
+    /// established path has no commands to zero.
+    /// </summary>
+    public bool GpuCullEnabled { get; set; }
 
     /// <summary>
     /// Sections the indirect pass could not batch: the arenas do not hold them, or a
@@ -2576,6 +2596,16 @@ public class LodTerrainRenderer : IRenderer
         bool indirectWanted = IndirectDrawAvailable;
         if (indirectWanted != indirectDrawingThisFrame)
         {
+            // Entering the batched path also gives up the query objects themselves. They are
+            // allocated lazily, one GL query per section that was ever tested, and while
+            // batching is on not one of them is issued or read - so they are pure retention:
+            // driver objects, plus a dictionary the per-tick eviction sweep still walks. They
+            // come back lazily if suppression ever returns to the CPU.
+            //
+            // Released BEFORE the invalidation below, because the release clears the pending
+            // list too and there is nothing left to mark stale afterwards.
+            if (indirectWanted) DisposeTemporalOcclusionQueries();
+
             // Every previous-frame occlusion answer was taken under the other path, and
             // under batching no new ones are taken at all. Keeping them across the switch
             // would let a section that was hidden several seconds and one camera move ago
@@ -2853,6 +2883,9 @@ public class LodTerrainRenderer : IRenderer
             // .vhgpu can be run again while a drawer already exists - on to verify, for
             // instance. The mirror disposes its own predecessor; this one has to be told.
             indirectDrawer?.Dispose();
+            cullPass?.Dispose();
+            cullPass = new LodGpuCullPass(
+                message => capi.Logger.Warning(message));
             indirectDrawer = new LodGpuIndirectDrawer(
                 new LodGpuOpenGlDrawBackend(message => capi.Logger.Warning("{0}", message)),
                 message => capi.Logger.Warning("{0}", message));
@@ -2881,6 +2914,15 @@ public class LodTerrainRenderer : IRenderer
     LodGpuArenaMode? requestedShadowMode;
 
     /// <summary>
+    /// The arena mode someone last ASKED for, which is what gets saved.
+    ///
+    /// The request rather than the effective state, matching the chunk mask: a path the
+    /// capability probe refused this session reports itself off, and writing that back would
+    /// turn it off permanently on a machine where a driver update might enable it.
+    /// </summary>
+    public bool GpuShadowRequested { get; private set; }
+
+    /// <summary>
     /// Asks for the measurement shadow to be turned on or off. Called from a chat command,
     /// so it only records the request: capability probing, GL resource creation and teardown
     /// all belong to the render thread and happen at the start of the next frame.
@@ -2891,6 +2933,7 @@ public class LodTerrainRenderer : IRenderer
         if (parsed == LodGpuArenaMode.Invalid) return false;
 
         requestedShadowMode = parsed;
+        GpuShadowRequested = parsed != LodGpuArenaMode.Off;
         if (parsed != LodGpuArenaMode.Off) gpuTelemetry.RequestRuntimeValidation();
         return true;
     }
@@ -2916,6 +2959,9 @@ public class LodTerrainRenderer : IRenderer
             indirectDrawingThisFrame = false;
             indirectDrawer?.Dispose();
             indirectDrawer = null;
+            cullPass?.Dispose();
+            cullPass = null;
+            GpuCullEnabled = false;
             ShadowIndirectCommands = 0;
             ShadowIndirectBatches = 0;
             ShadowIndirectDropped = 0;
@@ -3055,7 +3101,7 @@ public class LodTerrainRenderer : IRenderer
             indirectProg.Use();
             ApplyFrameUniforms(
                 indirectProg, ApprovedViewDistance(), ref uploadedIndirectTintVersion);
-            drew = indirectDrawer.Draw(shadowBuilder);
+            drew = indirectDrawer.Draw(shadowBuilder, BuildCullRequest());
         }
         catch (Exception e)
         {
@@ -3087,6 +3133,36 @@ public class LodTerrainRenderer : IRenderer
         }
 
         DrawIndirectLeftovers();
+    }
+
+    /// <summary>
+    /// What this frame can offer the cull, or nothing at all.
+    ///
+    /// Every condition here is a reason to draw everything rather than a reason to guess. The
+    /// switch is off, the pyramid was not built this frame, the shader never compiled - each
+    /// returns a request the drawer will decline, and declining means every command the CPU
+    /// approved is drawn. There is deliberately no branch that culls on partial information.
+    ///
+    /// The matrix is copied from the frustum rather than kept from earlier in the frame,
+    /// because it must be the one the boxes were built against. The frustum was updated at
+    /// the top of this frame from the engine's own matrices and the boxes are camera-relative
+    /// against that same camera, so the two agree by construction.
+    /// </summary>
+    LodGpuCullRequest BuildCullRequest()
+    {
+        if (!GpuCullEnabled || cullPass == null) return default;
+        if (depthPyramid == null || !depthPyramid.Allocated) return default;
+        if (!LastHzbBuild.Built) return default;
+        if (!cullPass.Available && !cullPass.TryCreate()) return default;
+
+        frustum.CopyViewProjection(cullViewProjection);
+        return new LodGpuCullRequest(
+            cullPass,
+            cullViewProjection,
+            depthPyramid.TextureName,
+            depthPyramid.Width,
+            depthPyramid.Height,
+            depthPyramid.Levels);
     }
 
     /// <summary>
@@ -3228,6 +3304,36 @@ public class LodTerrainRenderer : IRenderer
         && shadowBuilder != null
         && gpuShadow.Mirror != null;
 
+    /// <summary>
+    /// What depth culling is doing, in the terms someone standing in the world can act on.
+    ///
+    /// It reports whether the cull actually RAN last frame, not merely whether it is switched
+    /// on. Those come apart constantly - no pyramid yet, the shader refused, the indirect path
+    /// is off - and a switch that says "on" while nothing happens is how a person concludes a
+    /// feature does nothing when it was never running.
+    /// </summary>
+    public string DescribeGpuCull()
+    {
+        if (!GpuCullEnabled) return "off: every section the CPU approves is drawn";
+        if (cullPass == null)
+            return "on, but idle: the regional arenas are not attached. Turn them on with .vhgpu on";
+        if (!IndirectDrawEnabled)
+            return "on, but idle: culling zeroes a batched draw command, and batching is off. "
+                + "Turn it on with .vhindirect on";
+        if (!DepthPyramidEnabled)
+            return "on, but idle: there is no depth pyramid to test against. "
+                + "Turn it on with .vhhzb on";
+        if (!cullPass.Available)
+            return "unavailable: " + (cullPass.LastFailure.Length > 0
+                ? cullPass.LastFailure
+                : "the cull shader has not been created");
+
+        string ran = indirectDrawer is { Culled: true }
+            ? "last frame's commands were culled on the card"
+            : "nothing was culled last frame";
+        return "on: " + cullPass.Describe() + ". " + ran + ".";
+    }
+
     public string DescribeIndirectDraw()
     {
         if (!indirectShaderOk) return "unavailable: the indirect shader variant did not compile";
@@ -3239,7 +3345,11 @@ public class LodTerrainRenderer : IRenderer
         return "on: " + indirectDrawer.Describe()
             + $". Last frame {LastIndirectBatches} multi-draws covered {LastIndirectCommands} "
             + $"sections, {LastIndirectLeftovers} drawn the established way. "
-            + "Delayed occlusion is suspended while this is on.";
+            + "Delayed occlusion is suspended while this is on"
+            + (GpuCullEnabled
+                ? "; depth culling has taken over suppression."
+                : ", and nothing has replaced it. Turn on .vhcull to suppress hidden terrain, "
+                    + "or leave it off to measure batching on its own.");
     }
 
     public int LastIndirectBatches { get; private set; }
@@ -3701,7 +3811,14 @@ public class LodTerrainRenderer : IRenderer
                 LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)),
                 (int)(originX / VanillaReadinessMask.ChunkBlocks),
                 (int)(originZ / VanillaReadinessMask.ChunkBlocks),
-                openEdges);
+                openEdges,
+                // The cull box carried alongside, taken from the same locals the frustum
+                // test above just used rather than recomputed. A second derivation could
+                // disagree with the first by a mesh span the pass no longer has, and a box
+                // that disagrees with the one the CPU judged is how the two paths end up
+                // drawing different terrain.
+                (float)boxMinY,
+                (float)boxMaxY);
         }
         return true;
     }
@@ -3731,6 +3848,22 @@ public class LodTerrainRenderer : IRenderer
             shadowBuilder.AddMissing();
             return false;
         }
+        // The facts were written by the SetupSectionTransform call for this same section, one
+        // step earlier in the walk. That coupling is ordering alone, and it used to be cheap
+        // to get wrong: a mismatch skewed a measurement nobody was acting on. It is not cheap
+        // now. The cull tests THIS record's box and zeroes THIS command, so stale facts would
+        // hide a section on the strength of a different section's position, and the symptom
+        // would be scattered terrain missing in some views - the exact fault this renderer
+        // has already spent two sessions chasing once.
+        //
+        // Fail open: hand it back as unmirrored, so it is drawn the established way and
+        // counted, rather than batched against a box that does not describe it.
+        if (lastSectionFacts.SectionKey != key)
+        {
+            shadowBuilder.AddMissing();
+            return false;
+        }
+
         shadowBuilder.Add(section, lastSectionFacts);
         return true;
     }
@@ -4002,8 +4135,15 @@ public class LodTerrainRenderer : IRenderer
         if (!PrepareClassifier()) return;
 
         LodPhaseStart phase = LodPhaseCost.Start(TrackPhaseAllocations);
+        bool timing = false;
         try
         {
+            // Timed apart from the pyramid build, because the two scale with different
+            // things and only this one scales with the sampling width. Started after
+            // PrepareClassifier for the same reason the build is: a one-time shader compile
+            // inside the clock reports a per-frame cost that never happens again.
+            timing = gpuTelemetry.BeginClassify();
+
             // The epoch these boxes were projected under. Verdicts arrive a frame later and
             // are compared against occlusion queries whose answers carry their own epoch;
             // without this the two can be from different views, and a camera turn between
@@ -4034,6 +4174,7 @@ public class LodTerrainRenderer : IRenderer
         }
         finally
         {
+            if (timing) gpuTelemetry.EndClassify();
             HzbCost.Add(phase);
         }
     }
@@ -4248,6 +4389,8 @@ public class LodTerrainRenderer : IRenderer
         report.AppendLine();
         report.Append($"cost: gpu {GpuHzbCost.AvgUs:0.0}us avg / {GpuHzbCost.MaxUs:0.0}us max");
         report.Append($" over {GpuHzbCost.Calls} timed builds");
+        report.Append($" | classify gpu {GpuClassifyCost.AvgUs:0.0}us avg / "
+            + $"{GpuClassifyCost.MaxUs:0.0}us max over {GpuClassifyCost.Calls} dispatches");
         report.Append($" | cpu {HzbCost.AvgUs:0.0}us avg / {HzbCost.MaxUs:0.0}us max");
 
         string byDistance = DescribeDepthPyramidByDistance();
@@ -4382,6 +4525,8 @@ public class LodTerrainRenderer : IRenderer
         renderPaths.Dispose();
         indirectDrawer?.Dispose();
         indirectDrawer = null;
+        cullPass?.Dispose();
+        cullPass = null;
         depthPyramid?.Dispose();
         depthPyramid = null;
         hzbClassifier?.Dispose();

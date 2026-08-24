@@ -74,7 +74,7 @@ internal sealed class LodHzbClassifier : IDisposable
     public static uint VerdictOf(uint packed) => packed & 0xFu;
     public static int HiddenSubCellsOf(uint packed) => (int)((packed >> 8) & 0xFFu);
 
-    /// <summary>True when a wider sampling footprint would have hidden what the narrow one could not.</summary>
+    /// <summary>True when the shipped sampling width hid a section the old narrow one would have drawn.</summary>
     public static bool HiddenByWideSamplingOf(uint packed) => ((packed >> 16) & 1u) != 0u;
 
     const int LocalSize = 64;
@@ -88,13 +88,18 @@ internal sealed class LodHzbClassifier : IDisposable
     // Internal rather than private so the check tier can hold it to the constants and
     // reserved words its C# twin cannot express. A GLSL compile is otherwise only
     // verifiable by running the game, which is how G70 reached hardware.
-    internal const string ComputeSource = @"#version 430
-
-layout(local_size_x = 64) in;
-
-layout(std430, binding = 0) readonly buffer Boxes { vec4 boxes[]; };
-layout(std430, binding = 1) writeonly buffer Results { uint results[]; };
-
+    /// <summary>
+    /// Everything both compute passes share: the uniforms, the verdict codes, the sampling
+    /// widths and the box test itself.
+    ///
+    /// Shared as one string rather than copied, for the same reason the terrain shader is one
+    /// body included by two wrappers: the measurement pass and the culling pass must agree
+    /// about what "hidden" means, and a second copy of TestBox would make that a review
+    /// responsibility instead of a property of the arrangement. A pass that culls terrain the
+    /// other pass would have called visible is exactly the bug nobody would find from a
+    /// screenshot.
+    /// </summary>
+    internal const string SharedSource = @"
 // Sizes arrive as four scalar ints, never as two ivec2. The engine Vec2i uniform overload
 // reaches glUniform2f, which an integer uniform rejects outright with GL_INVALID_OPERATION,
 // leaving the value silently at zero. That cost a whole session once already; gotcha G42.
@@ -133,14 +138,18 @@ const float MINIMUM_W = 1e-4;
 // Matches LodHzbProjection.SubdivisionsPerAxis.
 const int SUBDIVISIONS_PER_AXIS = 4;
 
-// The two sampling widths compared each frame. A box can only be hidden if it sits inside
-// the occluder by at least one texel of the level it is tested at, and the level is chosen
-// so the box spans at most this many texels - so a wider footprint picks a FINER level and
-// shrinks the clearance a box needs. Offline, on a synthetic ridge, eight found about a
-// quarter more hidden boxes than two. Whether that holds on real terrain is what the two
-// counts below are for.
+// A box can only be hidden if it sits inside the occluder by at least one texel of the level
+// it is tested at, and the level is chosen so the box spans at most this many texels - so a
+// wider footprint picks a FINER level and shrinks the clearance a box needs.
+//
+// TEXELS_PRIMARY is what the verdict is actually taken at. It became eight on 2026-08-23,
+// measured offline over the owner's cache at his real vanilla view distance rather than on a
+// synthetic ridge: of the sections two texels could not hide, eight hides a quarter.
+//
+// TEXELS_NARROW is the width the test used before that, kept only so the counter below can
+// still say what the change bought on real terrain. It decides nothing.
+const int TEXELS_PRIMARY = 8;
 const int TEXELS_NARROW = 2;
-const int TEXELS_WIDE = 8;
 
 // One box, one verdict. Shared by the section and by each of its sub-cells so a cell can
 // never be judged by looser rules than the whole - the measurement would be meaningless if
@@ -244,6 +253,18 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
     return VERDICT_VISIBLE;
 }
 
+";
+
+    /// <summary>
+    /// The measurement pass. Counts, and writes nothing anything draws.
+    /// </summary>
+    internal const string ComputeSource = @"#version 430
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Boxes { vec4 boxes[]; };
+layout(std430, binding = 1) writeonly buffer Results { uint results[]; };
+" + SharedSource + @"
 void main()
 {
     uint index = gl_GlobalInvocationID.x;
@@ -252,14 +273,15 @@ void main()
     vec3 lo = boxes[index * 2u].xyz;
     vec3 hi = boxes[index * 2u + 1u].xyz;
 
-    uint verdict = TestBox(lo, hi, TEXELS_NARROW);
+    uint verdict = TestBox(lo, hi, TEXELS_PRIMARY);
     uint hiddenCells = 0u;
     uint hiddenWide = 0u;
 
-    // The cheaper of the two candidate answers to the sky problem: keep the section whole
-    // and sample more texels at a finer level. Only asked when the narrow test failed, so
-    // the count is the extra this would win over what already happens.
-    if (verdict != VERDICT_OCCLUDED && TestBox(lo, hi, TEXELS_WIDE) == VERDICT_OCCLUDED)
+    // What widening bought, still counted so the change can be checked on real terrain
+    // rather than trusted. Same set of sections as before the switch - hidden now, not
+    // hidden at the old width - so the number means what it always meant. Only asked of
+    // sections the primary test hid, which is the only place the answer can differ.
+    if (verdict == VERDICT_OCCLUDED && TestBox(lo, hi, TEXELS_NARROW) != VERDICT_OCCLUDED)
     {
         hiddenWide = 1u;
     }
@@ -287,7 +309,11 @@ void main()
                 float x1 = cx == SUBDIVISIONS_PER_AXIS - 1 ? hi.x : lo.x + spanX * float(cx + 1);
                 float z1 = cz == SUBDIVISIONS_PER_AXIS - 1 ? hi.z : lo.z + spanZ * float(cz + 1);
 
-                if (TestBox(vec3(x0, lo.y, z0), vec3(x1, hi.y, z1), TEXELS_NARROW) == VERDICT_OCCLUDED)
+                // At the primary width, not the old narrow one: a cell must never be judged
+                // by looser rules than the whole section, or the two disagree about what
+                // hidden means and the headroom figure measures the difference between the
+                // rules rather than the value of a finer draw unit.
+                if (TestBox(vec3(x0, lo.y, z0), vec3(x1, hi.y, z1), TEXELS_PRIMARY) == VERDICT_OCCLUDED)
                 {
                     hiddenCells++;
                 }
@@ -298,6 +324,54 @@ void main()
     // Verdict in the low nibble, hidden sub-cell count in the second byte, and bit 16 set
     // when a wider sampling footprint would have hidden a section the narrow one could not.
     results[index] = verdict | (hiddenCells << 8) | (hiddenWide << 16);
+}
+";
+
+    /// <summary>
+    /// The culling pass. Same box test, same verdicts, but instead of counting it zeroes the
+    /// instance count of the command it was asked about - which is how a section stops being
+    /// drawn without disturbing any other command's slot.
+    ///
+    /// Two properties make this safe to point at real drawing, and both are structural rather
+    /// than checked at runtime:
+    ///
+    /// It only ever writes ZERO, and only for VERDICT_OCCLUDED. Every other verdict - visible,
+    /// background, and all four fail-open causes - leaves the slot exactly as the CPU wrote
+    /// it. So a section the CPU already decided not to draw stays undrawn, and a section the
+    /// test cannot judge stays drawn. There is no path here that turns drawing back ON, which
+    /// means this pass can lose a saving but cannot resurrect geometry the CPU suppressed for
+    /// reasons the GPU knows nothing about - ownership, seams, distance.
+    ///
+    /// The index is shared between boxes and commands. Box N belongs to command N because the
+    /// builder emits both from one loop; see LodGpuCullBox. If those ever come apart this
+    /// shader hides terrain based on some other section's position.
+    /// </summary>
+    internal const string CullSource = @"#version 430
+
+layout(local_size_x = 64) in;
+
+layout(std430, binding = 0) readonly buffer Boxes { vec4 boxes[]; };
+
+// The command buffer itself, as raw words. Five per command, matching
+// LodGpuIndirectCommand.StrideBytes; word 1 is instanceCount. Declared as uint[] rather than
+// a struct so the layout cannot drift from the 20-byte stride the driver reads.
+layout(std430, binding = 1) buffer Commands { uint commands[]; };
+" + SharedSource + @"
+const uint COMMAND_WORDS = 5u;
+const uint INSTANCE_COUNT_WORD = 1u;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+    if (index >= uint(sectionCount)) return;
+
+    vec3 lo = boxes[index * 2u].xyz;
+    vec3 hi = boxes[index * 2u + 1u].xyz;
+
+    if (TestBox(lo, hi, TEXELS_PRIMARY) == VERDICT_OCCLUDED)
+    {
+        commands[index * COMMAND_WORDS + INSTANCE_COUNT_WORD] = 0u;
+    }
 }
 ";
 
@@ -357,11 +431,11 @@ void main()
     long offScreen;
     long degenerate;
 
-    // The other candidate answer to the sky problem, and the cheaper one: keep sections
-    // whole and sample more texels at a finer level. Counted over exactly the sections the
-    // current narrow test could not hide, so it is directly comparable with the subdivision
-    // headroom above - one run now distinguishes the two levers.
-    long hiddenByWideSampling;
+    // What widening the sampling footprint actually bought: sections the shipped test hides
+    // that the old narrow one would not have. This was the question once; it is now a
+    // regression guard, because the widening is the shipped behaviour and a run where this
+    // collapses to zero means the change stopped working rather than that terrain moved.
+    long hiddenByWidening;
 
     public long SubCellsTested => subCellsTested;
     public long SubCellsHidden => subCellsHidden;
@@ -572,8 +646,17 @@ void main()
                 subCellsTested += LodHzbProjection.SubCellCount;
                 subCellsHidden += HiddenSubCellsOf(packed);
                 if (HiddenSubCellsOf(packed) == LodHzbProjection.SubCellCount) sectionsFullyCellHidden++;
-                if (HiddenByWideSamplingOf(packed)) hiddenByWideSampling++;
             }
+
+            // Deliberately outside that gate, and outside every other one.
+            //
+            // The shader sets this bit only for a section it HID at the primary width that
+            // the old narrow width would have drawn. Counting it under "not occluded" - where
+            // it used to live, correctly, when the flag meant the opposite - made the two
+            // conditions mutually exclusive, so the figure could only ever be zero. It read
+            // as "widening buys nothing" for a whole playtest. The flag already carries its
+            // own precondition, so the right number of gates here is none.
+            if (HiddenByWideSamplingOf(packed)) hiddenByWidening++;
 
             bool wasOccluded = false;
             switch (code)
@@ -704,7 +787,7 @@ void main()
         nearPlane = 0;
         offScreen = 0;
         degenerate = 0;
-        hiddenByWideSampling = 0;
+        hiddenByWidening = 0;
         Array.Clear(bandTested);
         Array.Clear(bandOccluded);
     }
@@ -719,20 +802,21 @@ void main()
     }
 
     /// <summary>
-    /// What a finer draw unit would add, over the sections the current one cannot hide.
-    /// Empty until something has been measured.
+    /// What a finer draw unit would still add on top of the widened test, and what the
+    /// widening itself is buying. Empty until something has been measured.
     /// </summary>
     public string DescribeSubdivision()
     {
         if (subCellsTested == 0) return "";
         int n = LodHzbProjection.SubdivisionsPerAxis;
         long sections = subCellsTested / LodHzbProjection.SubCellCount;
-        double wideShare = sections > 0 ? hiddenByWideSampling / (double)sections : 0.0;
 
-        return $"of {sections} sections the test could not hide - splitting each {n}x{n} would "
-            + $"hide {SubCellHiddenFraction:P1} of the pieces and {sectionsFullyCellHidden} "
-            + $"sections entirely; sampling wider instead would hide {hiddenByWideSampling} "
-            + $"of them whole ({wideShare:P1}), which costs no change to what is drawn";
+        return $"of {sections} sections this test could not hide - splitting each {n}x{n} would "
+            + $"still hide {SubCellHiddenFraction:P1} of the pieces and {sectionsFullyCellHidden} "
+            + $"sections entirely, which is what a storage and draw rework would buy. "
+            + $"Widening from {LodHzbProjection.NarrowTexelsPerAxis} to "
+            + $"{LodHzbProjection.DefaultTexelsPerAxis} texels is already hiding "
+            + $"{hiddenByWidening} sections that the old width would have drawn";
     }
 
     /// <summary>Hidden share per distance band, or an empty string when nothing was tested.</summary>

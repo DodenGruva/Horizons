@@ -303,6 +303,7 @@ public static class GpuRendererChecks
             Program = 7,
             GenericSsbo = 11,
             IndexedSsbo = 13,
+            IndexedSsbo1 = 37,
             DrawFramebuffer = 17,
             ReadFramebuffer = 19,
             ActiveTexture = LodGlStateGuard.Texture0 + 3,
@@ -321,6 +322,7 @@ public static class GpuRendererChecks
         api.Program = 101;
         api.GenericSsbo = 103;
         api.IndexedSsbo = 107;
+        api.IndexedSsbo1 = 109;
         api.DrawFramebuffer = 109;
         api.ReadFramebuffer = 113;
         api.ActiveTexture = LodGlStateGuard.Texture0 + 1;
@@ -335,6 +337,12 @@ public static class GpuRendererChecks
         c.Eq(11, api.GenericSsbo,
             "the incoming generic SSBO binding survives indexed restoration");
         c.Eq(13, api.IndexedSsbo, "the incoming indexed SSBO binding is restored");
+
+        // Slot 1 as well as slot 0. Both compute passes bind two buffers, and only slot 0
+        // used to be put back, so slot 1 kept pointing into a mod-owned buffer for the rest
+        // of the frame. The cull pass makes that a second site, and the buffer it leaves
+        // bound there is the one the driver reads draw commands from.
+        c.Eq(37, api.IndexedSsbo1, "the incoming indexed SSBO binding at slot one is restored");
         c.Eq(17, api.DrawFramebuffer, "the incoming draw framebuffer is restored");
         c.Eq(19, api.ReadFramebuffer, "the incoming read framebuffer is restored");
         c.Eq(LodGlStateGuard.Texture0 + 3, api.ActiveTexture,
@@ -346,6 +354,9 @@ public static class GpuRendererChecks
         c.True(api.Operations.IndexOf("indexed-ssbo")
             < api.Operations.IndexOf("generic-ssbo"),
             "indexed SSBO restoration occurs before generic restoration");
+        c.True(api.Operations.IndexOf("indexed-ssbo-1")
+            < api.Operations.IndexOf("generic-ssbo"),
+            "and so does slot one, since binding it also moves the generic binding");
     }
 
     static void DepthConvention(Check c)
@@ -494,6 +505,7 @@ public static class GpuRendererChecks
         public int Program;
         public int GenericSsbo;
         public int IndexedSsbo;
+        public int IndexedSsbo1;
         public int DrawFramebuffer;
         public int ReadFramebuffer;
         public int ActiveTexture;
@@ -512,6 +524,13 @@ public static class GpuRendererChecks
             IndexedSsbo = value;
             GenericSsbo = value;
             Operations.Add("indexed-ssbo");
+        }
+        public int GetIndexedShaderStorageBuffer1() => IndexedSsbo1;
+        public void BindIndexedShaderStorageBuffer1(int value)
+        {
+            IndexedSsbo1 = value;
+            GenericSsbo = value;
+            Operations.Add("indexed-ssbo-1");
         }
         public void BindGenericShaderStorageBuffer(int value)
         {

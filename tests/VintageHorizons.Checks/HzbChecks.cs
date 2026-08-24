@@ -24,6 +24,7 @@ public static class HzbChecks
         DownToOneTexel(c);
         ResultPacking(c);
         ShaderMirrorsItsTwin(c);
+        CullShaderCanOnlyStopADraw(c);
     }
 
     /// <summary>
@@ -120,9 +121,19 @@ public static class HzbChecks
             "the degenerate cause matches");
         c.True(source.Contains("hiddenCells << 8"), "and the sub-cell count is packed where C# reads it");
         c.True(source.Contains("hiddenWide << 16"), "and the wide-sampling flag where C# reads that");
-        c.True(source.Contains($"TEXELS_NARROW = {LodHzbProjection.DefaultTexelsPerAxis}"),
-            "the narrow sampling width matches the C# default");
-        c.True(source.Contains("TEXELS_WIDE = 8"), "and the wide one is the width measured offline");
+        c.True(source.Contains($"TEXELS_PRIMARY = {LodHzbProjection.DefaultTexelsPerAxis}"),
+            "the shader takes its verdict at the same width as the C# default");
+        c.True(source.Contains($"TEXELS_NARROW = {LodHzbProjection.NarrowTexelsPerAxis}"),
+            "and its comparison baseline is the width the test used before it was widened");
+
+        // The verdict and the sub-cells must be taken at the same width. They were both
+        // narrow before the switch and both primary after it; one moving without the other
+        // would make the headroom figure a comparison between two rules rather than a
+        // measurement of a finer draw unit.
+        c.True(source.Contains("TestBox(lo, hi, TEXELS_PRIMARY)"),
+            "the section verdict is taken at the primary width");
+        c.True(source.Contains("z1), TEXELS_PRIMARY)"),
+            "and each sub-cell is judged at that same width");
 
         // GLSL reserved qualifiers used as identifiers. `sample` reached hardware once and
         // failed the compile with a message naming SAMPLE; the C# twin could never catch it
@@ -305,5 +316,72 @@ public static class HzbChecks
             "including the sample planted in the corner every naive fold drops");
         c.Eq(LodHzbReference.LevelCount(width, height) - 1, steps,
             "and takes exactly the number of steps the level count promised");
+    }
+
+    /// <summary>
+    /// The cull shader is the first thing in this mod whose output a player can see the
+    /// absence of, so what matters is not that it hides the right things but that it cannot
+    /// hide the wrong ones.
+    ///
+    /// The safety argument is structural: it writes only the literal zero, only into the
+    /// instance-count word, and only under VERDICT_OCCLUDED. Nothing in it can raise an
+    /// instance count. That is what stops it resurrecting a section the CPU suppressed for a
+    /// reason the GPU knows nothing about - vanilla ownership, a mixed seam, the distance cap -
+    /// none of which appear in a depth test. These assertions hold that shape, because the
+    /// alternative is a GLSL review every time the file is touched.
+    /// </summary>
+    static void CullShaderCanOnlyStopADraw(Check c)
+    {
+        string source = LodHzbClassifier.CullSource;
+
+        c.True(source.Contains("#version 430"), "the cull shader declares the version compute needs");
+        c.True(source.Contains("buffer Commands"), "it binds the command buffer");
+        c.True(source.Contains("readonly buffer Boxes"), "and reads the boxes without writing them");
+
+        // The command layout it addresses has to be the one the driver reads.
+        c.True(source.Contains($"COMMAND_WORDS = {LodGpuIndirectCommand.StrideBytes / 4}u"),
+            "it strides by the real command size");
+        c.True(source.Contains(
+                $"INSTANCE_COUNT_WORD = {LodGpuIndirectCommand.InstanceCountOffset / 4}u"),
+            "and writes at the instance-count word the command format defines");
+
+        // The one write in the whole shader, and what guards it.
+        // Assignments INTO the array, which is "...] =". Matching a bare "=" also catches the
+        // buffer declaration, because "binding = 1" lives on that line.
+        string[] writes = source.Split((char)10)
+            .Where(line => line.Contains("commands[") && line.Contains("] ="))
+            .Select(line => line.Trim())
+            .ToArray();
+        c.Eq(1, writes.Length, "the cull shader writes to the command buffer exactly once");
+        c.True(writes[0].EndsWith("= 0u;", StringComparison.Ordinal),
+            "and the only value it ever writes is zero");
+        c.True(source.Contains("if (TestBox(lo, hi, TEXELS_PRIMARY) == VERDICT_OCCLUDED)"),
+            "guarded by the occluded verdict alone, so every fail-open cause still draws");
+
+        // The widening counter's precondition, pinned where it can be read next to the code
+        // that counts it. The classifier sets this bit only for a section it HID, so any
+        // caller that counts it under "not hidden" makes the two mutually exclusive and the
+        // figure structurally zero. That shipped, and reported "widening buys nothing" for a
+        // whole playtest before the log gave it away.
+        c.True(LodHzbClassifier.ComputeSource.Contains(
+                "if (verdict == VERDICT_OCCLUDED && TestBox(lo, hi, TEXELS_NARROW) != VERDICT_OCCLUDED)"),
+            "the widening flag is set only for sections the primary width hid");
+
+        // Both passes must judge at the same width, or the measurement and the culling are
+        // answering different questions and the log stops describing what is on screen.
+        c.True(source.Contains("TEXELS_PRIMARY"), "the cull pass tests at the primary width");
+        c.True(LodHzbClassifier.SharedSource.Contains("uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)"),
+            "and the box test itself lives in the source both passes include");
+        c.False(source.Replace(LodHzbClassifier.SharedSource, "").Contains("uint TestBox("),
+            "the cull shader does not carry a second copy of the box test");
+
+        // Group sizing has to cover every command; a rounding-down bug would leave the tail
+        // of the draw list untested, which reads as culling that mysteriously stops working
+        // on busy frames.
+        c.Eq(0, LodGpuCullPass.GroupsFor(0), "no commands need no workgroups");
+        c.Eq(1, LodGpuCullPass.GroupsFor(1), "one command still needs a whole workgroup");
+        c.Eq(1, LodGpuCullPass.GroupsFor(64), "a full workgroup is one workgroup");
+        c.Eq(2, LodGpuCullPass.GroupsFor(65), "and one command past it needs another");
+        c.Eq(157, LodGpuCullPass.GroupsFor(10000), "ten thousand commands round up, never down");
     }
 }

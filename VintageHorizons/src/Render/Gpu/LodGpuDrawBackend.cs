@@ -25,15 +25,27 @@ internal sealed class LodGpuOpenGlDrawBackend : ILodGpuDrawBackend
     /// </summary>
     const int RecordBinding = 1;
 
+    /// <summary>
+    /// Shader-storage bindings the cull pass reads and writes. Boxes in, commands out,
+    /// mirroring the classifier's own 0-in/1-out arrangement so the two compute passes do
+    /// not each invent a convention.
+    /// </summary>
+    public const int CullBoxBinding = 0;
+    public const int CullCommandBinding = 1;
+
     readonly ILodGlStateApi stateApi;
     readonly Action<string> warn;
     int vertexArray;
     int commandBuffer;
     int recordBuffer;
+    int boxBuffer;
     int commandCapacity;
     int recordCapacity;
+    int boxCapacity;
     LodGlStateSnapshot state;
+    LodGlStateSnapshot cullState;
     bool inPass;
+    bool inCull;
     bool reported;
 
     public LodGpuOpenGlDrawBackend(Action<string> warn, ILodGlStateApi? stateApi = null)
@@ -49,7 +61,8 @@ internal sealed class LodGpuOpenGlDrawBackend : ILodGpuDrawBackend
         vertexArray = GL.GenVertexArray();
         commandBuffer = GL.GenBuffer();
         recordBuffer = GL.GenBuffer();
-        if (vertexArray == 0 || commandBuffer == 0 || recordBuffer == 0)
+        boxBuffer = GL.GenBuffer();
+        if (vertexArray == 0 || commandBuffer == 0 || recordBuffer == 0 || boxBuffer == 0)
             return Report("the driver refused a vertex array or buffer name");
 
         LodGlStateSnapshot incoming = LodGlStateGuard.Capture(stateApi, LodGlStateMask.VertexArray);
@@ -149,6 +162,54 @@ internal sealed class LodGpuOpenGlDrawBackend : ILodGpuDrawBackend
             || Report($"uploading {data.Length} bytes of {what} raised {error}");
     }
 
+    public bool BeginCull(ReadOnlySpan<byte> boxes)
+    {
+        if (commandBuffer == 0 || boxBuffer == 0) return false;
+        if (boxes.Length == 0) return false;
+        if (inCull) return Report("a cull pass was begun while one was already open");
+
+        // Uploaded through COPY_WRITE like everything else here, so the box upload cannot
+        // disturb a binding the engine's renderer expects to still be its own.
+        LodGlStateSnapshot incoming = LodGlStateGuard.Capture(
+            stateApi, LodGlStateMask.CopyWriteBuffer);
+        bool uploaded;
+        try
+        {
+            uploaded = Stream(boxBuffer, boxes, ref boxCapacity, "cull boxes");
+        }
+        finally
+        {
+            Restore(incoming, "cull box upload");
+        }
+        if (!uploaded) return false;
+
+        cullState = LodGlStateGuard.Capture(stateApi, LodGlStateMask.ShaderStorageBuffer);
+        inCull = true;
+
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, CullBoxBinding, boxBuffer);
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, CullCommandBinding, commandBuffer);
+
+        ErrorCode error = GL.GetError();
+        return error == ErrorCode.NoError || Report("binding the cull pass raised " + error);
+    }
+
+    public bool EndCull()
+    {
+        if (!inCull) return true;
+        inCull = false;
+
+        // COMMAND_BARRIER_BIT and nothing else. This is the exact hazard: a shader wrote
+        // the buffer, and the next reader is the driver fetching indirect draw parameters
+        // out of it. Adding the other bits would hide a mistake about which hazard this is,
+        // and cost synchronisation nobody asked for.
+        GL.MemoryBarrier(MemoryBarrierFlags.CommandBarrierBit);
+
+        ErrorCode error = GL.GetError();
+        if (error != ErrorCode.NoError) return Report("the cull barrier raised " + error);
+
+        return Restore(cullState, "cull pass");
+    }
+
     public bool BeginDraw()
     {
         if (vertexArray == 0) return false;
@@ -219,17 +280,21 @@ internal sealed class LodGpuOpenGlDrawBackend : ILodGpuDrawBackend
     public void Dispose()
     {
         inPass = false;
+        inCull = false;
         try
         {
             if (commandBuffer != 0) GL.DeleteBuffer(commandBuffer);
             if (recordBuffer != 0) GL.DeleteBuffer(recordBuffer);
+            if (boxBuffer != 0) GL.DeleteBuffer(boxBuffer);
             if (vertexArray != 0) GL.DeleteVertexArray(vertexArray);
         }
         catch { /* Context teardown must continue. */ }
         commandBuffer = 0;
         recordBuffer = 0;
+        boxBuffer = 0;
         vertexArray = 0;
         commandCapacity = 0;
         recordCapacity = 0;
+        boxCapacity = 0;
     }
 }

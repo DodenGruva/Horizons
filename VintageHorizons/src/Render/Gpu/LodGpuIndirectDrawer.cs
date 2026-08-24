@@ -13,6 +13,23 @@ internal interface ILodGpuDrawBackend : IDisposable
     /// <summary>Replaces this frame's command and record buffers.</summary>
     bool UploadFrame(ReadOnlySpan<byte> commands, ReadOnlySpan<byte> records);
 
+    /// <summary>
+    /// Uploads this frame's cull boxes and binds them, with the command buffer, where a
+    /// compute pass can reach them. The command buffer is the SAME buffer the multi-draw
+    /// will source from - that is the whole point, since zeroing a slot is how a section is
+    /// dropped - so this is the one place in the mod where a buffer is written by a shader
+    /// and then read by the driver as commands.
+    /// </summary>
+    bool BeginCull(ReadOnlySpan<byte> boxes);
+
+    /// <summary>
+    /// Ends the cull and inserts the barrier that makes those writes visible to the
+    /// multi-draw. Without it the driver is free to read command data it fetched before the
+    /// compute pass ran, and the culling would appear to work intermittently - which is the
+    /// worst way for it to fail.
+    /// </summary>
+    bool EndCull();
+
     /// <summary>Captures the GL state the pass disturbs and binds what every batch shares.</summary>
     bool BeginDraw();
 
@@ -21,6 +38,27 @@ internal interface ILodGpuDrawBackend : IDisposable
 
     /// <summary>Puts the captured state back. Runs even if a batch failed.</summary>
     bool EndDraw();
+}
+
+/// <summary>
+/// Everything the cull step needs, gathered so the drawer can run it without knowing what a
+/// depth pyramid is. A default value - no pass - means this frame draws every command the CPU
+/// approved, which is the complete picture and the behaviour of every frame before Phase 5.
+/// </summary>
+internal readonly record struct LodGpuCullRequest(
+    ILodGpuCullDispatch? Pass,
+    float[]? ViewProjection,
+    int HzbTexture,
+    int ScreenWidth,
+    int ScreenHeight,
+    int Levels)
+{
+    /// <summary>Whether this frame has everything culling needs. Anything missing draws everything.</summary>
+    public bool Wanted =>
+        Pass is { Available: true }
+        && ViewProjection is { Length: >= 16 }
+        && HzbTexture != 0
+        && ScreenWidth > 0 && ScreenHeight > 0 && Levels > 0;
 }
 
 /// <summary>
@@ -63,6 +101,15 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
     public int LastCommands { get; private set; }
 
     /// <summary>
+    /// Whether the most recent frame's commands were culled on the card before drawing.
+    /// Reported rather than assumed, because a frame that quietly skipped the cull looks
+    /// exactly like one where nothing happened to be hidden.
+    /// </summary>
+    public bool Culled { get; private set; }
+
+    public long CullFrames { get; private set; }
+
+    /// <summary>
     /// Whether a pass may be handed to this drawer. Asked before the pass rather than
     /// during it: a path chosen halfway through a frame would draw some sections twice
     /// and some not at all.
@@ -73,7 +120,9 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
     /// Issues the built command list. Returns false when nothing was drawn, in which case
     /// the caller has already submitted, or will submit, that terrain some other way.
     /// </summary>
-    public bool Draw(LodGpuIndirectBuilder builder)
+    public bool Draw(LodGpuIndirectBuilder builder) => Draw(builder, default);
+
+    public bool Draw(LodGpuIndirectBuilder builder, in LodGpuCullRequest cull)
     {
         if (Failed) return false;
         if (builder.CommandCount == 0 || builder.Batches.Count == 0) return false;
@@ -88,6 +137,12 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
         if (!Try(() => backend.UploadFrame(builder.Commands, builder.Records),
                 "this frame's commands could not be uploaded"))
             return false;
+
+        // Between the upload and the draw, and nowhere else. The commands the CPU approved
+        // are on the card; the cull turns some of them off in place; the barrier inside
+        // EndCull makes those writes visible to the multi-draw that follows. Every failure
+        // here leaves the uploaded commands exactly as they were, which draws everything.
+        Culled = TryCull(builder, cull);
 
         if (!Try(backend.BeginDraw, "the indirect pass could not bind its state")) return false;
 
@@ -135,6 +190,65 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
         CommandsDrawn += commands;
         VisibleCommandsDrawn += builder.VisibleCommands;
         return true;
+    }
+
+    /// <summary>
+    /// Runs the cull, or does not, and never throws either way.
+    ///
+    /// The whole method is written so that every early return leaves the command buffer
+    /// holding exactly what the CPU uploaded. That is the only invariant that matters here:
+    /// a cull which does not happen costs performance, and a cull which half-happens - bound
+    /// but not barriered, dispatched but not finished - could let the driver read command
+    /// data mid-write. So once BeginCull succeeds, EndCull runs no matter what.
+    /// </summary>
+    bool TryCull(LodGpuIndirectBuilder builder, in LodGpuCullRequest cull)
+    {
+        if (!cull.Wanted) return false;
+        if (builder.Boxes.Length == 0) return false;
+
+        // Deliberately not through Try: a cull that cannot start is not a reason to abandon
+        // batching for the session. The established suppression is still in place and the
+        // frame is correct without this.
+        bool begun;
+        try
+        {
+            begun = backend.BeginCull(builder.Boxes);
+        }
+        catch
+        {
+            return false;
+        }
+        if (!begun) return false;
+
+        bool dispatched = false;
+        try
+        {
+            dispatched = cull.Pass!.Dispatch(
+                cull.ViewProjection!, cull.HzbTexture,
+                cull.ScreenWidth, cull.ScreenHeight, cull.Levels,
+                builder.CommandCount);
+        }
+        catch
+        {
+            dispatched = false;
+        }
+        finally
+        {
+            // The barrier lives in here, so it runs even for a dispatch that failed. A
+            // failed dispatch may still have written some slots before it stopped.
+            try
+            {
+                if (!backend.EndCull())
+                    Fail("the cull pass did not restore its state exactly");
+            }
+            catch (Exception e)
+            {
+                Fail("the cull pass did not restore its state exactly: " + e.Message);
+            }
+        }
+
+        if (dispatched) CullFrames++;
+        return dispatched;
     }
 
     bool Try(Func<bool> action, string what)

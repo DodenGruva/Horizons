@@ -17,6 +17,91 @@ public static class GpuIndirectChecks
         PagePairing(c);
         DrawerIssuesEveryBatch(c);
         DrawerStopsAfterAFailure(c);
+        CullBoxesFollowCommandOrder(c);
+        CullRunsBetweenUploadAndDraw(c);
+        ADeclinedCullStillDrawsEverything(c);
+    }
+
+    /// <summary>
+    /// Phase 5 rests entirely on this: the cull boxes must be indexed the same way the driver
+    /// indexes commands.
+    ///
+    /// The walk hands sections over front to back, but the builder regroups them into page
+    /// buckets, so slot N of the command list is usually NOT the Nth section added. Anything
+    /// that culls by zeroing a command slot reads box N to decide command N - so if the two
+    /// orders ever come apart, the renderer hides terrain based on a completely different
+    /// section's position. That failure draws the world correctly most of the time and
+    /// deletes scattered terrain the rest of it, which is close to undiagnosable from a
+    /// screenshot. It is cheap to pin here and expensive to find anywhere else.
+    /// </summary>
+    static void CullBoxesFollowCommandOrder(Check c)
+    {
+        var arenaBackend = new FakeIndirectBackend();
+        using var mirror = new LodGpuGeometryMirror(arenaBackend, 64L * 1024 * 1024);
+        var builder = new LodGpuIndirectBuilder();
+
+        // Deliberately interleaved so the bucketing cannot coincide with insertion order:
+        // two page groups, alternating, which is exactly the case that reorders.
+        long[] keys =
+        {
+            LodWorld.SectionKey(0, 0, 0),
+            LodWorld.SectionKey(0, 64, 64),
+            LodWorld.SectionKey(0, 1, 0),
+            LodWorld.SectionKey(0, 65, 64),
+            LodWorld.SectionKey(0, 2, 0),
+        };
+        foreach (long key in keys) mirror.Mirror(Publication(key));
+
+        builder.Begin();
+        foreach (long key in keys)
+        {
+            mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+            builder.Add(section, Facts(key));
+        }
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+
+        c.Eq(keys.Length, builder.CommandCount, "every section became a command");
+        c.Eq(builder.CommandCount * LodGpuCullBox.StrideBytes, builder.Boxes.Length,
+            "there is exactly one cull box per command");
+
+        // The record buffer is already known to be in command order - the base instance of
+        // command N is N - so it is the reference the boxes are checked against rather than
+        // the insertion order, which is the thing under suspicion.
+        ReadOnlySpan<byte> boxes = builder.Boxes;
+        ReadOnlySpan<byte> records = builder.Records;
+
+        for (int slot = 0; slot < builder.CommandCount; slot++)
+        {
+            float recordOriginX = LodGpuSectionRecord.ReadFloat(
+                records, slot, LodGpuSectionRecord.OriginOffset);
+            float recordOriginZ = LodGpuSectionRecord.ReadFloat(
+                records, slot, LodGpuSectionRecord.OriginOffset + 8);
+            float recordSize = LodGpuSectionRecord.ReadFloat(
+                records, slot, LodGpuSectionRecord.SectionSizeOffset);
+
+            float boxMinX = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MinOffset);
+            float boxMinZ = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MinOffset + 8);
+            float boxMaxX = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MaxOffset);
+            float boxMaxZ = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MaxOffset + 8);
+
+            c.Eq(recordOriginX, boxMinX, $"slot {slot}: the box starts where its record does in x");
+            c.Eq(recordOriginZ, boxMinZ, $"slot {slot}: the box starts where its record does in z");
+            c.Eq(recordOriginX + recordSize, boxMaxX, $"slot {slot}: the box spans the footprint in x");
+            c.Eq(recordOriginZ + recordSize, boxMaxZ, $"slot {slot}: the box spans the footprint in z");
+
+            // And the vertical extent is the mesh's own, not the bedrock-to-sky fallback the
+            // record's origin carries. Phase 3b exists precisely so this is the tighter one.
+            float boxMinY = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MinOffset + 4);
+            float boxMaxY = LodGpuCullBox.ReadFloat(boxes, slot, LodGpuCullBox.MaxOffset + 4);
+            c.True(boxMaxY > boxMinY, $"slot {slot}: the box has a real vertical extent");
+            c.Eq(30f, boxMaxY - boxMinY, $"slot {slot}: it is the span the section reported");
+        }
+
+        // The bucketing really did reorder, or this check proved nothing at all.
+        float firstSlotX = LodGpuCullBox.ReadFloat(boxes, 1, LodGpuCullBox.MinOffset);
+        c.True(builder.Batches.Count > 1, "the fixture produced more than one page group");
+        c.True(Math.Abs(firstSlotX - Facts(keys[1]).OriginRelX) > 0.5f,
+            "and slot 1 is not the second section added, so command order really did differ from insertion order");
     }
 
     /// <summary>
@@ -429,7 +514,11 @@ public static class GpuIndirectChecks
             LodWorld.ColumnStepBlocks(LodWorld.KeyLevel(key)),
             (int)(originX / VanillaReadinessMask.ChunkBlocks),
             (int)(originZ / VanillaReadinessMask.ChunkBlocks),
-            0);
+            0,
+            // A span distinct per key, so a box read from the wrong slot cannot coincide
+            // with the right answer.
+            BoxMinY: -70f + LodWorld.KeySx(key),
+            BoxMaxY: -70f + LodWorld.KeySx(key) + 30f);
     }
 
     /// <summary>
@@ -458,6 +547,24 @@ public static class GpuIndirectChecks
             Calls.Add("upload");
             UploadedCommandBytes = commands.Length;
             UploadedRecordBytes = records.Length;
+            return true;
+        }
+
+        public int UploadedBoxBytes;
+
+        /// <summary>Refuses to bind the cull, as a driver that cannot would.</summary>
+        public bool RefuseCull { get; init; }
+
+        public bool BeginCull(ReadOnlySpan<byte> boxes)
+        {
+            Calls.Add("cull-begin");
+            UploadedBoxBytes = boxes.Length;
+            return !RefuseCull;
+        }
+
+        public bool EndCull()
+        {
+            Calls.Add("cull-end");
             return true;
         }
 
@@ -516,5 +623,122 @@ public static class GpuIndirectChecks
         public long CreateFence() => nextFence++;
         public bool FenceSignaled(long fence) => true;
         public void DeleteFence(long fence) { }
+    }
+    /// <summary>
+    /// The cull has exactly one correct place in the frame: after the commands are on the
+    /// card and before anything draws from them.
+    ///
+    /// Earlier, and it would cull commands that are about to be overwritten by the upload.
+    /// Later, and the driver may already have fetched draw parameters that the cull then
+    /// changes underneath it. Neither shows up as a crash - both show up as culling that
+    /// works on some frames and not others, which is the hardest kind of fault to attribute.
+    /// </summary>
+    static void CullRunsBetweenUploadAndDraw(Check c)
+    {
+        var backend = new FakeDrawBackend();
+        var warnings = new List<string>();
+        using var drawer = new LodGpuIndirectDrawer(backend, warnings.Add);
+
+        drawer.Draw(BuiltList(out LodGpuGeometryMirror mirror), Cull());
+        mirror.Dispose();
+
+        int upload = backend.Calls.IndexOf("upload");
+        int cullBegin = backend.Calls.IndexOf("cull-begin");
+        int cullEnd = backend.Calls.IndexOf("cull-end");
+        int drawBegin = backend.Calls.IndexOf("begin");
+
+        c.True(upload >= 0, "the frame's commands were uploaded");
+        c.True(cullBegin > upload, "the cull binds only after the commands are on the card");
+        c.True(cullEnd > cullBegin, "the cull is closed, which is where its barrier lives");
+        c.True(drawBegin > cullEnd, "and nothing is drawn until after that barrier");
+        c.Eq(0, warnings.Count, "a clean cull warns about nothing");
+    }
+
+    /// <summary>
+    /// Every way the cull can decline has to leave a complete picture, because the commands on
+    /// the card are the ones the CPU approved and drawing all of them is the pre-Phase-5
+    /// behaviour. A cull that fails must cost performance and nothing else.
+    /// </summary>
+    static void ADeclinedCullStillDrawsEverything(Check c)
+    {
+        // No request at all: the switch is off, or there is no pyramid yet.
+        var backend = new FakeDrawBackend();
+        using (var drawer = new LodGpuIndirectDrawer(backend, _ => { }))
+        {
+            c.True(drawer.Draw(BuiltList(out LodGpuGeometryMirror mirror), default),
+                "a frame with no cull request still draws");
+            mirror.Dispose();
+            c.False(backend.Calls.Contains("cull-begin"), "and never begins a cull");
+            c.False(drawer.Culled, "and reports that nothing was culled");
+            c.True(backend.Batches.Count > 0, "every batch still went out");
+        }
+
+        // A backend that refuses to bind the cull. The draw must proceed regardless.
+        var refusing = new FakeDrawBackend { RefuseCull = true };
+        using (var drawer = new LodGpuIndirectDrawer(refusing, _ => { }))
+        {
+            c.True(drawer.Draw(BuiltList(out LodGpuGeometryMirror mirror), Cull()),
+                "a refused cull does not stop the frame drawing");
+            mirror.Dispose();
+            c.False(drawer.Culled, "the frame reports itself unculled");
+            c.True(refusing.Batches.Count > 0, "and every batch still went out");
+        }
+
+        // A cull request with nothing usable in it is declined without touching the backend.
+        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 4).Wanted,
+            "a request with no cull pass is not wanted");
+        c.False(new LodGpuCullRequest(null, null, 1, 100, 100, 4).Wanted,
+            "nor one with no matrix");
+        c.False(new LodGpuCullRequest(null, new float[16], 0, 100, 100, 4).Wanted,
+            "nor one with no pyramid texture");
+        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 0).Wanted,
+            "nor one with no pyramid levels");
+    }
+
+    /// <summary>A small built command list, and the mirror that must outlive it.</summary>
+    static LodGpuIndirectBuilder BuiltList(out LodGpuGeometryMirror mirror)
+    {
+        var arenaBackend = new FakeIndirectBackend();
+        mirror = new LodGpuGeometryMirror(arenaBackend, 64L * 1024 * 1024);
+        var builder = new LodGpuIndirectBuilder();
+
+        long[] keys = { LodWorld.SectionKey(0, 0, 0), LodWorld.SectionKey(0, 1, 0) };
+        foreach (long key in keys) mirror.Mirror(Publication(key));
+
+        builder.Begin();
+        foreach (long key in keys)
+        {
+            mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+            builder.Add(section, Facts(key));
+        }
+        builder.End(mirror.VertexArena, mirror.IndexArena);
+        return builder;
+    }
+
+    /// <summary>
+    /// A cull request backed by a fake dispatch, so the drawer takes the real culling path
+    /// without any GL. The ordering is then observable through the backend's call log.
+    /// </summary>
+    static LodGpuCullRequest Cull(FakeCullDispatch? pass = null) =>
+        new(pass ?? new FakeCullDispatch(), new float[16], HzbTexture: 1, ScreenW, ScreenH, Levels: 4);
+
+    const int ScreenW = 1920;
+    const int ScreenH = 1080;
+
+    /// <summary>Stands in for the compute program: records what it was asked to cull.</summary>
+    sealed class FakeCullDispatch : ILodGpuCullDispatch
+    {
+        public bool Available { get; init; } = true;
+        public bool Refuse { get; init; }
+        public int Dispatches;
+        public int LastCount;
+
+        public bool Dispatch(float[] viewProjection, int hzbTexture,
+            int screenWidth, int screenHeight, int levels, int count)
+        {
+            Dispatches++;
+            LastCount = count;
+            return !Refuse;
+        }
     }
 }

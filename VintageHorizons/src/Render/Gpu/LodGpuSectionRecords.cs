@@ -18,7 +18,9 @@ internal readonly record struct LodGpuSectionFacts(
     float ColumnBlocks,
     int MaskOriginX,
     int MaskOriginZ,
-    byte OpenEdges)
+    byte OpenEdges,
+    float BoxMinY = 0f,
+    float BoxMaxY = 0f)
 {
     public const byte OpenMinusX = 1 << 0;
     public const byte OpenPlusX = 1 << 1;
@@ -137,6 +139,45 @@ internal static class LodGpuIndirectCommand
 }
 
 /// <summary>
+/// One section's camera-relative cull box, in the layout the classifier's box buffer uses:
+/// two vec4, min then max, with the fourth component unused padding.
+///
+/// The box is built from the same numbers the CPU frustum test uses - origin, footprint, and
+/// the mesh's own vertical span - so a section culled on the GPU is culled against exactly
+/// the volume the established renderer would have judged. Building it from anything else
+/// would let the two paths disagree about where a section is, which is the one disagreement
+/// that shows up as terrain appearing and disappearing between them.
+/// </summary>
+internal static class LodGpuCullBox
+{
+    public const int StrideBytes = 32;      // two vec4
+    public const int MinOffset = 0;
+    public const int MaxOffset = 16;
+
+    public static void Encode(in LodGpuSectionFacts facts, Span<byte> destination)
+    {
+        if (destination.Length < StrideBytes)
+            throw new ArgumentException("short cull box", nameof(destination));
+
+        Write(destination, MinOffset, facts.OriginRelX);
+        Write(destination, MinOffset + 4, facts.BoxMinY);
+        Write(destination, MinOffset + 8, facts.OriginRelZ);
+        Write(destination, MinOffset + 12, 0f);
+
+        Write(destination, MaxOffset, facts.OriginRelX + facts.SectionSize);
+        Write(destination, MaxOffset + 4, facts.BoxMaxY);
+        Write(destination, MaxOffset + 8, facts.OriginRelZ + facts.SectionSize);
+        Write(destination, MaxOffset + 12, 0f);
+    }
+
+    public static float ReadFloat(ReadOnlySpan<byte> source, int slot, int offset) =>
+        BinaryPrimitives.ReadSingleLittleEndian(source[(slot * StrideBytes + offset)..]);
+
+    static void Write(Span<byte> destination, int offset, float value) =>
+        BinaryPrimitives.WriteSingleLittleEndian(destination[offset..], value);
+}
+
+/// <summary>
 /// One multi-draw: the page pair to bind and the run of consecutive commands that read
 /// from it.
 /// </summary>
@@ -167,6 +208,7 @@ internal sealed class LodGpuIndirectBuilder
     readonly Dictionary<long, int> bucketOfGroup = new();
     byte[] commands = [];
     byte[] records = [];
+    byte[] boxes = [];
     int bucketCount;
 
     public IReadOnlyList<LodGpuDrawBatch> Batches => batches;
@@ -192,6 +234,19 @@ internal sealed class LodGpuIndirectBuilder
 
     public ReadOnlySpan<byte> Records =>
         records.AsSpan(0, CommandCount * LodGpuSectionRecord.StrideBytes);
+
+    /// <summary>
+    /// One cull box per command, in COMMAND order, laid out as the classifier's box buffer
+    /// expects: two vec4 per section, camera-relative min then max.
+    ///
+    /// Command order is the whole point. The walk visits sections front to back, but this
+    /// builder regroups them into page buckets, so the order boxes were collected in during
+    /// the walk is not the order their commands end up in. Anything that culls by writing
+    /// into a command slot has to index boxes the same way the driver indexes commands, and
+    /// the only way to guarantee that is to emit them from the same loop.
+    /// </summary>
+    public ReadOnlySpan<byte> Boxes =>
+        boxes.AsSpan(0, CommandCount * LodGpuCullBox.StrideBytes);
 
     public void Begin()
     {
@@ -273,6 +328,9 @@ internal sealed class LodGpuIndirectBuilder
                 LodGpuSectionRecord.Encode(
                     entry.Facts,
                     records.AsSpan(CommandCount * LodGpuSectionRecord.StrideBytes));
+                LodGpuCullBox.Encode(
+                    entry.Facts,
+                    boxes.AsSpan(CommandCount * LodGpuCullBox.StrideBytes));
                 CommandCount++;
                 if (entry.Visible) VisibleCommands++;
                 else ZeroedCommands++;
@@ -287,7 +345,9 @@ internal sealed class LodGpuIndirectBuilder
     {
         int commandBytes = commandSlots * LodGpuIndirectCommand.StrideBytes;
         int recordBytes = commandSlots * LodGpuSectionRecord.StrideBytes;
+        int boxBytes = commandSlots * LodGpuCullBox.StrideBytes;
         if (commands.Length < commandBytes) commands = new byte[Math.Max(commandBytes, 4096)];
         if (records.Length < recordBytes) records = new byte[Math.Max(recordBytes, 16384)];
+        if (boxes.Length < boxBytes) boxes = new byte[Math.Max(boxBytes, 8192)];
     }
 }

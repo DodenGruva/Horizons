@@ -22,6 +22,8 @@ internal interface ILodGlStateApi
     int GetGenericShaderStorageBuffer();
     int GetIndexedShaderStorageBuffer0();
     void BindIndexedShaderStorageBuffer0(int value);
+    int GetIndexedShaderStorageBuffer1();
+    void BindIndexedShaderStorageBuffer1(int value);
     void BindGenericShaderStorageBuffer(int value);
     int GetDrawFramebuffer();
     int GetReadFramebuffer();
@@ -57,6 +59,13 @@ internal sealed class LodOpenGlStateApi : ILodGlStateApi
     }
     public void BindIndexedShaderStorageBuffer0(int value) =>
         GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 0, value);
+    public int GetIndexedShaderStorageBuffer1()
+    {
+        GL.GetInteger(GetIndexedPName.ShaderStorageBufferBinding, 1, out int value);
+        return value;
+    }
+    public void BindIndexedShaderStorageBuffer1(int value) =>
+        GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer, 1, value);
     public void BindGenericShaderStorageBuffer(int value) =>
         GL.BindBuffer(BufferTarget.ShaderStorageBuffer, value);
     public int GetDrawFramebuffer() => GL.GetInteger(GetPName.DrawFramebufferBinding);
@@ -84,6 +93,7 @@ internal readonly record struct LodGlStateSnapshot(
     int Program,
     int GenericShaderStorageBuffer,
     int IndexedShaderStorageBuffer0,
+    int IndexedShaderStorageBuffer1,
     int DrawFramebuffer,
     int ReadFramebuffer,
     int ActiveTexture,
@@ -102,6 +112,7 @@ internal static class LodGlStateGuard
         int program = 0;
         int generalSsbo = 0;
         int indexedSsbo = 0;
+        int indexedSsbo1 = 0;
         int drawFramebuffer = 0;
         int readFramebuffer = 0;
         int activeTexture = 0;
@@ -115,6 +126,7 @@ internal static class LodGlStateGuard
         {
             generalSsbo = api.GetGenericShaderStorageBuffer();
             indexedSsbo = api.GetIndexedShaderStorageBuffer0();
+            indexedSsbo1 = api.GetIndexedShaderStorageBuffer1();
         }
         if ((mask & LodGlStateMask.Framebuffers) != 0)
         {
@@ -140,7 +152,7 @@ internal static class LodGlStateGuard
         if ((mask & LodGlStateMask.DrawIndirectBuffer) != 0)
             drawIndirectBuffer = api.GetDrawIndirectBuffer();
 
-        return new(mask, program, generalSsbo, indexedSsbo, drawFramebuffer,
+        return new(mask, program, generalSsbo, indexedSsbo, indexedSsbo1, drawFramebuffer,
             readFramebuffer, activeTexture, texture2DUnit0, copyWriteBuffer, vertexArray,
             drawIndirectBuffer);
     }
@@ -155,7 +167,14 @@ internal static class LodGlStateGuard
             if ((state.Mask & LodGlStateMask.ShaderStorageBuffer) != 0)
             {
                 // BindBufferBase also changes the generic binding. Indexed must be first.
+                //
+                // Slot 1 as well as slot 0. Both compute passes in this mod bind two
+                // buffers - boxes in, results or commands out - and only slot 0 was ever
+                // put back, so slot 1 kept a pointer into a mod-owned buffer for the rest
+                // of the frame. Nothing has been seen to break, which is exactly why it is
+                // worth closing before a second site starts relying on the same luck.
                 api.BindIndexedShaderStorageBuffer0(state.IndexedShaderStorageBuffer0);
+                api.BindIndexedShaderStorageBuffer1(state.IndexedShaderStorageBuffer1);
                 api.BindGenericShaderStorageBuffer(state.GenericShaderStorageBuffer);
             }
             if ((state.Mask & LodGlStateMask.Framebuffers) != 0)
@@ -181,7 +200,8 @@ internal static class LodGlStateGuard
                 return Fail("program binding did not match its incoming value", out failure);
             if ((state.Mask & LodGlStateMask.ShaderStorageBuffer) != 0
                 && (api.GetGenericShaderStorageBuffer() != state.GenericShaderStorageBuffer
-                    || api.GetIndexedShaderStorageBuffer0() != state.IndexedShaderStorageBuffer0))
+                    || api.GetIndexedShaderStorageBuffer0() != state.IndexedShaderStorageBuffer0
+                    || api.GetIndexedShaderStorageBuffer1() != state.IndexedShaderStorageBuffer1))
                 return Fail("generic or indexed SSBO binding did not match its incoming value",
                     out failure);
             if ((state.Mask & LodGlStateMask.Framebuffers) != 0
