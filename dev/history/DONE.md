@@ -2,6 +2,26 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-23 — Phase 3b closed, Phase 4 answered, Phase 5 built and culling frames
+
+- **Phase 3b (section vertical extent) is complete and human-played.** Sections record how
+  tall their drawn geometry is and the established renderer culls with that instead of a
+  bedrock-to-sky box. Shipped 0.3.58; the open TODO section that tracked it is retired.
+- **Phase 4's open question is answered.** Wider sampling beats cluster subdivision by roughly
+  two to one and changes only the test. Measured offline over the owner's real cache at his
+  own view distance, two seeds, 128 views, and then confirmed in game: 248 of 404 hides exist
+  only because of the widening.
+- **The measurement moved off the owner's machine.** `HzbField` reconstructs the in-game
+  measurement from a cache database with no game process, in under a minute, and reproduced
+  the game's own 0-1k figure to within a point at matching settings.
+- **Phase 5 is built and has drawn culled frames.** Same-frame suppression - the card zeroes
+  indirect draw commands between their upload and the multi-draw - confirmed active on an RX
+  9070 XT. Its cost/benefit gate remains open; see `dev/TODO.md`.
+- **Fixes carried along:** the GL state guard restores both indexed SSBO slots rather than one;
+  the widening counter no longer sits behind a gate that made it structurally zero; `.vhcull`
+  writes its status to the log; the batched path releases the occlusion-query objects it had
+  been retaining unused.
+
 ## 2026-08-17 — documentation foundation
 
 - Reviewed the supplied source with a main-thread performance lens.

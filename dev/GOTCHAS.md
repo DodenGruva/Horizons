@@ -1511,6 +1511,52 @@ eight found about a quarter more hidden boxes.
 
 **Found:** 2026-08-23, session 43, from a failing offline fixture.
 
+### G75 - A flag whose precondition lives in the shader must not be re-gated by its reader
+
+**Trigger:** changing what a packed result bit means, and leaving the counter that reads it
+where it was.
+
+**Trap:** the classifier's wide-sampling bit was inverted so the shader set it only for
+sections it HAD hidden. The C# counter still incremented it only for sections that were NOT
+hidden, from when the bit meant the opposite. The two conditions became mutually exclusive, so
+the figure was structurally zero whatever the terrain did - and it read as "widening the
+sampling bought nothing", which is a plausible enough result to believe. It survived a whole
+playtest and was only caught because the owner's log printed the zero.
+
+**Do:** count a flag that already carries its own precondition with no gate at all, and pin the
+precondition in a check next to the code that reads it. A number that can only be zero is worse
+than a missing number: a missing one prompts a question.
+
+### G76 - A status line in a report that fires once cannot observe a switch flipped later
+
+**Trigger:** adding telemetry so a playtest reports its own configuration.
+
+**Trap:** the client's periodic report runs once, thirty seconds after world load, unless
+allocation telemetry is switched on. A cull-status line added to it could therefore only ever
+capture the state before anyone typed a command, so a playtest of a default-off feature
+recorded "off" every time and the run could not be attributed afterwards. This is G72 again in
+a new shape: the diagnostic existed, and still could not answer the question it was built for.
+
+**Do:** for anything a person switches on mid-session, log from the command handler itself -
+`.vhhzb` already did, `.vhcull` did not. Ask what the reporting cadence is before relying on a
+periodic line, and prefer event-driven evidence for state a human controls.
+
+### G77 - An offline harness must reproduce the whole approval chain, not just the test
+
+**Trigger:** rebuilding an in-game measurement offline so it stops costing playtests.
+
+**Trap:** two independent faults, both of which produced clean and believable tables. Omitting
+the renderer's frustum cull left the population as the whole world including everything behind
+the camera, which the projection then refused as near-plane crossings - 70% of the first run's
+"results". Placing each camera at the maximum surface of its own section stood the viewer on a
+hilltop every time, where nothing can be occluded by anything; that run reported 7.5% hidden
+against 46-88% in game.
+
+**Do:** reproduce every CPU decision that gates the population, and choose viewpoints the way
+the terrain is actually occupied - the centre column's surface, not the section's maximum. Then
+validate the harness against a real in-game figure at the same settings before trusting it;
+this one matched the game's 0-1k band to within a point once corrected.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

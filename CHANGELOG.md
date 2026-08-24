@@ -8,6 +8,41 @@ first.
 
 ## [Unreleased]
 
+**Distant terrain hidden behind hills can now actually be skipped.** Until now the mod worked
+out what was hidden and then drew it anyway - the answer arrived a frame too late to use. The
+graphics card now makes that decision and cancels the drawing in the same frame, so there is no
+window in which the world has moved on from the answer. Off by default, and remembered per
+install once switched on: `.vhgpu on`, `.vhindirect on`, `.vhcull on`.
+
+It is off by default deliberately. Switching to batched drawing gives up the older
+occlusion-query saving, and depth culling does not yet replace it in ordinary play, because
+cached terrain cannot occlude cached terrain until a later phase. Turning it on today costs a
+few frames and returns little on most views; that trade is the owner's to make, not a default.
+
+**The hidden-terrain test now looks at the depth picture in more detail.** It sampled a
+2x2 patch and now samples 8x8 at a correspondingly finer level, which lets a piece of terrain
+count as hidden when it clears the ridge by far less. Measured in game: of 404 pieces found
+hidden, 248 would have been drawn under the old setting - 61% of all hides come from this one
+change. Chosen by measuring both candidate fixes offline against a real terrain cache rather
+than by argument; the alternative, splitting terrain into smaller pieces, wins about half as
+much and would require rewriting how terrain is stored, built and drawn.
+
+**A whole class of testing moved off the owner's machine.** The measurements this work depends
+on now run against a real cache with no game process, in under a minute, and reproduce the
+game's own figures to within a point at the same settings. Three earlier playtests had been
+spent on instruments that turned out to be broken; the offline harness found two equivalent
+faults in its own first run in ten minutes.
+
+**Fixes.** A counter reporting what the sampling change bought was gated so that it could only
+ever read zero, and reported "no benefit" for a full playtest. Restoring the graphics state
+after the mod's compute work missed one of the two buffer slots it binds. `.vhcull` printed its
+status only to chat, which cannot be copied out of the game, so a test run could not afterwards
+be shown to have tested anything.
+
+Human-tested on one machine for visual correctness. Culling has not been shown to pay for
+itself, its cost is not yet broken down per stage, and no non-AMD driver has run it.
+
+
 **A proposed GPU-driven cached-terrain renderer now has a staged implementation plan.**
 The plan keeps the current GL 3.3 renderer as the complete fallback, then independently
 gates regional opaque buffers, indirect multi-draw, conservative HZB occlusion,
@@ -15,6 +50,41 @@ cached-on-cached depth strategies and packed quads before any default decision. 
 planning and verification artifact only; it changes no runtime rendering behavior.
 
 Source- and harness-tested; in-game stutter improvement still needs human confirmation.
+
+## [0.3.71]
+
+Packaged and installed; not yet run.
+
+**The GPU render path is remembered between sessions.** `.vhgpu`, `.vhindirect` and `.vhcull`
+are saved per install rather than retyped every session. They stay off by default for a new
+install, and restore in dependency order so a switch is never left on with nothing under it.
+`.vhcull on` also switches on the depth pyramid it needs - without that it sat idle, which is
+what cost the 0.3.69 test its meaning.
+
+## [0.3.70]
+
+Human-tested. Depth culling confirmed active for the first time.
+
+**Fixed a counter that could only ever read zero.** The figure reporting what the wider depth
+sampling bought was gated so that its two conditions were mutually exclusive; it reported "no
+benefit" for a full playtest. Corrected, it shows 248 of 404 hidden pieces exist only because
+of that change. **`.vhcull` now writes its status to the log**, since game chat cannot be
+copied out and a test run that cannot be shown to have tested anything is a wasted run.
+
+## [0.3.69]
+
+Human-tested; looked correct, but could not be attributed - see 0.3.70.
+
+**Depth verdicts can stop terrain being drawn** (off by default). The card cancels the drawing
+of hidden pieces in the same frame the decision is made, rather than a frame later, so the
+world cannot move on from the answer in between. Every failure path draws everything.
+
+**The hidden-terrain test samples eight texels per axis instead of two**, chosen by measuring
+both candidate fixes offline against a real terrain cache.
+
+Also: restoring graphics state after the mod's compute work now covers both buffer slots it
+binds rather than one, and the batched path releases the occlusion-query objects it had been
+retaining unused for whole sessions.
 
 ## [0.3.68]
 

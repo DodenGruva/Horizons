@@ -3,11 +3,12 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-23
-**Mod version:** `0.3.68` source metadata and packaged artifact; `0.3.66` is what the
-owner last ran and `0.3.58` the last played through fully (`0.2.1` is the released version; the next changed playable
-artifact must increment exactly once to `0.3.69`)
+**Mod version:** `0.3.71` source metadata, packaged and installed; `0.3.70` is what the owner
+last ran, with GPU depth culling confirmed active, and `0.3.58` the last played through fully
+(`0.2.1` is the released version; the next changed playable artifact must increment exactly
+once to `0.3.72`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `64` C# files under `VintageHorizons/src`
+**Source files:** `65` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -19,19 +20,57 @@ source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
 `d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
 tracking `origin/render-overhaul`. The work now comprises the Phase 0 telemetry/capability
-slice, Phase 1's legacy-only renderer boundary, Phase 2's regional arenas, Phase 3 complete
-in source (the measured draw-call gate and, since 0.3.53, the visible multi-draw behind
-`.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
-and **Phase 4 built through shadow classification** (0.3.60-0.3.65): a private depth pyramid,
-a conservative projection and test, GPU classification, and a comparison against the delayed
-occlusion queries. Nothing in Phase 4 can affect drawing; its cost gate passes and its
-correctness gate is open.
+slice, Phase 1's legacy-only renderer boundary, Phase 2's regional arenas, Phase 3 complete and
+played (batched multi-draw behind `.vhindirect`), **Phase 3b complete and human-played** (real
+per-pass section bounds, 0.3.58), **Phase 4 complete** - its open question answered by offline
+measurement and the chosen fix shipped - and **Phase 5 built and drawing culled frames**
+(0.3.69-0.3.71).
 
-The indirect shader variant **does compile on the owner's hardware** - the 2026-08-22 client
-log shows `lodterrainindirect` loading cleanly on the reload that carries mod assets. The
-errors earlier in that log are the mod's own pre-asset first attempt and are expected (G68,
-fixed in 0.3.59). Whether `.vhindirect on` was ever actually enabled is not established;
-`.vhgpu on` alone draws nothing differently.
+**Depth verdicts now stop terrain being drawn.** The card classifies each section and zeroes its
+indirect draw command between the command upload and the multi-draw, so suppression is
+same-frame rather than a frame late; there is no stale-verdict window and therefore no
+edge-flash class of defect to guard against. Confirmed active in the owner's 0.3.70 log - `8019
+dispatches over 336798 commands, last frame's commands were culled on the card` - on an RX 9070
+XT under GL 4.3. The shader compiles, the driver accepts a buffer used as both a compute target
+and a draw-command source, and the `COMMAND_BARRIER_BIT` hand-off holds.
+
+Every failure path draws everything: no switch, no pyramid, a refused binding, a failed
+dispatch, or a shader that never compiled all leave the commands exactly as the CPU uploaded
+them. The cull shader writes only the literal zero, only into the instance-count word, and only
+under an occluded verdict, so it can lose a saving but can never resurrect geometry the CPU
+suppressed for ownership, seam or distance reasons the GPU knows nothing about.
+
+**Phase 5's correctness half is human-tested once and its cost half is open.** Two sessions
+reported no missing terrain and no edge flashes at a 192-block view distance. Culling has not
+been shown to pay for itself: roughly 115 us per frame for pyramid, classify and cull, against
+no measurable frame-rate gain - in a scene that was CPU-bound at ~300 FPS and whose occluder is
+a 192-block bubble. Neither a cost-gate pass nor a failure; it has not been measured where a
+benefit could appear. The remaining visual matrix, a non-AMD driver, and the head-to-head
+against delayed occlusion are all unrun.
+
+**The hidden-terrain test samples eight texels per axis instead of two** (0.3.69), chosen by
+measuring both candidate fixes offline against the owner's own cache rather than by argument.
+In game it accounts for 248 of 404 hides - 61% of all suppression. Cluster subdivision is
+parked rather than discarded, carrying a measured 13-15% follow-on that the in-game counter
+reports every run.
+
+**A class of testing moved off the owner's machine.** `HzbField` reconstructs the in-game
+measurement from a real cache with no game process in under a minute, and reproduces the game's
+own 0-1k figure to within a point at matching settings. Its own first run was wrong twice - a
+missing frustum cull and hilltop camera placement - and both faults produced believable tables;
+offline that cost ten minutes rather than two playtests.
+
+The indirect shader variant compiles on the owner's hardware and **has now drawn frames**: the
+2026-08-23 log shows it loading on the reload that carries mod assets, and the cull line
+confirms batched commands being culled and drawn. The shader errors earlier in that log are the
+mod's own pre-asset first attempt and are expected (G68, reported since 0.3.59).
+
+**The GPU path switches are saved per install since 0.3.71 and remain off by default.** They
+were deliberately not defaulted on: batching suspends the delayed occlusion queries that were
+worth 170 to 500 FPS in session 34, and culling does not yet replace that saving. Saving the
+setting means someone who has chosen the path keeps it without shipping the trade to everyone.
+`.vhcull on` now also switches on the depth pyramid it depends on - without that coupling the
+switch sat idle, which cost the 0.3.69 playtest its attribution.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 

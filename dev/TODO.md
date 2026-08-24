@@ -25,195 +25,110 @@ is a wiring bug rather than a transcription slip. The `sky` correction above is 
 part of that body a human has not accepted yet - if it changes, both variants change with
 it, which is the point of the arrangement.
 
-## Batched terrain drawing exists and has never drawn a frame
+## Batched terrain drawing has drawn frames; its A/B has not been run
 
-Phase 3 of `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` is complete in source as of
-0.3.53: opaque cached terrain can be drawn from the regional arenas with one multi-draw per
-page set instead of one call per section. It is off by default and needs `.vhgpu on` first.
-The plan carries the design, the two deliberate departures from it, and what was built.
+Phase 3 of `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` is complete in source and, since
+0.3.69/0.3.70, has been played. Opaque cached terrain draws from the regional arenas with one
+multi-draw per page set instead of one call per section, behind `.vhgpu on` and
+`.vhindirect on`, saved per install since 0.3.71.
 
-**Question 1 is answered: the indirect shader variant compiles.** The 2026-08-22 client
-log on an RX 9070 XT (GL 4.3 core, GLSL 4.60) shows `Loaded Shaderprogramm for render pass
-lodterrainindirect` with no error following, on the reload that carries mod assets. The
-errors earlier in the same log are the mod's own first, pre-asset attempt and are expected;
-see G68, fixed in 0.3.59. The rest is still unverified, because none of it can be checked
-without a GPU. In order of what a single session in game would settle:
+**Established:** the indirect shader variant compiles on the owner's hardware (RX 9070 XT, GL
+4.3 core, GLSL 4.60), the batches draw, and the picture was reported correct across two
+sessions. The measured draw-call collapse from session 39 stands: 87-182 opaque submissions
+per frame become 8-19 multi-draw batches on the frozen route.
 
-1. **Was `.vhindirect on` ever actually run?** The 0.3.58 session enabled `.vhgpu on` at
-   two points - the log records the arena shadow attaching both times - but `.vhgpu` alone
-   draws nothing differently by design, and command results go to chat rather than the log,
-   so nothing establishes that the visible path was ever switched on. The owner reported no
-   visual difference, which is consistent with the batches never having drawn. Re-run it
-   as `.vhgpu on` then `.vhindirect on`, and confirm from `.vhgpu` that batches are being
-   issued before reading the picture.
-2. **Is the picture identical?** `.vhindirect off` against `on` in the same settled view,
-   then again while moving. Geometry, colour, fog, the ownership seam with vanilla, the
-   open-edge dissolve, snow line and tint. This is the phase's visual gate and only a
-   person can close it.
-3. **Does CPU submission time actually fall?** `DrawCost` is timed per frame already but no
-   absolute figure was ever recorded, so the off side of the same session is the baseline.
-   Both sides must have delayed occlusion off, or the comparison carries two changes at
-   once. As a scripted pair over `bench/routes/bodanboys-gpu-baseline.txt`, with everything
-   else copied from the session-39 configuration:
+**Still owed:** the comparison the phase exists for. Batching suspends the delayed occlusion
+queries, which were worth 170 to 500 FPS on a hill view in session 34, so the honest A/B is
+batching-plus-culling against the established path with occlusion queries - not batching
+against itself. Nothing has run that, which is why the switches are saved rather than
+defaulted on.
 
-   ```
-   -GpuRenderer shadow -GpuArena on -GpuArenaMb 1792 -GpuArenaPageMb 32 -GpuIndirect 0
-   -GpuRenderer shadow -GpuArena on -GpuArenaMb 1792 -GpuArenaPageMb 32 -GpuIndirect 1
-   ```
+## Phase 5 drew its first culled frame; nothing has shown it pays for itself
 
-   plus `VINTAGEHORIZONS_TEMPORAL_OCCLUSION=0` on both. Read `draw` from the render
-   p95/p99/max line, and check the coverage figure before reading any batch count.
-4. **Does open-horizon GPU time regress?** Same route, `GpuOpaqueCost`.
-
-**Known and deliberate, not defects:** delayed occlusion is suspended while batching is on
-(a per-section query has to wrap that section's own draw, and a batched section has none);
-sections the arenas do not hold are drawn the established way in the same frame, so partial
-coverage costs submissions rather than terrain; and a pass where any batch failed redraws
-its whole list the established way, then never asks that drawer again this session.
-
-**If the picture differs, the useful report is which of these it is:** wrong position or
-size for whole sections (the record's origin), wrong colour variation that moves with the
-camera (the stable noise origin), a wrong ownership seam near loaded chunks (the integer
-chunk origin), or wrong dissolve at the edges of explored area (the open-edge flags). Those
-are the four values that moved from uniforms into the record, and each fails in its own way.
-
-## Sections have no vertical extent, and the depth work depends on it
-
-Added to the plan on 2026-08-22 as **Phase 3b**, before Phase 4, after the owner asked what
-the cheapest way to eliminate blocked terrain would be.
-
-The renderer culls each section with a box spanning the whole world vertically, because
-sections do not record how tall the terrain inside them is. For the frustum test that is
-harmless - the side planes do the work, and the code says so. For a depth test it is close
-to fatal: a bedrock-to-sky column is hidden only when the occluder covers the entire column,
-so Phase 4 would build a pyramid, run every step of the classification, reject almost
-nothing, and read as "HZB does not pay for itself" when the real fault was its input.
-
-The plan already contained the idea, in the CPU section record's field list: "use actual
-mesh bounds when cheaply available, otherwise the full world height and accept weaker
-occlusion". Nothing was made responsible for producing them, no gate required them, and
-"weaker occlusion" was doing a great deal of work in that sentence.
-
-**Cost is close to nothing.** `LodMesher` already computes every Y it emits, so the bounds
-are a running min/max over work it does anyway, and they describe what is drawn rather than
-what is stored. They ride with the mesh through publication into the section records. No
-cache blob, protocol or schema change; an old cache derives them on load like any other.
-
-**It pays before any of the GPU work does**, which is the unusual part: the established
-renderer would immediately stop keeping sections that a real box rejects when looking up or
-down. That makes it testable on its own, with the fast path off.
-
-**Built in 0.3.58 and unseen.** The mesher tracks minimum and maximum emitted Y per pass,
-the bounds ride with the mesh into the live section record, and the established renderer's
-frustum box uses them instead of the world height. 157 mesher assertions pin the
-one-directional gate: the reported span is exactly the range of the vertices the mesher
-emitted, over every face direction, both passes, LODs 0-3, the bedrock and build-limit
-limits, an empty mesh and a single flat quad. Unset bounds fall back to the full-height
-box, so a missing measurement can only draw too much.
-
-The GPU section record was deliberately left alone; the reason is in the plan's Phase 3b.
-
-**The visual gate is closed.** The owner played 0.3.58 and reported nothing vanished when
-looking up or down. The established renderer's share is real but small: 50,339 section-draws
-over 12,217 frames were rejected by the real box that the full-height box would have kept -
-about 4 per frame against 272 selected sections, worst frame 26.
-
-**The distribution is measured, and the conclusion first drawn from it was wrong.** From
-the 2026-08-22 join, over 1,473 meshes in a 256-block world: mean height 146.0 blocks
-(57.0% of the world), tallest 245, and **not one section under 64 blocks tall** - 100% in
-the 64-256 band, no low tail at all.
-
-Session 42 read that as a reason to hold Phase 4. **The owner vetoed it, correctly.** The
-error was judging a screen-space question with a world-space statistic. A box is hidden
-when it is small and far, not when it is short: apparent height is world height divided by
-distance, so the same 146-block section is about 258 px tall at 500 blocks, 65 px at 2,000,
-13 px at 10,000 and 4 px at 32,000. Past a few thousand blocks an entire section is a
-handful of pixels and one foreground ridge buries hundreds of them. Meanwhile the
-population scales as area, so a 32k cache distance holds roughly 256x the sections of a 2k
-one. **The value of depth rejection scales with the draw distance the mod exists to
-provide, and the height histogram does not measure it.**
-
-Two corrections follow from the same mistake:
-
-- **The plan's "Phase 4 requires Phase 3b" is overstated.** At 20 km a full 256-block box
-  subtends ~11 px against a real box's ~7 px; both are trivially rejected. Phase 3b's value
-  is concentrated at near and mid range where boxes are large on screen, Phase 4's far out.
-  They are complementary, not sequential. 3b still pays - it closed its own visual gate and
-  skips about 4 section-draws per frame - but it was never the thing standing between here
-  and depth rejection.
-- **The frontier curtain is a separate concern, not a Phase 4 blocker.**
-  `MesherChecks.FrontierWallsSetTheFloor` measures it: one section, surface at y=110 over a
-  run to bedrock, meshed with all four neighbours present is a single quad spanning y=110 to
-  y=110; with none present it is five quads spanning y=0 to y=110, and **one open side out
-  of four is enough** to drop the floor to bedrock. The mod draws a 110-block wall down to
-  bedrock at every edge of explored space. That is honest geometry and the bound is honest
-  about it, but it is wasted drawing in its own right and deserves its own look.
-
-**Still worth reading when it lands:** 0.3.59 adds `mean floor y=` and `mean ceiling y=` to
-the same line, and a settled-play reading needs `VINTAGEHORIZONS_STATS=1` - the figures
-above are the 30-second join report, when a large share of sections are at the frontier and
-so carry the curtain.
-
-## Phase 4: built, measured, and waiting on one comparison
-
-Everything below is in 0.3.68. **The owner last ran 0.3.66.** Nothing the pyramid decides can
-affect drawing; there is no code path from a verdict to a draw call.
+Everything below is in 0.3.71. **The owner last ran 0.3.70**, with culling confirmed active.
 
 ### What is established
 
-**Cost passes.** 27.4 us of GPU time per frame at 1440p/12 levels against 218.6 us of
-cached-terrain draw submission - about an eighth of the work it could remove.
+**The mechanism works on real hardware.** `cull: on: 8019 dispatches over 336798 commands.
+last frame's commands were culled on the card.` The cull shader compiles, the driver accepts a
+buffer used as both a compute target and a draw-command source, and the barrier holds. AMD RX
+9070 XT, GL 4.3.
 
-**It finds a lot, and it scales with distance.** Two ground-level locations, 16 million
-section-tests: 46-88% hidden within 1 km, rising to 98-100% past 2 km. An aerial route finds
-0.0%, which is the honest answer for a camera above the terrain rather than a defect.
+**Suppression is same-frame, not frame-late.** The commands are built before anything draws, so
+the card classifies and zeroes slots in the same frame. There is no stale-verdict window and
+therefore no edge-flash class of bug to guard against.
 
-**Most of what it finds is new.** 3,439 of 4,570 hides were sections no occlusion query had
-measured - **75% is genuinely additional** to the delayed occlusion already running.
+**Widening was the right lever, and it is doing most of the work.** 404 sections hidden, 248 of
+which the old narrow width would have drawn - 61% of all hides. That lands inside the band the
+offline harness predicted for a 192-block view distance.
 
-**Correctness is established offline, not from the query comparison.** `NeverHidesABoxThatPokesOut`
-builds a synthetic ridge, reduces it through the real pyramid code, and requires that no box
-touching background is ever hidden - past each edge, straddling a corner, spanning the screen,
-and swept a percent at a time from inside to outside. **The runtime query comparison is a
-cross-check with a noise floor above zero and must not be used as a gate; see G73.**
+**Visual correctness, once.** 0.3.69 and 0.3.70 both played with no missing terrain and no edge
+flashes.
 
-**Why so little is hidden, in exact terms (G74):** a box clears an occluder only by a whole
-texel of the level it is tested at, and the level is chosen from the box's size, so bigger
-boxes are tested at coarser levels and need proportionally more clearance. That is the sky
-problem, and it has two independent levers.
+### The open question: it costs, and has not yet returned anything
 
-### The one thing owed: which lever to pull
+**Roughly 115 us per frame**, inferred from 300 to 290 FPS with the pyramid on. The log accounts
+for 13.8 us of that on the CPU; the rest is card-side.
 
-Both are measured in 0.3.68 over the same population - the sections the current test could
-not hide - so a single run chooses between them:
+No measurable frame-rate gain from culling on versus off. **Two known reasons, neither a
+defect:**
 
-| lever | what it changes | offline result |
-|---|---|---|
-| **Wider sampling** (2 to 8 texels per axis) | the test only | ~24% more hidden boxes on a synthetic ridge |
-| **Cluster subdivision** (4x4 per section) | what is drawn, how terrain is stored, how sections are built | unmeasured on a valid population |
+- The scene was CPU-bound at ~300 FPS. Culling removes card work; the CPU still builds every
+  command. G52 covers exactly this - a fragment-side saving measured in a CPU-bound scene
+  reports its cost and none of its benefit.
+- The occluder is a 192-block bubble, because the depth picture is captured after vanilla
+  terrain and before any cached section. The cached hills that would hide the most cannot
+  occlude anything until Phase 6.
 
-Wider sampling is strictly cheaper if it works, and is a constant rather than a phase. **Do
-not promote cluster subdivision (plan Phase 8) until this comparison has run.**
+This is neither a cost-gate pass nor a failure. It is unmeasured in a scene where a benefit
+could appear.
 
-**How to run it:** install 0.3.68, stand where a ridge or mountain blocks the view with cached
-terrain behind it, `.vhhzb on`, wait about fifteen seconds, `.vhhzb`, then `.vhhzb why` at a
-distant ridge. Both write to the client log. Read the `headroom:` line, which now carries both
-levers, and `undecided because:` - if near-plane refusals dominate, the population is the ring
-of cached-but-masked sections around the camera and the figures are about that rather than
-about distant terrain.
+### Owed before Phase 5's gate can close
+
+- **Attribute the 115 us.** GPU timers arm only under the benchmark harness, so a normal session
+  reports 0.0 us and the split between depth copy, mip reduction, classify and cull is unknown.
+  Making timing available in an ordinary session is the cheapest thing on this list.
+- **Measure in a GPU-bound view**, or the cost/benefit question cannot be answered at all.
+- **The rest of the visual matrix.** The gate lists stationary, motion, rotation, teleport,
+  vertical look, streaming, cave/structure and threshold-crossing; roughly "stood on a hill and
+  toggled" has been done.
+- **A non-AMD driver.** Compute writing into a buffer the driver then reads as draw commands is
+  precisely where vendors differ, and only one has ever run this.
+- **Head-to-head against delayed occlusion.** Batching suspends the occlusion queries that were
+  worth 170 to 500 FPS in session 34. Until culling is measured against that, the switches
+  cannot become defaults.
 
 ### Smaller and unverified
 
-- The frame-age bound on the query comparison (0.3.67) should shrink the unsafe disagreements
-  toward zero. If it does not, the attribution to instrument noise is wrong and this needs a
-  different explanation.
-- The undecided breakdown, the fixed `.vhhzb why`, and the two-lever comparison have never run.
-- The owner's cache reaches about 4 km, so the 8-16k and 16k+ bands are empty and the far case
-  is inferred from the 2-8k trend.
-- GPU timers only arm under the benchmark harness; a normal session reports 0.0 us GPU cost.
+- `Culled` reports a single frame's state, so `.vhcull` can say "nothing was culled last frame"
+  on a frame where the indirect draw did not happen at all. Seen once in the 0.3.70 log while
+  dispatches were still climbing. Cosmetic, but it invites the wrong conclusion.
+- The command count in the indirect report includes zeroed commands, because counting drawn
+  ones would need a readback. The hidden fraction is available from the classifier instead.
 - The frontier curtain remains unaddressed: one missing neighbour walls a section's edge from
   its surface down to bedrock, so a single open side drops its floor 110 blocks. That is real
   drawn geometry and a candidate for its own work, independent of the depth test.
+
+## Phase 6 is the phase that makes the depth work pay
+
+The depth picture is captured after vanilla draws and before any cached section, so the only
+occluder is whatever vanilla renders inside its own view distance. At the owner's settings that
+is a bubble of a couple of hundred blocks, and every large cached hill beyond it is invisible to
+the test.
+
+Measured offline over the owner's cache: extending the occluder from 64 to 512 blocks takes the
+hidden share from 38.2% to 61.1%. That is a bigger lever than either of the two the session
+spent its time choosing between, and it is the reason culling currently costs without returning.
+
+Not started. The offline harness already answers this question with the same code - the occluder
+radius is a parameter - so the design can be argued from measurement before any of it is built.
+
+### Cluster subdivision: parked, with a number
+
+Not discarded. After widening is adopted it still hides 13-15% of the pieces that remain -
+offline predicted 13.2%, the 0.3.70 log reported 14.8%. It is a real follow-on rather than an
+alternative, and the in-game counter reports it every run, so the case for starting the storage
+and draw rework can be re-read at any time rather than re-argued.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 
