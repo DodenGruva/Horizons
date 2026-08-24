@@ -232,11 +232,42 @@ public static class HzbProjectionChecks
 
     static void LevelChoiceRoundsUp(Check c)
     {
-        c.Eq(0, LodHzbProjection.LevelFor(1f, 1f, 11), "a box under two pixels reads level zero");
-        c.Eq(0, LodHzbProjection.LevelFor(2f, 2f, 11), "two pixels still fits level zero");
-        c.Eq(1, LodHzbProjection.LevelFor(4f, 2f, 11), "four pixels needs one level up");
-        c.Eq(2, LodHzbProjection.LevelFor(8f, 3f, 11), "eight pixels needs two");
-        c.Eq(4, LodHzbProjection.LevelFor(17f, 5f, 11), "and the level rounds up, never down");
+        // The width is stated rather than taken from the default. These cases describe the
+        // rounding rule - pick the level where the box spans at most this many texels - and
+        // that rule is what must not drift; writing them against whatever the default happens
+        // to be made three of them fail the day the default was widened, which was a check
+        // reporting a settings change as a defect.
+        const int narrow = LodHzbProjection.NarrowTexelsPerAxis;
+        c.Eq(0, LodHzbProjection.LevelFor(1f, 1f, 11, narrow), "a box under two pixels reads level zero");
+        c.Eq(0, LodHzbProjection.LevelFor(2f, 2f, 11, narrow), "two pixels still fits level zero");
+        c.Eq(1, LodHzbProjection.LevelFor(4f, 2f, 11, narrow), "four pixels needs one level up");
+        c.Eq(2, LodHzbProjection.LevelFor(8f, 3f, 11, narrow), "eight pixels needs two");
+        c.Eq(4, LodHzbProjection.LevelFor(17f, 5f, 11, narrow), "and the level rounds up, never down");
+
+        // The same rule at the shipped width, which is the one the renderer actually uses.
+        const int wide = LodHzbProjection.DefaultTexelsPerAxis;
+        c.Eq(0, LodHzbProjection.LevelFor(8f, 8f, 11, wide), "eight pixels fits level zero at eight texels");
+        c.Eq(1, LodHzbProjection.LevelFor(16f, 4f, 11, wide), "sixteen needs one level up");
+        c.Eq(2, LodHzbProjection.LevelFor(32f, 9f, 11, wide), "thirty-two needs two");
+        c.Eq(4, LodHzbProjection.LevelFor(65f, 20f, 11, wide), "and it still rounds up, never down");
+
+        // The overload with no width must agree with naming the default explicitly, or the
+        // shader and the C# twin can be reading different levels for the same box.
+        foreach (float size in new[] { 1f, 4f, 17f, 64f, 300f, 4000f })
+        {
+            c.Eq(LodHzbProjection.LevelFor(size, size, 11, wide),
+                LodHzbProjection.LevelFor(size, size, 11),
+                $"the default overload picks the default width's level at {size} pixels");
+        }
+
+        // A wider footprint never picks a coarser level - that is the whole reason widening
+        // hides more, and it holds one-directionally across the range.
+        for (float size = 1f; size < 8192f; size *= 1.7f)
+        {
+            c.True(LodHzbProjection.LevelFor(size, size, 11, wide)
+                    <= LodHzbProjection.LevelFor(size, size, 11, narrow),
+                $"eight texels never reads a coarser level than two at {size:0} pixels");
+        }
 
         // Clamped rather than running off the end of the chain.
         c.Eq(10, LodHzbProjection.LevelFor(100000f, 100000f, 11), "a huge box clamps to the last level");

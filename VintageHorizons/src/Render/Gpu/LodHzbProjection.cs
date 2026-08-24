@@ -190,8 +190,7 @@ internal static class LodHzbProjection
     /// makes the box harder to declare hidden.
     /// </summary>
     /// <summary>
-    /// How many texels per axis the test is willing to sample. Two is the classic choice and
-    /// what this started with; it is also why big boxes hide so rarely.
+    /// How many texels per axis the test is willing to sample.
     ///
     /// The level is picked so the rectangle spans at most this many texels, so allowing more
     /// texels picks a FINER level, and a finer texel pools fewer screen pixels. That matters
@@ -200,8 +199,27 @@ internal static class LodHzbProjection
     /// texels a 384-pixel-wide box is tested at 256-pixel texels and needs a quarter of the
     /// screen of clearance; at eight it is tested at 64-pixel texels and needs an eighth of
     /// that. The cost is the sample count, which grows as the square.
+    ///
+    /// EIGHT, changed from two on 2026-08-23. Two is the classic choice and it is why big
+    /// boxes hid so rarely - the sky problem. Measured offline over the owner's own cache at
+    /// his 350-block vanilla view distance, 128 views, two seeds: of the sections two texels
+    /// could not hide, eight hides 25.0%. The alternative answer, splitting each section into
+    /// a 4x4 grid, hides 14.7% and costs a rewrite of how terrain is stored, meshed and
+    /// drawn. Sixteen adds only about 2.5 points over eight, so the curve has flattened by
+    /// then and the extra samples are not worth paying for.
+    ///
+    /// This widens what the test can PROVE hidden. It cannot make it hide something visible:
+    /// every sample still comes from a max-reduced pyramid, and more samples can only push
+    /// the farthest depth farther. See the checks over widening in HzbProjectionChecks.
     /// </summary>
-    public const int DefaultTexelsPerAxis = 2;
+    public const int DefaultTexelsPerAxis = 8;
+
+    /// <summary>
+    /// The width the test used before <see cref="DefaultTexelsPerAxis"/> was widened, kept so
+    /// the classifier can still report what the change bought and so the offline measurement
+    /// has a fixed baseline to quote against. Not a fallback: nothing selects it at runtime.
+    /// </summary>
+    public const int NarrowTexelsPerAxis = 2;
 
     public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
         LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);

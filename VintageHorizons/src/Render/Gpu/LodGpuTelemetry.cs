@@ -161,6 +161,7 @@ internal sealed class LodGpuTelemetry : IDisposable
     readonly LodGpuTimerRing opaqueTimer;
     readonly LodGpuTimerRing waterTimer;
     readonly LodGpuTimerRing hzbTimer;
+    readonly LodGpuTimerRing classifyTimer;
     bool probeAttempted;
     bool timingFailureReported;
 
@@ -183,11 +184,23 @@ internal sealed class LodGpuTelemetry : IDisposable
     /// </summary>
     public LodPhaseCost HzbGpuCost;
 
+    /// <summary>
+    /// GPU time for the classification dispatch, kept apart from the pyramid build because
+    /// the two scale with completely different things. The build scales with the screen; the
+    /// dispatch scales with the section count AND with the square of the sampling width, and
+    /// widening that from two texels to eight multiplied its texture fetches by about nine.
+    /// A single combined number could absorb that entirely and report nothing.
+    /// </summary>
+    public LodPhaseCost ClassifyGpuCost;
+
     public int PendingResults =>
-        opaqueTimer.PendingCount + waterTimer.PendingCount + hzbTimer.PendingCount;
+        opaqueTimer.PendingCount + waterTimer.PendingCount + hzbTimer.PendingCount
+        + classifyTimer.PendingCount;
     public int UnavailableSlots =>
-        opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots;
-    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy;
+        opaqueTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots
+        + classifyTimer.UnavailableSlots;
+    public int TargetBusy => opaqueTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy
+        + classifyTimer.TargetBusy;
 
     public LodGpuTelemetry(
         bool timingRequested,
@@ -204,6 +217,7 @@ internal sealed class LodGpuTelemetry : IDisposable
         opaqueTimer = new LodGpuTimerRing(timerApi);
         waterTimer = new LodGpuTimerRing(timerApi);
         hzbTimer = new LodGpuTimerRing(timerApi);
+        classifyTimer = new LodGpuTimerRing(timerApi);
     }
 
     /// <summary>
@@ -228,6 +242,7 @@ internal sealed class LodGpuTelemetry : IDisposable
             opaqueTimer.Poll(ref OpaqueCost);
             waterTimer.Poll(ref WaterCost);
             hzbTimer.Poll(ref HzbGpuCost);
+            classifyTimer.Poll(ref ClassifyGpuCost);
         }
         catch (Exception e)
         {
@@ -241,15 +256,19 @@ internal sealed class LodGpuTelemetry : IDisposable
     public void EndWater() => End(waterTimer);
     public bool BeginHzb() => Begin(hzbTimer);
     public void EndHzb() => End(hzbTimer);
+    public bool BeginClassify() => Begin(classifyTimer);
+    public void EndClassify() => End(classifyTimer);
 
     public void ResetInterval()
     {
         OpaqueCost.Reset();
         WaterCost.Reset();
         HzbGpuCost.Reset();
+        ClassifyGpuCost.Reset();
         opaqueTimer.ResetInterval();
         waterTimer.ResetInterval();
         hzbTimer.ResetInterval();
+        classifyTimer.ResetInterval();
     }
 
     void ProbeAndReport()
@@ -345,6 +364,7 @@ internal sealed class LodGpuTelemetry : IDisposable
         opaqueTimer.Dispose();
         waterTimer.Dispose();
         hzbTimer.Dispose();
+        classifyTimer.Dispose();
         TimingActive = false;
     }
 }
