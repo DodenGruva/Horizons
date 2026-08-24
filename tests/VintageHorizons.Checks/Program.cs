@@ -27,6 +27,7 @@ public static class Program
         ("pure", "GPU indirect layout", GpuIndirectChecks.Run),
         ("pure", "depth pyramid", HzbChecks.Run),
         ("pure", "hzb projection", HzbProjectionChecks.Run),
+        ("pure", "hzb field harness", HzbFieldChecks.Run),
         ("pure", "tick allowances", AllowanceChecks.Run),
         ("pure", "drain budgets", DrainBudgetChecks.Run),
         ("fixture", "persistence acknowledgements", PersistenceChecks.Run),
@@ -61,6 +62,13 @@ public static class Program
         {
             MesherBench.Run();
             return 0;
+        }
+
+        // Also not a suite, and for the same reason: it reports numbers over a real cache
+        // rather than asserting anything. HzbFieldChecks covers the machinery it uses.
+        if (string.Equals(only, "hzbfield", StringComparison.OrdinalIgnoreCase))
+        {
+            return HzbField.Run(args);
         }
 
         Console.WriteLine();
