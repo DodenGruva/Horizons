@@ -15,6 +15,7 @@ public static class ConfigChecks
         Defaults(c);
         Clamps(c);
         Description(c);
+        ClientGpuDefaults(c);
     }
 
     static void Defaults(Check c)
@@ -185,5 +186,28 @@ public static class ConfigChecks
         setup(config);
         config.Sanitize();
         return config;
+    }
+    /// <summary>
+    /// The client's GPU path switches, which are saved but must never be defaulted on.
+    ///
+    /// A fresh install has no config file, so these defaults ARE what every new player gets.
+    /// Turning them on by default would trade a measured win for an unmeasured one: batching
+    /// suspends the delayed occlusion queries, and those were worth 170 to 500 FPS on a hill
+    /// view, while depth culling does not yet pay for itself. Until that comparison is run
+    /// and won, off is the only defensible default - and a default flipped by accident is
+    /// silent, because the symptom is somebody else's frame rate.
+    /// </summary>
+    static void ClientGpuDefaults(Check c)
+    {
+        var config = new VintageHorizonsConfig();
+
+        c.False(config.GpuArenas, "the regional arenas are off for a fresh install");
+        c.False(config.IndirectDraw, "batched drawing is off for a fresh install");
+        c.False(config.DepthCull, "depth culling is off for a fresh install");
+
+        // The settings the mod has always shipped, checked alongside so a new field cannot
+        // quietly change one of them.
+        c.True(config.ChunkMask, "the chunk mask stays on by default");
+        c.False(config.IgnoreOtherLodMods, "and deferring to another LOD mod stays the default");
     }
 }

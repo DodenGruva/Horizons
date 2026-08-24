@@ -34,6 +34,22 @@ public class VintageHorizonsConfig
     /// path supports.
     /// </summary>
     public bool IgnoreOtherLodMods = false;
+
+    /// <summary>
+    /// The GPU render path switches, remembered per install.
+    ///
+    /// Saved rather than defaulted on. Shipping them on would trade a measured win for an
+    /// unmeasured one: batching suspends the delayed occlusion queries, those were worth
+    /// 170 to 500 FPS on a hill view in session 34, and depth culling does not yet pay for
+    /// itself while cached terrain cannot occlude cached terrain. So the default stays off
+    /// for everyone, and someone who has decided to run them does not have to say so again
+    /// every session.
+    ///
+    /// All three default false, which is exactly what an install with no config file gets.
+    /// </summary>
+    public bool GpuArenas = false;
+    public bool IndirectDraw = false;
+    public bool DepthCull = false;
 }
 
 /// <summary>
@@ -166,6 +182,32 @@ public class VintageHorizonsModSystem : ModSystem
         // renderer has already resolved the override, so only an absent variable defers here.
         if (Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CHUNK_MASK") == null)
             renderer.ChunkMaskEnabled = config.ChunkMask;
+
+        // The GPU path someone chose last session, restored in the order the pieces depend
+        // on each other: arenas hold the geometry batching draws from, batching provides the
+        // commands culling zeroes, and culling needs a pyramid to test against. Restoring
+        // them out of order would leave a switch on with nothing under it, which is exactly
+        // the state that wasted a playtest.
+        //
+        // An environment variable still wins, so a benchmark run pins its own path rather
+        // than inheriting whatever the last session happened to leave saved.
+        if (config.GpuArenas && Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_ARENAS") == null)
+        {
+            renderer.RequestGpuShadow("on");
+
+            if (config.IndirectDraw
+                && Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_INDIRECT") == null)
+            {
+                renderer.IndirectDrawEnabled = true;
+
+                if (config.DepthCull
+                    && Environment.GetEnvironmentVariable("VINTAGEHORIZONS_DEPTH_PYRAMID") == null)
+                {
+                    renderer.DepthPyramidEnabled = true;
+                    renderer.GpuCullEnabled = true;
+                }
+            }
+        }
 
         capi.Event.ChunkDirty += OnChunkDirty;
         capi.Event.LevelFinalize += OnLevelFinalize;
@@ -1263,6 +1305,13 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.VerticalCulledSections,
                 renderer.VerticalCulledMax);
 
+            // Whether depth verdicts actually stopped anything being drawn. In the log and
+            // not only in chat, because chat cannot be copied out of the game and this is
+            // the line that says whether a playtest was testing the thing it was meant to.
+            // Unconditional: the case worth catching is the switch being on while nothing
+            // ran, and a line that only appears when culling works cannot show that.
+            Mod.Logger.Notification("  cull: {0}", renderer.DescribeGpuCull());
+
             // The pyramid's own cost, apart from everything else. Phase 4 lives or dies on
             // whether the GPU figure here is smaller than the drawing a depth test could
             // remove, and CPU time cannot see it because none of the work is on the CPU.
@@ -1270,12 +1319,15 @@ public class VintageHorizonsModSystem : ModSystem
             {
                 Mod.Logger.Notification(
                     "  hzb: {0} | cpu {1:0.0}us avg / {2:0.0}us max, p95 {3:0}/p99 {4:0} | "
-                    + "gpu {5:0.0}us avg / {6:0.0}us max over {7} timed builds",
+                    + "gpu {5:0.0}us avg / {6:0.0}us max over {7} timed builds | "
+                    + "classify gpu {8:0.0}us avg / {9:0.0}us max over {10} dispatches",
                     renderer.DescribeDepthPyramid(),
                     renderer.HzbCost.AvgUs, renderer.HzbCost.MaxUs,
                     renderer.HzbCost.P95Us, renderer.HzbCost.P99Us,
                     renderer.GpuHzbCost.AvgUs, renderer.GpuHzbCost.MaxUs,
-                    renderer.GpuHzbCost.Calls);
+                    renderer.GpuHzbCost.Calls,
+                    renderer.GpuClassifyCost.AvgUs, renderer.GpuClassifyCost.MaxUs,
+                    renderer.GpuClassifyCost.Calls);
 
                 // Per distance band, because the case for this phase is that the amount of
                 // hidden terrain scales with draw distance. One overall average mixes 500
@@ -1841,7 +1893,7 @@ public class VintageHorizonsModSystem : ModSystem
         // future renderer would draw from and reports how far draw calls would fall, while
         // the established renderer keeps drawing every pixel exactly as before.
         capi.ChatCommands.Create("vhgpu")
-            .WithDescription("Measure what a regional GPU renderer would submit. off | on | verify. Draws nothing; not saved.")
+            .WithDescription("Measure what a regional GPU renderer would submit. off | on | verify. Draws nothing; remembered between sessions.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalWord("mode"))
             .HandleWith(args =>
             {
@@ -1855,6 +1907,7 @@ public class VintageHorizonsModSystem : ModSystem
                 if (!renderer.RequestGpuShadow(mode))
                     return TextCommandResult.Error("[VintageHorizons] use: .vhgpu off | on | verify");
 
+                SaveConfig();
                 bool off = mode.Equals("off", StringComparison.OrdinalIgnoreCase);
                 return TextCommandResult.Success(off
                     ? "[VintageHorizons] GPU measurement shadow switching off; buffers released next frame."
@@ -1870,7 +1923,7 @@ public class VintageHorizonsModSystem : ModSystem
         // multi-draws instead of one call per section. Off by default, session-only, and
         // it needs .vhgpu on first, because the arenas are what it draws from.
         capi.ChatCommands.Create("vhindirect")
-            .WithDescription("Draw distant terrain in a few big batches instead of one call each. Needs .vhgpu on. Off by default; not saved.")
+            .WithDescription("Draw distant terrain in a few big batches instead of one call each. Needs .vhgpu on. Off by default; remembered between sessions.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
             .HandleWith(args =>
             {
@@ -1881,10 +1934,52 @@ public class VintageHorizonsModSystem : ModSystem
                         "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw());
 
                 renderer.IndirectDrawEnabled = (bool)args[0];
+                SaveConfig();
                 return TextCommandResult.Success(
                     "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw()
                     + " Compare it against off in the same spot: the picture should be "
                     + "identical, and anything that differs is a bug worth reporting.");
+            });
+
+        // The first switch in this mod that can take terrain OFF the screen rather than
+        // change how it gets there. Off by default, not saved, and it says plainly what to
+        // look for - because the only failure that matters here is terrain that should be
+        // visible and is not, and no counter can see that.
+        capi.ChatCommands.Create("vhcull")
+            .WithDescription("Let the depth test stop distant terrain being drawn. Needs .vhgpu on and .vhindirect on; turning it on also switches on the depth pyramid. Off by default; remembered between sessions.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+                // Logged as well as shown, exactly like .vhhzb. Game chat cannot be copied
+                // out, so a status that exists only on screen cannot be handed to anybody -
+                // and this is the line that says whether a playtest was testing the thing it
+                // was meant to. A run where nobody can tell afterwards is a wasted run.
+                if (args.Parsers[0].IsMissing)
+                {
+                    string status = renderer.DescribeGpuCull();
+                    LogReportLines("cull", status);
+                    return TextCommandResult.Success("[VintageHorizons] depth culling " + status);
+                }
+
+                bool wanted = (bool)args[0];
+                renderer.GpuCullEnabled = wanted;
+
+                // Culling has no meaning without a pyramid to test against, and asking
+                // someone to know that is how a switch ends up on with nothing under it -
+                // which is exactly what happened on 0.3.69 and cost a whole playtest. Turning
+                // it ON brings the pyramid with it; turning it off leaves the pyramid alone,
+                // because the pyramid is also a measurement someone may want on its own.
+                if (wanted && !renderer.DepthPyramidEnabled) renderer.DepthPyramidEnabled = true;
+
+                SaveConfig();
+                LogReportLines("cull", renderer.DescribeGpuCull());
+                return TextCommandResult.Success(
+                    "[VintageHorizons] depth culling " + renderer.DescribeGpuCull()
+                    + " Look for terrain that should be there and is not, especially while "
+                    + "turning: that is the failure this can cause and the only one worth "
+                    + "reporting. Turn it off in the same spot to compare.");
             });
 
         capi.ChatCommands.Create("vhskip")
@@ -2153,6 +2248,14 @@ public class VintageHorizonsModSystem : ModSystem
             // The request, never the effective state: a mask that failed this session
             // reports itself disabled, and writing that would turn it off permanently.
             config.ChunkMask = renderer.ChunkMaskRequested;
+
+            // The requested state, never the effective one, for the same reason the mask
+            // uses the request: a path that refused to start this session reports itself
+            // off, and writing that back would turn it off permanently on a machine where
+            // the next driver update might have fixed it.
+            config.GpuArenas = renderer.GpuShadowRequested;
+            config.IndirectDraw = renderer.IndirectDrawEnabled;
+            config.DepthCull = renderer.GpuCullEnabled;
         }
 
         capi.StoreModConfig(config, "vintagehorizons.json");
