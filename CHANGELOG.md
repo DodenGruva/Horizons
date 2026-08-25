@@ -8,6 +8,41 @@ first.
 
 ## [Unreleased]
 
+## [0.3.101] - 2026-08-24
+
+**The precise-angle terrain flicker is fixed.** Cached terrain no longer alternates between drawn
+and missing at certain camera angles under `.vhphase8 clusters`. The owner has confirmed the
+artifact is gone.
+
+The depth pyramid halves each level with floor and folds the leftover odd row and column into its
+last texel, so a texel at level L stands for exactly `2^L` screen pixels. Both copies of the
+occlusion box test instead scaled the projected rectangle by the level's texel *count*, which is
+only the same thing while `levelSize * 2^level == screenSize`. At 1440 rows the chain reaches 45
+and then 22, so from level 6 upward the sampled rectangle fell one texel short at its top edge -
+skipping exactly the texel that holds whatever lies beyond an occluder's silhouette. Terrain
+peeking over a ridge was therefore judged hidden, which the renderer's own conservatism rule
+forbids. Screen width was unaffected, since 2560 divides exactly at every level the test selects;
+the error was vertical only, which is why the artifact tracked camera pitch.
+
+Under the same-frame near/far split that one wrong verdict became a visible flicker: a wrongly
+suppressed near command leaves the exact depth-clear value where its pixels should have been, and
+every far cluster whose test rectangle covers that hole flips wholesale between hidden and drawn as
+sub-texel noise decides the near verdict each frame. This also accounts for the two failed
+remedies - the 4/16/64/256 depth-margin ladder could not close a gap between real depth and the
+clear value, and the 0.3.99 one-texel sky perimeter inspects outside the rectangle while the hole
+lies inside it.
+
+The rectangle is now anchored in screen pixels and divided down by the level's own halving, with
+the far edge clamped to the last texel so the odd-dimension fold is honoured. The change is applied
+identically to the culling shader and to its C# reference. It can only ever widen the sampled
+region, so it strictly reduces what culling hides and cannot cause missing terrain. The 0.3.99 sky
+guard and the `.vhsplitbias` diagnostic are retained but are now expected to be redundant.
+
+A new deterministic check reduces a real 1440-row pyramid and pins the peeking box, the folded
+remainder, two exactly-divisible control levels, the nine-texel sampling boundary, and a box in
+front of the occluder. The unfixed code failed exactly that fixture before the change was written.
+The complete fast tier passes 5,089 assertions.
+
 ## [0.3.100] - 2026-08-24
 
 **The flicker capture now follows the actual draw-state chain across both halves of the same-frame

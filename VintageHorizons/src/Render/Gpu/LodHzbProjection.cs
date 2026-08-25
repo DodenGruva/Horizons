@@ -290,14 +290,31 @@ internal static class LodHzbProjection
         if (levelWidth <= 0 || levelHeight <= 0) return false;
         sampledLevel = level;
 
-        // Outward rounding on both edges. A rectangle that covers even a sliver of a texel
-        // must include that texel, or the box could be declared hidden on the strength of
-        // pixels it does not actually sit behind.
-        int x0 = (int)Math.Floor(bounds.MinU * levelWidth);
-        int y0 = (int)Math.Floor(bounds.MinV * levelHeight);
-        int x1 = (int)Math.Ceiling(bounds.MaxU * levelWidth) - 1;
-        int y1 = (int)Math.Ceiling(bounds.MaxV * levelHeight) - 1;
+        // Anchored in screen PIXELS, then divided down by the level's own halving. A texel at
+        // level L stands for exactly 2^L pixels, because that is how the pyramid was built -
+        // it is not 1/count of the screen, and the two stop agreeing the moment a dimension
+        // halves to something odd. At 1440 rows the chain reaches 45, so from level 6 up a
+        // texel covers 64 rows while 1/count is only about 65.5, and scaling by the count
+        // lands one texel SHORT of the texel the box's top edge really sits in. The texel
+        // skipped that way is the one holding the sky beyond an occluder's silhouette, so a
+        // box peeking over a ridge gets declared hidden - the one verdict never allowed here.
+        //
+        // Outward rounding on both edges is kept. A rectangle that covers even a sliver of a
+        // texel must include that texel, or the box could be declared hidden on the strength
+        // of pixels it does not actually sit behind.
+        int pixelMinX = Math.Clamp((int)Math.Floor(bounds.MinU * screenWidth), 0, screenWidth - 1);
+        int pixelMinY = Math.Clamp((int)Math.Floor(bounds.MinV * screenHeight), 0, screenHeight - 1);
+        int pixelMaxX = Math.Clamp((int)Math.Ceiling(bounds.MaxU * screenWidth) - 1, 0, screenWidth - 1);
+        int pixelMaxY = Math.Clamp((int)Math.Ceiling(bounds.MaxV * screenHeight) - 1, 0, screenHeight - 1);
 
+        int x0 = pixelMinX >> level;
+        int y0 = pixelMinY >> level;
+        int x1 = pixelMaxX >> level;
+        int y1 = pixelMaxY >> level;
+
+        // Clamping the far edge to the last texel is what honours the odd-dimension fold:
+        // the reduction folds the leftover row and column into that texel, so it is where
+        // the remaining pixels genuinely live rather than an index being trimmed away.
         x0 = Math.Clamp(x0, 0, levelWidth - 1);
         y0 = Math.Clamp(y0, 0, levelHeight - 1);
         x1 = Math.Clamp(x1, x0, levelWidth - 1);
@@ -305,6 +322,11 @@ internal static class LodHzbProjection
 
         // A rectangle that somehow still spans more texels than the level choice promised
         // is a bug in that choice, not something to sample expensively around. Fail open.
+        //
+        // Strictly greater than, and that has to stay. A rectangle N texels WIDE can start
+        // part way into a texel and so touch N+1 of them, which is a difference of N - the
+        // level choice sizes the span, not the count. Making this an inequality on the count
+        // would fail open on ordinary boxes rather than on broken ones.
         if ((x1 - x0) > perAxis || (y1 - y0) > perAxis) return false;
 
         float farthest = float.NegativeInfinity;

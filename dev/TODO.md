@@ -2,45 +2,104 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## TOP PRIORITY - capture the real draw-state chain at a precise flicker angle
+## TOP PRIORITY - the flicker is fixed; convert the experiment into an accepted default
 
-The cache startup/refinement plan is complete and human-accepted through 0.3.95. Cached terrain now
-bootstraps immediately, loads without camera orientation, sharpens radially, prepares L0 beneath the
-player, reveals only after its tint is ready, and gives the closest band the dominant bounded share.
-Its completed narrative is in `dev/history/DONE.md`, Session 48, and
-`PLAN_CACHE_STARTUP_AND_REFINEMENT.md`; do not reopen it without a new observed regression.
+The Phase 8 precise-angle flicker was diagnosed from source in session 50 and fixed in 0.3.101.
+The owner has confirmed it is gone. The cause, the reproduction fixture and the reasoning are in
+`dev/sessions/SESSION_50.md` and G96/G97; the short form is that the box test scaled its rectangle
+by a mip level's texel count while the pyramid's texels actually cover `2^level` pixels, so from
+level 6 up on a 1440-row screen the sampled rectangle fell one texel short and skipped the texel
+holding sky beyond an occluder's silhouette. Under the split, one such wrongly culled near command
+left an exact `1.0` hole in the mid-frame picture and flipped whole far clusters. Do not reopen the
+margin ladder or the sky-guard theory: both are now explained as consequences rather than causes.
 
-The controlled comparison is complete: `late` and `cull` both measured 386 FPS, while the known
-precise-angle flicker appeared only under `late`. This isolates the artifact to the same-frame far
-cached bucket testing against near cached terrain. It does not reject the split or clusters:
-whole-section boxes overlap sky, and clusters are the smaller occlusion units that allow cached
-terrain to hide farther cached terrain.
+**The remaining problem is acceptance, not speed.** The path works, it is worth a large amount in
+the terrain-heavy view, and its last known correctness defect is closed - but it is still behind
+switches, so it helps nobody but the owner. Work the following in order.
 
-The 0.3.96 margin ladder is rejected: clusters exposed more flickering spots and 4, 16, 64, and
-256 steps behaved alike. The log proves all 2,190 mid-frame pictures completed, but the shadow
-classifier reported only 9.8% whole-section hiding and 9.2% simulated subdivision headroom. The
-owner deliberately faced a ridge expected to hide roughly 60% of the terrain behind it, making the
-small result suspicious until 0.3.97 established that it described a different whole-section
-population rather than the live cluster command stream.
+### 1. Retire what the fix made obsolete
 
-The 0.3.97 ridge result closes the suppression question. FPS rose from about 340 to 460; the actual
-split-far stream zeroed 80.5% of commands and removed 77.1% of indices, reaching 92.4%/94.8% at
-4-8k. Split-near also removed 53.3%/52.9%. There were no whole-section fallbacks or instrumentation
-warnings. The split and clusters are working and materially valuable in the terrain-heavy view.
+- **The 0.3.99 one-texel sky guard** is very probably redundant: the texel it was reaching outside
+  the rectangle for is now inside it. Confirm with one armed `.vhflicker` capture that the guard
+  never fires, then remove it. It is a per-command cost on every far cluster and, more importantly,
+  a piece of source that encodes a refuted theory.
+- **`.vhsplitbias`** is a rejected diagnostic. Remove the command and the far-bucket-only bias
+  plumbing, returning the far verdict to the ordinary four-step margin.
+- Neither removal should share a build with anything else the owner has to judge visually.
 
-The stationary 0.3.98 capture answered that question: 8,416 samples, 27,065,856 observations, no
-dropped readbacks, and exactly zero matrix change. Every leading offender was
-`occluded/background`, with zero `occluded/visible` transitions. The leading cluster flipped 4,021
-times as its fixed HZB footprint alternated between cached-terrain depth and exact clear `1.0`.
+### 2. Pin the assumption the fix now depends on
 
-Version 0.3.99's one-texel refusal did not cure the visible artifact. Most flickering meshes are
-inside visible terrain rather than touching sky, and that run's largest raw offenders were
-draw-safe visible/background changes. Version 0.3.100 therefore captures both split-near and
-split-far streams, separates command presence changes from culling-verdict changes, ranks only
-events that can alter drawing, and reports each offender's screen region. Revisit any known angle
-under `.vhphase8 clusters`, run `.vhflicker on`, hold still 3-5 seconds, then `.vhflicker off`.
-Chat shows the far summary; both complete bucket reports remain in `client-main.log`. Do not repeat
-the split-bias ladder or widen the sky guard without new evidence.
+Pixel anchoring is only correct because the cull's `screenWidth`/`screenHeight` uniforms are the
+depth pyramid's own dimensions - `LodTerrainRenderer` passes `depthPyramid.Width/.Height`, and the
+pyramid allocates at the frame size, so `levelSize == screenSize >> level` holds by construction.
+Nothing asserts it. A future half-resolution pyramid would silently resurrect the flicker. Add a
+runtime refusal that fails open when the two disagree, and a check over it.
+
+### 3. Refresh figures the fix invalidated
+
+- The `25.0%` widening figure in `LodHzbProjection.DefaultTexelsPerAxis` came from `HzbField`,
+  which runs the corrected mapping. It is now a small overstatement. Re-run the field measurement
+  or mark the number as pre-0.3.101.
+- Every recorded suppression and FPS figure for the split predates the fix, which strictly reduces
+  hiding. Do not quote 80.5%/77.1% as current; re-measure before it appears in a gate.
+
+### 4. Close the gates that stand between this and default-on
+
+Unchanged and still owed: a second driver, turning/streaming/motion behaviour against the current
+visual standard, and the paired packed route. These are listed under Phase 7 and Phase 9 below.
+Default-on is the largest single remaining win available, because it converts a proven measurement
+into something ordinary players receive.
+
+## Renderer optimisation candidates, ranked and not yet funded
+
+Recorded in session 50 at the owner's request. None is started. The ordering is by expected payoff
+against effort, and each is explicitly gated on a measurement rather than on argument.
+
+**1. Aggregate vertical bounds for quadtree subtrees.** Phase 3b gave individual sections real mesh
+heights, but `LodTraversalPolicy.NodeInView` still bounds whole SUBTREES from bedrock to sky, and
+the plan already records the quadtree walk as the largest unattributed per-frame cost. A subtree
+needs an aggregate over its descendants rather than one mesh's extent, so it is real work - but
+rejecting a coarse node rejects everything beneath it, and looking up or down currently keeps
+subtrees a real box would refuse. This improves the established renderer whether or not the fast
+path is ever adopted, which is the same argument that made Phase 3b worth doing early. Highest
+recommended priority of this list.
+
+**2. Try 16 MiB arena pages.** Page size, not region shape, was the proven lever for batch counts:
+8 MiB gave 3.7-4.6x and 32 MiB gave 10.6-11.5x, but 32 MiB pages are only about 49% live against
+71% at 8 MiB, so the ceiling must grow faster than the page. 16 MiB is documented as untested and
+is exposed as `VINTAGEHORIZONS_GPU_ARENA_PAGE_MB`. This is a measurement run with no code change.
+
+**3. Measure per-frame command/record/box upload volume before optimising it.** Every frame both
+buckets re-upload their full command, record and box buffers, because section records are
+camera-relative and rebuilt from scratch; clusters multiply commands up to sixteen-fold per section.
+That may be immaterial or may be around a megabyte a frame at 400 FPS - nobody has looked. If it
+measures material, the structural answer is region-anchored records with the camera offset moved to
+a per-frame uniform, which would let most of those buffers upload once instead of every frame. Do
+not build that without the number first.
+
+**4. Two-tier cluster culling.** Every far section currently pays sixteen cluster tests of up to 81
+texel fetches each, even where the whole-section box would settle the question in one. A
+hierarchical test - whole box first, clusters only when the result is neither clearly hidden nor
+clearly visible - would cut cull work substantially. Parked: the cull dispatch has never been shown
+to cost anything material, so this needs a GPU timing figure before it is worth the complexity.
+
+**5. Cache the cull pass's uniform locations.** `LodGpuCullPass.Dispatch` looks up nine uniform
+locations by string every dispatch. Trivial tidy-up for whenever someone is next in that file; not
+worth its own change.
+
+**Explicitly not recommended, with reasons, so they are not re-proposed:**
+
+- **No third depth stage or previous-frame HZB for far-on-far occlusion.** Split-far already removes
+  most far commands, front-to-back order plus early-Z caps the shading cost of what remains, and the
+  plan permits only one cached-on-cached strategy. Diminishing returns against real synchronisation
+  cost.
+- **No verdict hysteresis or temporal damping.** With a conservative mapping restored, a remaining
+  knife-edge flip is draw-safe by construction - a hidden thing drawn for a frame, never a visible
+  thing missing. Damping would add cross-frame GPU state to suppress something that no longer
+  reaches pixels, and would mask the next real conservatism defect.
+- **No finer-than-4x4 clusters, no GPU-owned LOD selection, no water batching.** Each is a
+  measured-branch decision the plan already gates correctly, and nothing measured so far justifies
+  any of them.
 
 ## Cached terrain lighting: the sky band is the only untested part left
 
@@ -125,34 +184,28 @@ the primary-driver format/draw-topology gate is accepted.
   packed drawing is the selected product path. Dual representation is intentional for this A/B
   but is not the final memory state; legacy `MeshRef` geometry remains the complete fallback.
 
-### Phase 8 cluster/preset results and active resume point
+### Phase 8 cluster results: the correctness gate is closed
 
 The implementation, preset ladder, rejected margin search, real-command suppression measurements,
-and failed 0.3.99 sky guard are completed history in `dev/history/DONE.md` and Sessions 47-49. The
-open question is only which actual draw-state input changes at the owner's precise angle.
+failed 0.3.99 sky guard, and the 0.3.100 capture instrumentation are completed history in
+`dev/history/DONE.md` and Sessions 47-50.
 
-Version 0.3.100 is installed but not yet human-run. Under `.vhphase8 clusters`, settle at any known
-flicker angle, run `.vhflicker on`, keep the camera completely still for 3-5 seconds, then run
-`.vhflicker off`. The crosshair does not need to touch the affected terrain. Chat contains only a
-concise far summary; inspect both complete `split near` and `split far` reports in
-`client-main.log`, including the screen-region labels.
+**The flicker is fixed in 0.3.101 and human-accepted.** The cause was the HZB texel-mapping defect
+recorded as G96, not the cluster ranges, the depth margin, the sky silhouette, or a missing texture
+barrier. The 0.3.100 two-bucket capture was never run: the defect was found by source tracing and
+proven on a deterministic fixture instead. `.vhflicker` remains available and is now most useful for
+confirming that the sky guard has gone idle.
 
-Interpret the capture in this order:
+Remaining Phase 8 work is measurement and cleanup, not correctness: re-measure cluster suppression
+and FPS on the corrected mapping before quoting either, and retire the sky guard and `.vhsplitbias`
+as described under the top priority. Metadata/dispatch cost against work removed, and turning
+without remesh storms, remain the phase's open gates.
 
-- Far command-presence transitions mean the command list, traversal, or builder changed before
-  compute.
-- Split-near presence or culling transitions mean the near occluder input changed and therefore
-  changed the far HZB picture.
-- Stable near input plus far culling transitions localizes the fault to the far HZB source,
-  projection, or depth classification.
-- A reported offender in a different screen region from the observed defect is not the defect;
-  retain the view-wide evidence and improve attribution rather than asking for crosshair targeting.
-
-Do not repeat the stage ladder or split-bias values, widen the one-texel sky guard, add a texture
-barrier, or build a crosshair-targeted capture without new evidence. The margin ladder behaved the
-same at 4/16/64/256 steps; the guard failed visually; and the HZB reduction reads and writes
-disjoint, explicitly clamped mip levels, so the same-texel feedback condition for a texture barrier
-has not been established.
+Do not repeat the stage ladder or split-bias values, re-add a sky guard, or add a texture barrier
+without new evidence. The margin ladder behaved the same at 4/16/64/256 steps because the flip was
+between real depth and the exact clear value; the guard inspected outside the rectangle while the
+hole lay inside it; and the HZB reduction reads and writes disjoint, explicitly clamped mip levels,
+so the same-texel feedback condition for a barrier has never been established.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 

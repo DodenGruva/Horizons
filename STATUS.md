@@ -3,9 +3,9 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-24
-**Mod version:** `0.3.100`; two-bucket draw-state flicker capture is ready for the owner's precise-angle
-verification (`0.2.1` is the public released version; the next changed playable artifact must
-increment exactly once to `0.3.101`)
+**Mod version:** `0.3.101`; the Phase 8 precise-angle flicker is fixed and human-accepted (`0.2.1`
+is the public released version; the next changed playable artifact must increment exactly once to
+`0.3.102`)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `70` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -151,6 +151,31 @@ report also ranked thousands of visible/background changes that cannot affect dr
 presence changes and culling-verdict changes, ranks only transitions that can change drawing, and
 adds a coarse screen region to every offender. The complete fast tier passes 5,073 assertions.
 
+**That capture was never needed. The flicker is fixed in 0.3.101 and the owner has confirmed it.**
+The defect was in the depth-pyramid box test itself. Mip levels halve with floor and the reduction
+folds the leftover odd row and column into the last texel, so a level-L texel covers exactly `2^L`
+screen pixels; both the GLSL test and its C# mirror instead scaled the projected rectangle by the
+level's texel *count*, which is equivalent only while `levelSize * 2^level == screenSize`. At 1440
+rows the chain reaches 45 and then 22, so from level 6 up `22 * 64 = 1408` and the far edge of the
+sampled rectangle fell one texel short - skipping precisely the texel holding whatever lies beyond
+an occluder's silhouette. A command peeking over a ridge was declared `occluded`, which invariant 8
+forbids. The 2560-pixel width divides exactly at every selectable level, so the fault was vertical
+only, which is why it tracked camera pitch.
+
+The split amplified that into the visible artifact. The near bucket culls with no background guard,
+so a wrongly suppressed near command leaves the exact `1.0` clear value where its pixels belonged,
+and every far cluster whose rectangle covers that hole flips wholesale between `occluded` and
+`background` as sub-texel noise decides the near verdict each frame. This is also why the two
+previous remedies failed: no depth margin closes a gap between real depth and the clear value, and
+the one-texel perimeter inspects outside the rectangle while the hole lies inside it.
+
+The rectangle is now anchored in screen pixels and shifted down by the level, with the far edge
+clamped to the last texel so the fold is honoured, applied identically to both mirrors. The change
+can only widen the sampled region, so it strictly reduces hiding and cannot cause missing terrain.
+The fix was gated on reproduction: the unfixed tier failed exactly one of 5,089 assertions - the
+predicted peeking box - with all five controls in the same new fixture passing. Post-fix the tier
+passes 5,089, verified twice and re-run independently during review.
+
 **Depth verdicts stop terrain being drawn, and it is confirmed on hardware.** `cull: on: 67008
 dispatches over 1733784 commands. last frame's commands were culled on the card.` AMD RX 9070 XT
 under GL 4.3. The shader compiles, the driver accepts a buffer used as both a compute target and a
@@ -194,10 +219,11 @@ flickered again. The later controlled 386-FPS comparison showed the single older
 `late` but not `cull`. The 0.3.96 far-bucket margin ladder did not affect the artifact, rejecting a
 simple near-equality threshold. The 0.3.98 capture proved stable identities alternating at a fixed
 view, but 0.3.99's sky-edge interpretation failed the visual test and over-ranked verdict changes
-that could not change drawing. Version 0.3.100 now captures both near and far command streams,
-separates pre-compute presence from culling transitions, and labels true draw-state offenders by
-screen region. The obsolete stale-picture policy, camera-delta re-base and turning guard remain
-removed.
+that could not change drawing. Version 0.3.100 added a two-bucket draw-state capture. **Version
+0.3.101 then fixed the actual cause** - the texel-mapping defect described above and recorded as
+G96 - and the owner confirms the artifact is gone. Every one of those negative results is now
+explained as a consequence of that single defect rather than as an independent finding. The
+obsolete stale-picture policy, camera-delta re-base and turning guard remain removed.
 
 **Phase 7 now has an exact 12-byte opaque quad path in source.** The previous form uses four
 16-byte vertices plus six 4-byte indices, or 88 bytes per greedy rectangle. Eight bytes cannot
@@ -240,10 +266,13 @@ full fast tier passes 4,980. The first owner scene showed a 360-to-390 FPS clust
 first correctly controlled complete-stack comparison showed returned flicker and lower FPS than
 legacy. The result is internally consistent with an earlier stage winning and a later stage losing.
 Cache startup/refinement is human-accepted, and the later ridge run proves that the complete
-cluster/split path can remove most far commands and raise FPS substantially. The remaining Phase 8
-gate is the view-wide two-bucket `.vhflicker` capture at a known precise angle, not another stage,
-bias, sky-guard, or crosshair-targeted comparison. Version 0.3.100 is installed and source-checked
-but has not yet been human-run; it is diagnostic instrumentation, not a claimed flicker fix.
+cluster/split path can remove most far commands and raise FPS substantially. **Phase 8's
+correctness gate is now closed:** 0.3.101 fixed the depth-test texel mapping and the owner confirms
+the precise-angle flicker is gone. What remains for the phase is measurement and cleanup rather
+than correctness - the suppression and FPS figures above all predate the fix, which strictly
+reduces hiding, so they must be re-measured before they are quoted as current, and the now-probably
+redundant 0.3.99 sky guard and rejected `.vhsplitbias` diagnostic should be retired once a capture
+shows the guard idle.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -912,12 +941,15 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-0. **Capture the remaining Phase 8 flicker with `.vhflicker`.** Apply `.vhphase8 clusters`, settle
-at a known precise flicker angle, hold the camera completely still, run `.vhflicker on`, wait 3-5
-seconds, then run `.vhflicker off`. The log will identify whether repeated commands alternate
-between presence and absence, whether the near or far bucket changes its culling verdict, and where
-each real draw-state offender projects on screen. No crosshair targeting is required. Do not repeat
-the already rejected split-bias ladder or widen the sky guard without new evidence.
+0. **Convert the fast path from a working experiment into an accepted default.** The Phase 8
+flicker is fixed and human-accepted in 0.3.101, so the blocking correctness defect is gone and the
+next steps are cleanup, one pinned assumption, and the outstanding acceptance gates. In order:
+retire the 0.3.99 sky guard once a capture shows it never fires, and remove the rejected
+`.vhsplitbias` plumbing; assert that the cull's screen dimensions equal the depth pyramid's, which
+the pixel-anchored mapping now silently depends on; re-measure cluster suppression and FPS, because
+every recorded figure predates a fix that strictly reduces hiding; then close the second-driver,
+motion, and paired packed-route gates. Ranked optimisation candidates - subtree vertical bounds
+first - are recorded in `dev/TODO.md` and none is funded.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against
@@ -1211,6 +1243,12 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Human-tested
 
+- The owner ran 0.3.101 on 2026-08-24 and confirmed the Phase 8 precise-angle terrain flicker is
+  gone. This accepts the pixel-anchored HZB texel mapping as the fix for that artifact, and is also
+  the first evidence that the changed culling shader compiles and runs on the primary driver. It is
+  a verdict on the flicker at the owner's known angles only: no FPS, suppression, motion, or
+  second-driver claim attaches to it, and the sky guard was still present in the build he judged.
+
 - The owner played 0.3.51 on 2026-08-22 through the reported dusk-to-night failure window
   and called the cached-terrain lighting substantially better, with nothing else regressed.
   This accepts the four terrain lighting corrections and their defaults. It does not cover
@@ -1270,6 +1308,18 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Not yet established
 
+- **Every Phase 8 suppression and FPS figure predates the 0.3.101 mapping fix**, which strictly
+  widens the sampled rectangle and therefore reduces what culling hides. The ridge result - 80.5%
+  of far commands, 77.1% of indices, about 340 to 460 FPS - and the `25.0%` sampling-width figure
+  quoted in `LodHzbProjection` were all measured through the defective mapping. They are retained
+  as the historical record of why the path is worth keeping, not as current numbers, and must be
+  re-measured before either appears in a gate.
+- **The sky guard has not been observed idle.** The 0.3.99 one-texel perimeter refusal is expected
+  to be redundant now that the texel it reached for lies inside the sampled rectangle, but that is
+  reasoning, not a capture. It remained active in the build the owner accepted.
+- **The pixel-anchored mapping depends on an unasserted invariant.** It is correct only because the
+  cull's screen dimensions are the depth pyramid's own, which holds by construction today and is
+  checked nowhere. A future reduced-resolution pyramid would reintroduce the flicker silently.
 - **Phase 7 portability and final memory policy.** On the primary AMD driver, 0.3.86's indexed
   `lodterrainpacked` path matches the expanded picture and frame rate. No second driver has run it,
   and paired route telemetry has not yet separated upload, opaque-GPU and total-frame effects.

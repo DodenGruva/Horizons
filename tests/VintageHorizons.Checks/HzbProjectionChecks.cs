@@ -26,6 +26,7 @@ public static class HzbProjectionChecks
         SubCellsTileTheParentExactly(c);
         NeverHidesABoxThatPokesOut(c);
         WiderSamplingHidesMore(c);
+        TexelRectFollowsThePyramidsOwnHalving(c);
     }
 
     /// <summary>
@@ -559,6 +560,117 @@ public static class HzbProjectionChecks
                     pyramid, width, height, perAxis, out _),
                 $"a box over the left background still never hides at {perAxis} texels per axis");
         }
+    }
+
+    /// <summary>
+    /// The test's idea of which texels a rectangle covers must be the pyramid's own idea.
+    ///
+    /// The pyramid halves and FLOORS - 1440 becomes 720, 360, 180, 90, 45, and 45 halves to
+    /// 22 with the leftover row folded into the last texel. So a level-6 texel stands for a
+    /// fixed 64 screen rows, and the last one absorbs the remainder up to the screen edge.
+    /// Converting a normalized edge by multiplying it by the texel COUNT assumes each texel
+    /// is 1/22 of the screen instead, which is smaller than 64 rows - so the computed top
+    /// index lands one texel short of the texel the box's top edge really sits in.
+    ///
+    /// One texel short is the whole bug. The texel that was skipped is the one holding the
+    /// sky the box pokes into, so a box that is marginally visible over an occluder's
+    /// silhouette is declared hidden - the one verdict this test is never allowed to reach.
+    /// At 2560x1440 or 256x1440 every level from 6 up is affected vertically, which is
+    /// exactly the level a section-sized box is tested at.
+    ///
+    /// 1440 rows because that is where the halving chain first goes odd for the owner's
+    /// screen; the width is kept small and exactly divisible so any failure here is
+    /// unambiguously the vertical mapping.
+    /// </summary>
+    static void TexelRectFollowsThePyramidsOwnHalving(Check c)
+    {
+        const int width = 256, height = 1440;
+        const float occluderDepth = 0.5f;
+        const float boxDepth = 0.9f;
+
+        // Rows 0..1343 are an occluder well in front of the boxes; rows 1344..1439 are the
+        // depth-clear value, exactly as sky arrives in a real buffer. 1344 is the start of
+        // the last level-6 texel, so the sky occupies precisely the folded texel.
+        const int skyFromRow = 1344;
+
+        var scene = new float[width * height];
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                scene[y * width + x] = y >= skyFromRow ? 1.0f : occluderDepth;
+            }
+        }
+
+        int levels = LodHzbReference.LevelCount(width, height);
+        var chain = new List<(float[] Data, int W, int H)> { (scene, width, height) };
+        for (int level = 1; level < levels; level++)
+        {
+            (float[] previous, int pw, int ph) = chain[level - 1];
+            chain.Add((LodHzbReference.Reduce(previous, pw, ph),
+                Math.Max(1, pw >> 1), Math.Max(1, ph >> 1)));
+        }
+        var pyramid = new BuiltPyramid(chain);
+
+        // The fixture only means something if the pyramid really does fold, and really does
+        // keep the sky in one texel rather than smearing it over two.
+        c.Eq(22, pyramid.Size(6).Height, "level 6 of a 1440-row screen holds 22 texels");
+        c.Eq(45, pyramid.Size(5).Height, "and level 5 holds 45, the first odd height in the chain");
+        c.Eq(1.0f, pyramid.Farthest(6, 0, 21), "the folded last level-6 texel holds the sky");
+        c.Eq(occluderDepth, pyramid.Farthest(6, 0, 20), "and the one below it holds only occluder");
+
+        // A rectangle in screen rows, which is the unit the pyramid is actually built in.
+        LodHzbScreenBounds Rows(int firstRow, int lastRowExclusive, float depth) =>
+            Bounds(50f / width, firstRow / (float)height,
+                150f / width, lastRowExclusive / (float)height, depth);
+
+        // THE BUG. Rows 900..1349, so 450 pixels tall, which selects level 6. Its top edge
+        // lands in row 1349 - inside the folded texel 21, which holds sky. The box is behind
+        // the occluder in depth, so the only thing that can save it is sampling texel 21.
+        //
+        // Multiplying 1350/1440 by 22 gives 20.625, ceil minus one gives texel 20, and texel
+        // 20 stops at row 1343. Under that mapping every sample is occluder and the box is
+        // declared hidden while a sliver of it is visible against the sky.
+        LodHzbScreenBounds peeking = Rows(900, 1350, boxDepth);
+        c.False(LodHzbProjection.IsOccluded(peeking, pyramid, width, height, out int peekLevel),
+            "a box whose top edge reaches into the folded sky texel is drawn");
+        c.Eq(6, peekLevel, "and it was judged at level 6, where the halving has gone odd");
+
+        // The fold itself: a top edge inside rows 1408..1439 divides to texel 22, which does
+        // not exist. Clamping to the last texel is what honours the fold - the leftover rows
+        // live in texel 21 and nowhere else.
+        c.False(LodHzbProjection.IsOccluded(Rows(980, 1420, boxDepth), pyramid, width, height, out int foldLevel),
+            "a box reaching into the folded remainder still samples the last texel");
+        c.Eq(6, foldLevel, "at the same level");
+
+        // The fix must not cost real culling. This box is 400 rows tall, so also level 6,
+        // and its true footprint ends at row 999 - nowhere near the sky.
+        c.True(LodHzbProjection.IsOccluded(Rows(600, 1000, boxDepth), pyramid, width, height, out _),
+            "a box entirely inside the occluder is still hidden");
+
+        // Level 5 divides 1440 exactly, so the two mappings agree there and the verdicts must
+        // be unchanged in both directions. These are the control cases: if one of them moves,
+        // the change is not confined to the levels where the chain goes odd.
+        c.False(LodHzbProjection.IsOccluded(Rows(1150, 1350, boxDepth), pyramid, width, height, out int alignedOut),
+            "at the exactly-divisible level 5 a box overlapping sky is still drawn");
+        c.Eq(5, alignedOut, "and level 5 is the level that answered");
+        c.True(LodHzbProjection.IsOccluded(Rows(1000, 1200, boxDepth), pyramid, width, height, out int alignedIn),
+            "and a level-5 box clear of the sky is still hidden");
+        c.Eq(5, alignedIn, "at that same level");
+
+        // Anchoring to pixels lets a box touch one more texel than the level choice was
+        // sized for - nine texels where eight were promised - so the degenerate guard has to
+        // stay strictly-greater-than or the fix would turn real culls into fail-opens. Rows
+        // 40..519 span level-6 texels 0 through 8 inclusive: a difference of exactly eight.
+        // The box sits entirely in the occluder, so a fail-open would show up as a drawn box.
+        c.True(LodHzbProjection.IsOccluded(Rows(40, 520, boxDepth), pyramid, width, height, out int boundaryLevel),
+            "a box spanning exactly nine texels is still judged, not refused as degenerate");
+        c.Eq(6, boundaryLevel, "at level 6, where nine texels is the widest anchoring can reach");
+
+        // A box in front of the occluder is never hidden, whatever the mapping does.
+        c.False(LodHzbProjection.IsOccluded(
+                Rows(600, 1000, occluderDepth - 0.01f), pyramid, width, height, out _),
+            "and a box in front of the occluder is drawn");
     }
 
     /// <summary>A screen-space rectangle and depth, bypassing projection to test the sampler.</summary>

@@ -5,8 +5,9 @@ same-frame near/far depth split is packaged in 0.3.84 and removed the obvious pr
 motion flicker. Later play found a few normally shaped pieces still alternating at precise angles;
 `.vhcull off` stops every case. Version 0.3.88 added the conservative depth margin step 10.2
 required, but later controlled testing and the 0.3.96 margin ladder rejected insufficient bias as
-the remaining cause. Version 0.3.100's two-bucket draw-state capture is the active correctness
-gate. Phase 7's exact 12-byte opaque
+the remaining cause. **Version 0.3.101 closed that correctness gate:** the cause was step 10.3's
+texel arithmetic, not the bias, the clusters, or the sky, and the owner confirms the flicker is
+gone. Phase 7's exact 12-byte opaque
 quad representation, direct mesher output, bounded regional arena, vertex-pulling shader,
 multi-draw backend, controls and deterministic checks are source-complete on 2026-08-24.
 0.3.86's indexed path is human-accepted on the primary AMD driver: it looks identical and
@@ -67,8 +68,21 @@ suppression before the correctness gate closes. The owner then found 0.3.99 stil
 clarified that most affected meshes lie inside terrain, not along sky. Version 0.3.100 keeps the
 capture view-wide, observes both near and far command streams, distinguishes command presence from
 GPU cull-verdict changes, ranks only transitions that alter drawing, and reports their screen
-regions. This is now the active diagnostic; do not widen the sky guard from the misleading raw
-verdict ranking.
+regions.
+
+**That capture was never run, because 0.3.101 found and fixed the cause by source tracing.** The
+box test converted its projected rectangle to texel indices by scaling with a mip level's texel
+count, while the pyramid's own halving gives each level-L texel exactly `2^L` pixels with the odd
+remainder folded into the last texel. The two agree only while `levelSize * 2^level == screenSize`,
+so on a 1440-row screen every level from 6 up sampled one texel short at the far edge and skipped
+the texel holding sky beyond an occluder's silhouette - hiding terrain that was visibly peeking over
+a ridge, against invariant 8. Under the split, one wrongly culled near command leaves the exact
+clear value in the mid-frame picture and flips whole far clusters between `occluded` and
+`background`. That single mechanism accounts for the margin ladder's null result, the perimeter
+guard's failure, why clusters multiplied the spots, and why `.vhcull off` stopped everything. The
+rectangle is now pixel-anchored and shifted down by the level, clamped to the last texel to honour
+the fold, in both the shader and its C# mirror. The fix strictly widens the sampled region, so it
+can only reduce hiding. Do not reintroduce a sky guard or a bias ladder for this artifact.
 
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
@@ -1169,9 +1183,12 @@ performance, paired GPU timing/rejection evidence and turning/streaming behavior
 
 The margin search did not change the artifact and is closed. Version 0.3.97's live-command gate is
 also closed by the ridge result: actual far-cluster commands and index workload are removed at a
-high rate and FPS increases materially. Version 0.3.100's armed two-bucket draw-state capture is now
-the only active Phase 8 diagnostic; it must identify whether the near input, far command presence,
-or far cull verdict changes at the affected screen region before the culling rule is changed again.
+high rate and FPS increases materially. **The visual-stability gate is now also closed.** Version
+0.3.101 corrected the HZB texel mapping described above and the owner confirms the precise-angle
+flicker is gone. Phase 8's remaining work is measurement and cleanup: re-measure suppression and
+FPS on the corrected mapping before quoting either, retire the 0.3.99 sky guard and `.vhsplitbias`
+once a capture shows the guard idle, and settle metadata/dispatch cost against work removed plus
+turning behaviour. Do not reopen the depth margin, the sky silhouette, or a texture barrier.
 
 **Purpose:** Remove only a measured remaining bottleneck.
 

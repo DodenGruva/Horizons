@@ -240,19 +240,44 @@ uint TestBoxDetailed(
     ivec2 levelSize = textureSize(hzb, level);
     if (levelSize.x <= 0 || levelSize.y <= 0) return VERDICT_DEGENERATE;
 
-    // Outward on both edges: a rectangle covering a sliver of a texel must include it, or
-    // the box could be called hidden on the strength of pixels it does not sit behind.
-    int x0 = int(floor(minU * float(levelSize.x)));
-    int y0 = int(floor(minV * float(levelSize.y)));
-    int x1 = int(ceil(maxU * float(levelSize.x))) - 1;
-    int y1 = int(ceil(maxV * float(levelSize.y))) - 1;
+    // The screen size now anchors a pixel index rather than only scaling a float, so an
+    // unbound or zero uniform has to fail open here as it does in the C# twin. G42: an
+    // integer uniform set through the engine's vector overload silently stays zero.
+    if (screenWidth <= 0 || screenHeight <= 0) return VERDICT_DEGENERATE;
 
+    // Anchored in screen PIXELS, then divided down by the level's own halving. A texel at
+    // level L stands for exactly 2^L pixels, because that is how the pyramid was built - it
+    // is not 1/count of the screen, and the two stop agreeing the moment a dimension halves
+    // to something odd. At 1440 rows the chain reaches 45, so from level 6 up a texel covers
+    // 64 rows while 1/count is only about 65.5, and scaling by the count lands one texel
+    // SHORT of the texel the box's top edge really sits in. The texel skipped that way is
+    // the one holding the sky beyond an occluder's silhouette, so a box peeking over a ridge
+    // gets declared hidden - the one verdict this test is never allowed to reach.
+    //
+    // Outward on both edges is kept: a rectangle covering a sliver of a texel must include
+    // it, or the box could be called hidden on the strength of pixels it does not sit behind.
+    int pixelMinX = clamp(int(floor(minU * float(screenWidth))), 0, screenWidth - 1);
+    int pixelMinY = clamp(int(floor(minV * float(screenHeight))), 0, screenHeight - 1);
+    int pixelMaxX = clamp(int(ceil(maxU * float(screenWidth))) - 1, 0, screenWidth - 1);
+    int pixelMaxY = clamp(int(ceil(maxV * float(screenHeight))) - 1, 0, screenHeight - 1);
+
+    int x0 = pixelMinX >> level;
+    int y0 = pixelMinY >> level;
+    int x1 = pixelMaxX >> level;
+    int y1 = pixelMaxY >> level;
+
+    // Clamping the far edge to the last texel is what honours the odd-dimension fold: the
+    // reduction folds the leftover row and column into that texel, so it is where the
+    // remaining pixels genuinely live rather than an index being trimmed away.
     x0 = clamp(x0, 0, levelSize.x - 1);
     y0 = clamp(y0, 0, levelSize.y - 1);
     x1 = clamp(x1, x0, levelSize.x - 1);
     y1 = clamp(y1, y0, levelSize.y - 1);
     texelRectOut = ivec4(x0, y0, x1, y1);
 
+    // Strictly greater than, and that has to stay. A rectangle N texels WIDE can start part
+    // way into a texel and so touch N+1 of them, which is a difference of N - the level
+    // choice sizes the span, not the count.
     if ((x1 - x0) > texelsPerAxis || (y1 - y0) > texelsPerAxis) return VERDICT_DEGENERATE;
 
     float farthest = -1.0 / 0.0;

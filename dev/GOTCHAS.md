@@ -1858,6 +1858,48 @@ owner's observation.
 
 **Found:** 2026-08-24, 0.3.99 flicker capture and 0.3.100 diagnostic correction.
 
+### G96 - A mip texel covers 2^level pixels, not one over the level's texel count
+
+**Trigger:** converting a screen-space rectangle into texel indices at a chosen pyramid level.
+
+**Trap:** mip dimensions halve with floor, and the reduction folds any leftover odd row or column
+into the LAST texel, so a level-L texel stands for exactly `2^L` source pixels with the final texel
+absorbing the remainder. Scaling normalized bounds by the level's texel COUNT assumes an even
+`1/count` share instead, and the two agree only while `levelSize * 2^level == screenSize`. At 1440
+rows the chain reaches 45 and then 22, so from level 6 up `22 * 64 = 1408` and the mappings drift by
+up to half a texel. The computed index is never larger than the true one, so the far edge of the
+sampled rectangle falls one texel SHORT - and the texel dropped that way is the one holding whatever
+lies beyond an occluder's silhouette. Terrain peeking over a ridge was judged hidden, which the
+conservatism rule forbids outright. A dimension that divides exactly, as 2560 does at every
+selectable level, shows nothing, so the fault presents on one axis only and tracks camera pitch.
+
+**Do:** anchor the rectangle in screen pixels first, then shift right by the level, then clamp the
+far edge to `levelSize - 1` - that clamp is what honours the fold, because the leftover pixels
+genuinely live in the last texel. Expect a box to touch one more texel than the level was sized for
+and keep any span guard strictly-greater-than, or the anchoring converts real culls into fail-opens.
+
+**Found:** 2026-08-24, session 50, the cause of the Phase 8 precise-angle flicker.
+
+### G97 - A reference implementation that mirrors a shader cannot catch a shared assumption
+
+**Trigger:** relying on a CPU twin of GPU logic, deliberately written statement-for-statement, to
+prove that logic correct.
+
+**Trap:** the arrangement is designed to keep the two identical, so it detects divergence and
+nothing else. G96 lived in both copies at once and 5,073 assertions passed over it for several
+sessions, because every check compared the test against its own twin rather than against the
+artifact the test is supposed to describe. The pyramid's real texel footprints were never tied to
+the projection's arithmetic anywhere.
+
+**Do:** make at least one check cross the boundary - build the other artifact for real (reduce an
+actual pyramid at an actual screen size) and assert the verdict, not the intermediate arithmetic.
+Choose dimensions that are hostile rather than convenient: a size that divides exactly at every
+level cannot expose an alignment fault. And when a fix is proposed for a defect a mirror missed,
+run the fixture against the UNFIXED code first; a fixture that does not fail before the change is
+not evidence that the change was needed.
+
+**Found:** 2026-08-24, session 50.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread
