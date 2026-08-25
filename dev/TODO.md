@@ -2,58 +2,59 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## TOP PRIORITY - the flicker is fixed; convert the experiment into an accepted default
+## TOP PRIORITY - 0.4.0 is accepted; the next work is measurement and portability
 
-The Phase 8 precise-angle flicker was diagnosed from source in session 50 and fixed in 0.3.101.
-The owner has confirmed it is gone. The cause, the reproduction fixture and the reasoning are in
-`dev/sessions/SESSION_50.md` and G96/G97; the short form is that the box test scaled its rectangle
-by a mip level's texel count while the pyramid's texels actually cover `2^level` pixels, so from
-level 6 up on a 1440-row screen the sampled rectangle fell one texel short and skipped the texel
-holding sky beyond an occluder's silhouette. Under the split, one such wrongly culled near command
-left an exact `1.0` hole in the mid-frame picture and flipped whole far clusters. Do not reopen the
-margin ladder or the sky-guard theory: both are now explained as consequences rather than causes.
+**The GPU terrain renderer is the default and has been played and accepted.** Phase 8's correctness
+defect was found and fixed in 0.3.101 (G96/G97), the cleanup ran through 0.3.103, and the owner
+accepted 0.4.0 in ordinary play: the picture is correct and performance is much improved on his
+machine. That is qualitative acceptance on one system, not a measurement.
 
-**The remaining problem is acceptance, not speed.** The path works, it is worth a large amount in
-the terrain-heavy view, and its last known correctness defect is closed - but it is still behind
-switches, so it helps nobody but the owner. Work the following in order.
+Do not reopen the flicker: the margin ladder, the sky-silhouette theory and the texture-barrier idea
+are all explained as consequences of the texel-mapping defect rather than causes of it. The
+narrative is in `dev/history/DONE.md` and Sessions 50-53.
 
-### 1. Retire what the fix made obsolete
+**The path now helps every player on supported hardware, so what is left is proving it elsewhere
+and knowing what it actually buys.** Two things are owed before any optimisation is worth starting,
+and both are cheap next to the work below them.
 
-- **The 0.3.99 one-texel sky guard** is very probably redundant: the texel it was reaching outside
-  the rectangle for is now inside it. Confirm with one armed `.vhflicker` capture that the guard
-  never fires, then remove it. It is a per-command cost on every far cluster and, more importantly,
-  a piece of source that encodes a refuted theory.
-- **`.vhsplitbias`** is a rejected diagnostic. Remove the command and the far-bucket-only bias
-  plumbing, returning the far verdict to the ordinary four-step margin.
-- Neither removal should share a build with anything else the owner has to judge visually.
+### 1. Re-measure the split's suppression and FPS
 
-### 2. Pin the assumption the fix now depends on
+Every recorded figure for the split predates the 0.3.101 fix, which strictly reduces hiding. Do not
+quote 80.5%/77.1% or the 340-to-460 FPS ridge result as current; re-measure before either appears
+in a gate. Report a range and its exact conditions rather than a single value: the 2026-08-24
+`HzbField` runs showed a seed-sampled figure of this kind moving about seven points on camera
+placement alone (G98).
 
-Pixel anchoring is only correct because the cull's `screenWidth`/`screenHeight` uniforms are the
-depth pyramid's own dimensions - `LodTerrainRenderer` passes `depthPyramid.Width/.Height`, and the
-pyramid allocates at the frame size, so `levelSize == screenSize >> level` holds by construction.
-Nothing asserts it. A future half-resolution pyramid would silently resurrect the flicker. Add a
-runtime refusal that fails open when the two disagree, and a check over it.
+### 2. Close the portability gates the default now depends on
 
-### 3. Refresh figures the fix invalidated
+Ordinary play on the primary driver is accepted, which raises the stakes on the two gates that were
+never closed:
 
-- The `25.0%` widening figure in `LodHzbProjection.DefaultTexelsPerAxis` came from `HzbField`,
-  which runs the corrected mapping. It is now a small overstatement. Re-run the field measurement
-  or mark the number as pre-0.3.101.
-- Every recorded suppression and FPS figure for the split predates the fix, which strictly reduces
-  hiding. Do not quote 80.5%/77.1% as current; re-measure before it appears in a gate.
+- **A second GPU driver has never run this path.** It is now the default, so an unsupported or
+  misbehaving driver affects a real player rather than an experiment. The capability probe and the
+  same-frame fallbacks are the protection, and they have only ever been exercised on one machine.
+  This is the single most valuable remaining check.
+- **The paired packed route is untimed.** Run `-GpuIndirect 1 -GpuPacked 0|1` over the same route
+  and compare GPU opaque time, total frame time, upload time and reported regional bytes. Until
+  that runs, the 12-byte format's memory and bandwidth benefit is not separated from its decode
+  cost, and the temporary expanded regional mirror cannot be dropped - which is the memory win the
+  format was chosen for.
 
-### 4. Close the gates that stand between this and default-on
-
-Unchanged and still owed: a second driver, turning/streaming/motion behaviour against the current
-visual standard, and the paired packed route. These are listed under Phase 7 and Phase 9 below.
-Default-on is the largest single remaining win available, because it converts a proven measurement
-into something ordinary players receive.
+Longer-tail Phase 9 coverage - MSAA and SSAO settings, window resize, fullscreen changes, shader
+reload, dimension and world changes, long sessions, large caches, multiplayer and competing-LOD-mod
+deferral - is listed under Phase 9 in the renderer plan and is unexercised with the path default-on.
 
 ## Renderer optimisation candidates, ranked and not yet funded
 
 Recorded in session 50 at the owner's request. None is started. The ordering is by expected payoff
 against effort, and each is explicitly gated on a measurement rather than on argument.
+
+**Note on diagnostics.** The staging switches are retired and the measurement surfaces are not:
+every stage keeps an environment override, and the live cull telemetry, GPU stage timings,
+section-height counters, distance bands and the offline `HzbField` harness all survive. Session 53
+verified against source that no retired command is needed by anything below. The one exception is
+item 1, which should get a temporary live toggle of its own - new instrumentation for new work,
+retired once the bounds are accepted.
 
 **1. Aggregate vertical bounds for quadtree subtrees.** Phase 3b gave individual sections real mesh
 heights, but `LodTraversalPolicy.NodeInView` still bounds whole SUBTREES from bedrock to sky, and
@@ -82,10 +83,6 @@ texel fetches each, even where the whole-section box would settle the question i
 hierarchical test - whole box first, clusters only when the result is neither clearly hidden nor
 clearly visible - would cut cull work substantially. Parked: the cull dispatch has never been shown
 to cost anything material, so this needs a GPU timing figure before it is worth the complexity.
-
-**5. Cache the cull pass's uniform locations.** `LodGpuCullPass.Dispatch` looks up nine uniform
-locations by string every dispatch. Trivial tidy-up for whenever someone is next in that file; not
-worth its own change.
 
 **Explicitly not recommended, with reasons, so they are not re-proposed:**
 
@@ -196,10 +193,11 @@ barrier. The 0.3.100 two-bucket capture was never run: the defect was found by s
 proven on a deterministic fixture instead. `.vhflicker` remains available and is now most useful for
 confirming that the sky guard has gone idle.
 
-Remaining Phase 8 work is measurement and cleanup, not correctness: re-measure cluster suppression
-and FPS on the corrected mapping before quoting either, and retire the sky guard and `.vhsplitbias`
-as described under the top priority. Metadata/dispatch cost against work removed, and turning
-without remesh storms, remain the phase's open gates.
+Remaining Phase 8 work is measurement and cleanup, not correctness. `.vhsplitbias` is gone as of
+0.3.102 and the sky guard now counts itself; re-measure cluster suppression and FPS on the
+corrected mapping before quoting either, and delete the guard once its counter reads zero, both as
+described under the top priority. Metadata/dispatch cost against work removed, and turning without
+remesh storms, remain the phase's open gates.
 
 Do not repeat the stage ladder or split-bias values, re-add a sky guard, or add a texture barrier
 without new evidence. The margin ladder behaved the same at 4/16/64/256 steps because the flip was

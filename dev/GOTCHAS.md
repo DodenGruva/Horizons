@@ -1865,20 +1865,28 @@ owner's observation.
 **Trap:** mip dimensions halve with floor, and the reduction folds any leftover odd row or column
 into the LAST texel, so a level-L texel stands for exactly `2^L` source pixels with the final texel
 absorbing the remainder. Scaling normalized bounds by the level's texel COUNT assumes an even
-`1/count` share instead, and the two agree only while `levelSize * 2^level == screenSize`. At 1440
-rows the chain reaches 45 and then 22, so from level 6 up `22 * 64 = 1408` and the mappings drift by
-up to half a texel. The computed index is never larger than the true one, so the far edge of the
-sampled rectangle falls one texel SHORT - and the texel dropped that way is the one holding whatever
-lies beyond an occluder's silhouette. Terrain peeking over a ridge was judged hidden, which the
-conservatism rule forbids outright. A dimension that divides exactly, as 2560 does at every
-selectable level, shows nothing, so the fault presents on one axis only and tracks camera pitch.
+`1/count` share instead, and the two agree only while `levelSize * 2^level == screenSize`. The
+computed index is never larger than the true one, so the far edge of the sampled rectangle falls one
+texel SHORT - and the texel dropped that way is the one holding whatever lies beyond an occluder's
+silhouette. Terrain peeking over a ridge was judged hidden, which the conservatism rule forbids
+outright.
+
+**Work the arithmetic for the real display, not an assumed one.** The drift begins at the first
+level whose size has gone odd, and the two axes generally differ. On the owner's 1920x1080 the
+height chain reaches 135 and then 67, so `67 * 16 = 1072` against 1080 and every level from **4**
+up is affected; the width chain reaches 15 and then 7, so levels **8** and above are affected too.
+Sessions 50 and 51 wrote this up for an assumed 2560x1440, where the onset is level 6 vertically and
+width happens to divide exactly - which understated how much of the pyramid was involved. A
+dimension that does divide exactly shows nothing at all, so a single tested resolution can hide the
+fault completely.
 
 **Do:** anchor the rectangle in screen pixels first, then shift right by the level, then clamp the
 far edge to `levelSize - 1` - that clamp is what honours the fold, because the leftover pixels
 genuinely live in the last texel. Expect a box to touch one more texel than the level was sized for
 and keep any span guard strictly-greater-than, or the anchoring converts real culls into fail-opens.
 
-**Found:** 2026-08-24, session 50, the cause of the Phase 8 precise-angle flicker.
+**Found:** 2026-08-24, session 50, the cause of the Phase 8 precise-angle flicker. Resolution
+arithmetic corrected 2026-08-25 from the owner's log, after two write-ups assumed the wrong display.
 
 ### G97 - A reference implementation that mirrors a shader cannot catch a shared assumption
 
@@ -1899,6 +1907,28 @@ run the fixture against the UNFIXED code first; a fixture that does not fail bef
 not evidence that the change was needed.
 
 **Found:** 2026-08-24, session 50.
+
+### G98 - A figure measured over randomly placed cameras carries seed noise; quote the spread
+
+**Trigger:** citing a single percentage produced by an offline harness that samples camera
+positions and yaws.
+
+**Trap:** `HzbField`'s widening result was recorded as "eight hides 25.0%" and quoted that way for
+sessions, including inside a source comment justifying a shipped constant. Re-running it on
+2026-08-24 gave 18.4% and 25.6% from two camera seeds under otherwise identical conditions - a
+seven-point spread from the seed alone, larger than the effect of the 0.3.101 mapping correction or
+of a 350-versus-192-block vanilla distance. The decimal place implied a precision the measurement
+never had, and a later session could easily have "detected a regression" that was only a different
+seed. The same run also showed the recorded "sixteen adds about 2.5 points" was really 3.9 to 5.4.
+
+**Do:** run at least two seeds and report the range, not a single value. Prefer the property that
+is stable across seeds - here the ORDERING of wide-4, wide-8 and wide-16, which held in every run
+and is what the choice of eight actually rests on - and gate decisions on that rather than on a
+midpoint. When quoting such a figure in source or docs, name the seed, the cache and the modelled
+view distance beside it, because all three move it. See also G73 on cross-checks whose noise floor
+is above zero by construction.
+
+**Found:** 2026-08-24, re-measuring the widening figure after the 0.3.101 texel-mapping fix.
 
 ## Reversals and disproved claims
 

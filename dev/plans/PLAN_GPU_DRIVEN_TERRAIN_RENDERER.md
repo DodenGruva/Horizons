@@ -1211,6 +1211,20 @@ Gate:
 
 ### Phase 9 - hardening and default decision
 
+**Implementation status, 2026-08-25:** the default decision was taken and the fast path shipped as
+the default in 0.4.0, ahead of this phase's own gates, on the owner's explicit product call. He
+played it and accepted the picture and the performance on the primary AMD driver. Phase 8's
+correctness defect was found and fixed in 0.3.101, the staging switches and diagnostics were retired
+through 0.3.103, and `.vhgpu off` remains as one saved in-game route back to the legacy renderer.
+
+**What that decision did NOT close, and what this phase still owns:** a second GPU vendor or driver
+has never run the path; the paired packed route is untimed, so the 12-byte format's memory and
+bandwidth benefit is unseparated from its decode cost and the temporary expanded regional mirror
+cannot yet be dropped; no current suppression or frame-rate figure exists for the corrected mapping;
+and MSAA/SSAO settings, resize, fullscreen changes, shader reload, dimension and world changes, long
+sessions, large caches, multiplayer and competing-LOD-mod deferral are all unexercised with the path
+default-on. Human acceptance is one machine, one world, ordinary play, and qualitative.
+
 **Purpose:** Decide whether the fast path is ready for ordinary users.
 
 Work:

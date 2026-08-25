@@ -201,12 +201,26 @@ internal static class LodHzbProjection
     /// that. The cost is the sample count, which grows as the square.
     ///
     /// EIGHT, changed from two on 2026-08-23. Two is the classic choice and it is why big
-    /// boxes hid so rarely - the sky problem. Measured offline over the owner's own cache at
-    /// his 350-block vanilla view distance, 128 views, two seeds: of the sections two texels
-    /// could not hide, eight hides 25.0%. The alternative answer, splitting each section into
-    /// a 4x4 grid, hides 14.7% and costs a rewrite of how terrain is stored, meshed and
-    /// drawn. Sixteen adds only about 2.5 points over eight, so the curve has flattened by
-    /// then and the extra samples are not worth paying for.
+    /// boxes hid so rarely - the sky problem. Measured offline over the owner's own cache:
+    /// of the sections two texels could not hide, eight hides about a fifth to a quarter.
+    ///
+    /// Re-measured on 2026-08-24 against the corrected texel mapping (G96), because the old
+    /// reading of "25.0%" went through the defective one. Four HzbField runs on that day's
+    /// cache, 2560x1440, 64 views each - at a 350-block modelled vanilla distance, 18.4% and
+    /// 25.6% on two camera seeds; at the 192 blocks clientsettings.json actually holds,
+    /// 16.2% and 23.8%.
+    ///
+    /// The useful finding is the SPREAD, not the middle. Changing only the camera seed moves
+    /// this figure about seven points, which is far more than the mapping fix or the vanilla
+    /// distance moved it, and the original 25.0% sits inside that range. So the correction
+    /// did not materially change what widening buys, and this statistic was never precise to
+    /// a decimal place: quote it as a range and do not use it as a gate without stating the
+    /// seed. The ordering is what is stable - wide-4 below wide-8 below wide-16 in all four
+    /// runs - and that ordering is what the choice of eight rests on. Sixteen added 3.9 to
+    /// 5.4 points over eight across those runs rather than the 2.5 recorded earlier, so the
+    /// curve does flatten, but less sharply than that number claimed. The alternative answer,
+    /// splitting each section into a 4x4 grid, still costs a rewrite of how terrain is
+    /// stored, meshed and drawn.
     ///
     /// This widens what the test can PROVE hidden. It cannot make it hide something visible:
     /// every sample still comes from a max-reduced pyramid, and more samples can only push
@@ -228,18 +242,12 @@ internal static class LodHzbProjection
     /// That verdict flickers at a precise camera angle and cluster subdivision multiplies
     /// how many independently visible pieces can hit it. Treat this band as undecidable.
     /// </summary>
+    /// The band is four steps for every bucket. A larger far-bucket margin was searched at
+    /// 4, 16, 64 and 256 steps in 0.3.96 and changed nothing, because the flicker it was
+    /// aimed at was a texel-mapping fault rather than a near-equality one (G96). That
+    /// diagnostic is removed; do not reintroduce a per-bucket margin for this artifact.
     public const int OcclusionDepthBiasSteps = 4;
-    public const int MaximumDiagnosticDepthBiasSteps = 4096;
     public const float OcclusionDepthBias = OcclusionDepthBiasSteps / 16777215f;
-
-    /// <summary>
-    /// Converts a player-selected 24-bit depth-step margin into normalized depth. The
-    /// ordinary verdict remains fixed at four steps; only the same-frame cached-on-cached
-    /// diagnostic uses larger values while the precise-angle flicker is localized.
-    /// </summary>
-    public static float DepthBiasForSteps(int steps) =>
-        Math.Clamp(steps, OcclusionDepthBiasSteps, MaximumDiagnosticDepthBiasSteps)
-        / 16777215f;
 
     public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
         LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);

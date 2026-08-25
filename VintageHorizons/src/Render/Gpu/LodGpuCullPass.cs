@@ -19,7 +19,6 @@ internal interface ILodGpuCullDispatch
         int levels,
         int count,
         float occlusionDepthBias,
-        int backgroundGuardTexels,
         LodGpuCullBucket bucket,
         ReadOnlySpan<LodGpuCullIdentity> identities);
 }
@@ -45,12 +44,23 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
     const int TelemetryBinding = 2;
     const int TelemetrySlotCount = 4;
     const int FramesBetweenTelemetrySamples = 30;
-    const int FlickerBinding = 3;
-    const int FlickerSlotCount = 8;
 
     readonly Action<string> warn;
     readonly ILodGlStateApi stateApi = new LodOpenGlStateApi();
     int program;
+
+    // Resolved once at link time rather than per dispatch. Ten glGetUniformLocation calls
+    // three times a frame is not a measured cost, but the lookup is a driver-side string
+    // comparison against the program's uniform table and the answer cannot change while the
+    // program lives, so paying for it every frame buys nothing at all.
+    int uniformViewProjection = -1;
+    int uniformScreenWidth = -1;
+    int uniformScreenHeight = -1;
+    int uniformLevelCount = -1;
+    int uniformSectionCount = -1;
+    int uniformHzb = -1;
+    int uniformOcclusionDepthBias = -1;
+    int uniformTelemetryEnabled = -1;
     bool disabled;
     bool telemetryDisabled;
     int telemetryEpoch;
@@ -65,27 +75,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
     readonly uint[] telemetryReadback = new uint[LodGpuCullTelemetryLayout.WordCount];
     readonly LodGpuCullStatistics[] telemetryStatistics =
         [new(), new(), new()];
-    readonly LodGpuFlickerCapture[] flickerCaptures = [new(), new(), new()];
-    readonly int[] flickerBuffers = new int[FlickerSlotCount];
-    readonly int[] flickerBufferWords = new int[FlickerSlotCount];
-    readonly IntPtr[] flickerFences = new IntPtr[FlickerSlotCount];
-    readonly bool[] flickerPending = new bool[FlickerSlotCount];
-    readonly int[] flickerCounts = new int[FlickerSlotCount];
-    readonly int[] flickerIssueSequences = new int[FlickerSlotCount];
-    readonly int[] flickerSampleSequences = new int[FlickerSlotCount];
-    readonly LodGpuCullBucket[] flickerBuckets = new LodGpuCullBucket[FlickerSlotCount];
-    readonly int[] flickerScreenWidths = new int[FlickerSlotCount];
-    readonly int[] flickerScreenHeights = new int[FlickerSlotCount];
-    readonly int[] flickerSlotEpochs = new int[FlickerSlotCount];
-    readonly LodGpuCullIdentity[][] flickerIdentities =
-        new LodGpuCullIdentity[FlickerSlotCount][];
-    readonly float[][] flickerMatrices = new float[FlickerSlotCount][];
-    readonly uint[][] flickerReadbacks = new uint[FlickerSlotCount][];
-    bool flickerArmed;
-    bool flickerDisabled;
-    int flickerEpoch;
-    int flickerIssueSequence;
-    readonly int[] flickerBucketSequences = new int[3];
 
     public LodGpuCullPass(Action<string> warn) => this.warn = warn;
 
@@ -131,6 +120,14 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
             }
 
             program = created;
+            uniformViewProjection = GL.GetUniformLocation(program, "viewProjection");
+            uniformScreenWidth = GL.GetUniformLocation(program, "screenWidth");
+            uniformScreenHeight = GL.GetUniformLocation(program, "screenHeight");
+            uniformLevelCount = GL.GetUniformLocation(program, "levelCount");
+            uniformSectionCount = GL.GetUniformLocation(program, "sectionCount");
+            uniformHzb = GL.GetUniformLocation(program, "hzb");
+            uniformOcclusionDepthBias = GL.GetUniformLocation(program, "occlusionDepthBias");
+            uniformTelemetryEnabled = GL.GetUniformLocation(program, "telemetryEnabled");
             LastFailure = "";
             return true;
         }
@@ -160,7 +157,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         int levels,
         int count,
         float occlusionDepthBias,
-        int backgroundGuardTexels,
         LodGpuCullBucket bucket,
         ReadOnlySpan<LodGpuCullIdentity> identities)
     {
@@ -169,7 +165,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         if (viewProjection == null || viewProjection.Length < 16) return false;
         if (levels <= 0 || screenWidth <= 0 || screenHeight <= 0) return false;
         if (!float.IsFinite(occlusionDepthBias) || occlusionDepthBias < 0f) return false;
-        if (backgroundGuardTexels is < 0 or > 1) return false;
 
         // Program and texture unit zero are the only shared state this touches; the caller
         // owns the buffer bindings and puts them back.
@@ -181,30 +176,20 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         try
         {
             ReadReadyTelemetry();
-            ReadReadyFlickerSamples();
             int telemetrySlot = BeginTelemetrySample(bucket);
-            int flickerSlot = BeginFlickerSample(
-                bucket, count, identities, viewProjection, screenWidth, screenHeight);
 
             GL.UseProgram(program);
             GL.ActiveTexture(TextureUnit.Texture0);
             GL.BindTexture(TextureTarget.Texture2D, hzbTexture);
 
-            GL.UniformMatrix4(
-                GL.GetUniformLocation(program, "viewProjection"), 1, false, viewProjection);
-            GL.Uniform1(GL.GetUniformLocation(program, "screenWidth"), screenWidth);
-            GL.Uniform1(GL.GetUniformLocation(program, "screenHeight"), screenHeight);
-            GL.Uniform1(GL.GetUniformLocation(program, "levelCount"), levels);
-            GL.Uniform1(GL.GetUniformLocation(program, "sectionCount"), count);
-            GL.Uniform1(GL.GetUniformLocation(program, "hzb"), 0);
-            GL.Uniform1(GL.GetUniformLocation(program, "occlusionDepthBias"),
-                occlusionDepthBias);
-            GL.Uniform1(GL.GetUniformLocation(program, "backgroundGuardTexels"),
-                backgroundGuardTexels);
-            GL.Uniform1(GL.GetUniformLocation(program, "telemetryEnabled"),
-                telemetrySlot >= 0 ? 1 : 0);
-            GL.Uniform1(GL.GetUniformLocation(program, "flickerCaptureEnabled"),
-                flickerSlot >= 0 ? 1 : 0);
+            GL.UniformMatrix4(uniformViewProjection, 1, false, viewProjection);
+            GL.Uniform1(uniformScreenWidth, screenWidth);
+            GL.Uniform1(uniformScreenHeight, screenHeight);
+            GL.Uniform1(uniformLevelCount, levels);
+            GL.Uniform1(uniformSectionCount, count);
+            GL.Uniform1(uniformHzb, 0);
+            GL.Uniform1(uniformOcclusionDepthBias, occlusionDepthBias);
+            GL.Uniform1(uniformTelemetryEnabled, telemetrySlot >= 0 ? 1 : 0);
 
             GL.DispatchCompute(GroupsFor(count), 1, 1);
 
@@ -212,7 +197,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
             if (error != ErrorCode.NoError) return Disable("culling raised " + error);
 
             if (telemetrySlot >= 0) FinishTelemetrySample(telemetrySlot, bucket);
-            if (flickerSlot >= 0) FinishFlickerSample(flickerSlot);
 
             Dispatches++;
             SectionsTested += count;
@@ -335,159 +319,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         }
     }
 
-    int BeginFlickerSample(
-        LodGpuCullBucket bucket,
-        int count,
-        ReadOnlySpan<LodGpuCullIdentity> identities,
-        ReadOnlySpan<float> viewProjection,
-        int screenWidth,
-        int screenHeight)
-    {
-        if (!flickerArmed || flickerDisabled
-            || bucket == LodGpuCullBucket.General)
-            return -1;
-        if (identities.Length < count)
-            return DisableFlicker("the command identity list was shorter than the draw list");
-
-        int slot = Array.FindIndex(flickerPending, pending => !pending);
-        if (slot < 0)
-        {
-            flickerCaptures[(int)bucket].AddDroppedSample();
-            return -1;
-        }
-
-        try
-        {
-            int words = checked(count * LodGpuFlickerLayout.WordCount);
-            if (flickerBuffers[slot] == 0)
-            {
-                flickerBuffers[slot] = GL.GenBuffer();
-                if (flickerBuffers[slot] == 0)
-                    return DisableFlicker("the driver refused a result buffer");
-            }
-            GL.BindBuffer(BufferTarget.ShaderStorageBuffer, flickerBuffers[slot]);
-            if (flickerBufferWords[slot] < words)
-            {
-                GL.BufferData(BufferTarget.ShaderStorageBuffer,
-                    words * sizeof(uint), IntPtr.Zero, BufferUsageHint.StreamRead);
-                flickerBufferWords[slot] = words;
-                flickerReadbacks[slot] = new uint[words];
-            }
-            GL.BindBufferBase(BufferRangeTarget.ShaderStorageBuffer,
-                FlickerBinding, flickerBuffers[slot]);
-
-            if (flickerIdentities[slot] == null
-                || flickerIdentities[slot].Length < count)
-                flickerIdentities[slot] = new LodGpuCullIdentity[count];
-            identities[..count].CopyTo(flickerIdentities[slot]);
-            flickerMatrices[slot] ??= new float[16];
-            viewProjection[..16].CopyTo(flickerMatrices[slot]);
-            flickerCounts[slot] = count;
-            flickerBuckets[slot] = bucket;
-            flickerIssueSequences[slot] = ++flickerIssueSequence;
-            flickerSampleSequences[slot] = ++flickerBucketSequences[(int)bucket];
-            flickerScreenWidths[slot] = screenWidth;
-            flickerScreenHeights[slot] = screenHeight;
-            flickerSlotEpochs[slot] = flickerEpoch;
-
-            ErrorCode error = GL.GetError();
-            return error == ErrorCode.NoError
-                ? slot
-                : DisableFlicker("preparing a result sample raised " + error);
-        }
-        catch (Exception e)
-        {
-            return DisableFlicker("preparing a result sample failed: " + e.Message);
-        }
-    }
-
-    void FinishFlickerSample(int slot)
-    {
-        try
-        {
-            GL.MemoryBarrier(MemoryBarrierFlags.ShaderStorageBarrierBit
-                | MemoryBarrierFlags.BufferUpdateBarrierBit);
-            IntPtr fence = GL.FenceSync(
-                SyncCondition.SyncGpuCommandsComplete, WaitSyncFlags.None);
-            if (fence == IntPtr.Zero)
-            {
-                DisableFlicker("the driver refused a result fence");
-                return;
-            }
-            flickerFences[slot] = fence;
-            flickerPending[slot] = true;
-            ErrorCode error = GL.GetError();
-            if (error != ErrorCode.NoError)
-                DisableFlicker("finishing a result sample raised " + error);
-        }
-        catch (Exception e)
-        {
-            DisableFlicker("fencing a result sample failed: " + e.Message);
-        }
-    }
-
-    void ReadReadyFlickerSamples()
-    {
-        if (flickerDisabled) return;
-        try
-        {
-            Span<int> ready = stackalloc int[FlickerSlotCount];
-            int readyCount = 0;
-            for (int slot = 0; slot < FlickerSlotCount; slot++)
-            {
-                if (!flickerPending[slot]) continue;
-                WaitSyncStatus status = GL.ClientWaitSync(
-                    flickerFences[slot], ClientWaitSyncFlags.None, 0);
-                if (status != WaitSyncStatus.AlreadySignaled
-                    && status != WaitSyncStatus.ConditionSatisfied)
-                {
-                    if (status == WaitSyncStatus.WaitFailed)
-                        DisableFlicker("waiting for a result fence failed");
-                    continue;
-                }
-
-                ready[readyCount++] = slot;
-            }
-
-            // A low-numbered ring slot may have been reused after a higher-numbered slot
-            // was issued. Read in dispatch order, not slot order, so consecutive verdicts
-            // remain consecutive in the CPU transition tracker.
-            for (int i = 0; i < readyCount - 1; i++)
-            {
-                for (int j = i + 1; j < readyCount; j++)
-                {
-                    if (flickerIssueSequences[ready[j]]
-                        >= flickerIssueSequences[ready[i]]) continue;
-                    (ready[i], ready[j]) = (ready[j], ready[i]);
-                }
-            }
-
-            for (int i = 0; i < readyCount; i++)
-            {
-                int slot = ready[i];
-                GL.DeleteSync(flickerFences[slot]);
-                flickerFences[slot] = IntPtr.Zero;
-                flickerPending[slot] = false;
-                int words = flickerCounts[slot] * LodGpuFlickerLayout.WordCount;
-                GL.BindBuffer(BufferTarget.ShaderStorageBuffer, flickerBuffers[slot]);
-                GL.GetBufferSubData(BufferTarget.ShaderStorageBuffer, IntPtr.Zero,
-                    words * sizeof(uint), flickerReadbacks[slot]);
-                if (flickerSlotEpochs[slot] == flickerEpoch)
-                    flickerCaptures[(int)flickerBuckets[slot]].Add(
-                        flickerSampleSequences[slot],
-                        flickerIdentities[slot].AsSpan(0, flickerCounts[slot]),
-                        flickerReadbacks[slot].AsSpan(0, words),
-                        flickerMatrices[slot],
-                        flickerScreenWidths[slot],
-                        flickerScreenHeights[slot]);
-            }
-        }
-        catch (Exception e)
-        {
-            DisableFlicker("reading result samples failed: " + e.Message);
-        }
-    }
-
     /// <summary>Workgroups needed to cover every command, rounding up.</summary>
     public static int GroupsFor(int count) =>
         count <= 0 ? 0 : (count + LocalSize - 1) / LocalSize;
@@ -519,34 +350,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
             : "live command counters awaiting their first asynchronous sample";
     }
 
-    public string StartFlickerCapture()
-    {
-        if (flickerDisabled)
-            return "flicker capture unavailable for this session";
-        flickerEpoch++;
-        flickerIssueSequence = 0;
-        Array.Clear(flickerBucketSequences);
-        foreach (LodGpuFlickerCapture capture in flickerCaptures) capture.Reset();
-        flickerArmed = true;
-        return DescribeFlickerCapture();
-    }
-
-    public string StopFlickerCapture()
-    {
-        flickerArmed = false;
-        return DescribeFlickerCapture();
-    }
-
-    public string DescribeFlickerCapture()
-    {
-        if (flickerDisabled) return "flicker capture unavailable for this session";
-        string far = flickerCaptures[(int)LodGpuCullBucket.SplitFar]
-            .Describe(flickerArmed, "split far");
-        string near = flickerCaptures[(int)LodGpuCullBucket.SplitNear]
-            .Describe(flickerArmed, "split near");
-        return far + Environment.NewLine + near;
-    }
-
     public string Describe() =>
         disabled ? "failed: " + LastFailure
         : program == 0 ? "not created"
@@ -576,19 +379,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         return -1;
     }
 
-    int DisableFlicker(string reason)
-    {
-        if (!flickerDisabled)
-        {
-            flickerDisabled = true;
-            flickerArmed = false;
-            warn("[VintageHorizons] Flicker capture disabled; culling and drawing continue "
-                + "unchanged: " + reason);
-            ReleaseFlicker();
-        }
-        return -1;
-    }
-
     void ReleaseTelemetry()
     {
         for (int i = 0; i < TelemetrySlotCount; i++)
@@ -605,23 +395,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
         }
     }
 
-    void ReleaseFlicker()
-    {
-        for (int i = 0; i < FlickerSlotCount; i++)
-        {
-            try
-            {
-                if (flickerFences[i] != IntPtr.Zero) GL.DeleteSync(flickerFences[i]);
-                if (flickerBuffers[i] != 0) GL.DeleteBuffer(flickerBuffers[i]);
-            }
-            catch { /* context teardown must continue */ }
-            flickerFences[i] = IntPtr.Zero;
-            flickerBuffers[i] = 0;
-            flickerPending[i] = false;
-            flickerBufferWords[i] = 0;
-        }
-    }
-
     void Release()
     {
         try { if (program != 0) GL.DeleteProgram(program); }
@@ -631,7 +404,6 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
 
     public void Dispose()
     {
-        ReleaseFlicker();
         ReleaseTelemetry();
         Release();
     }

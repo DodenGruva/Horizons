@@ -53,7 +53,6 @@ internal readonly record struct LodGpuCullRequest(
     int ScreenHeight,
     int Levels,
     float OcclusionDepthBias,
-    int BackgroundGuardTexels,
     LodGpuCullBucket Bucket)
 {
     /// <summary>Whether this frame has everything culling needs. Anything missing draws everything.</summary>
@@ -236,7 +235,7 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
                 cull.ViewProjection!, cull.HzbTexture,
                 cull.ScreenWidth, cull.ScreenHeight, cull.Levels,
                 builder.CommandCount, cull.OcclusionDepthBias,
-                cull.BackgroundGuardTexels, cull.Bucket,
+                cull.Bucket,
                 builder.Identities);
         }
         catch

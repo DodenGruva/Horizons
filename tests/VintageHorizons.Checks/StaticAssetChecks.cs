@@ -56,50 +56,41 @@ public static class StaticAssetChecks
         string packedBackend = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
             "Render", "Gpu", "LodGpuPackedDrawBackend.cs"));
 
-        // Default off, with an explicit on override, and reachable from a scripted run.
-        // The phase gate is a controlled A/B; a switch that can only be typed in game
-        // cannot be pinned for a route, and a comparison whose switches were set by hand
-        // is how session 40 lost a run.
-        c.True(renderer.Contains("Environment.GetEnvironmentVariable(\"VINTAGEHORIZONS_GPU_INDIRECT\") == \"1\"",
+        // Default ON since 0.3.103, with an explicit environment override that still wins.
+        // The direction flipped; the requirement did not. A phase gate is a controlled A/B,
+        // a switch that can only be typed in game cannot be pinned for a route, and a
+        // comparison whose switches were set by hand is how session 40 lost a run - so the
+        // variable must still be able to take either side of the comparison from a script.
+        c.True(renderer.Contains("Environment.GetEnvironmentVariable(\"VINTAGEHORIZONS_GPU_INDIRECT\") != \"0\"",
                 StringComparison.Ordinal),
-            "batched drawing is off unless the environment turns it on");
-        c.True(mod.Contains("ChatCommands.Create(\"vhindirect\")", StringComparison.Ordinal),
-            "and can still be flipped live for a side-by-side look");
-        c.True(mod.Contains("ChatCommands.Create(\"vhphase8\")", StringComparison.Ordinal),
-            "the complete Phase 8 experiment has one player-facing preset command");
-        c.True(mod.Contains("ChatCommands.Create(\"vhsplitbias\")", StringComparison.Ordinal),
-            "the precise-angle cached-on-cached verdict has a live safety-margin diagnostic");
-        c.True(mod.Contains("ChatCommands.Create(\"vhflicker\")", StringComparison.Ordinal),
-            "the precise-angle issue has an explicitly armed per-cluster capture command");
-        foreach ((string setting, string value) in new[]
+            "batched drawing is on unless the environment takes it away");
+        // The staging commands are retired as of 0.3.103, and these assert they stay retired.
+        // They existed to A/B an experiment; the experiment is now the product, and a switch
+        // that can select a half-built stage is a way to file a bug against a configuration
+        // nobody ships. The scripted environment overrides above remain the supported way to
+        // take either side of a controlled comparison.
+        foreach (string retired in new[]
         {
-            ("IndirectDrawEnabled", "batching"),
-            ("PackedDrawEnabled", "packed"),
-            ("DepthPyramidEnabled", "depthCull"),
-            ("GpuCullEnabled", "depthCull"),
-            ("LateDepthPyramid", "late"),
-            ("ClusterDrawEnabled", "clusters"),
+            "vhphase8", "vhindirect", "vhpacked", "vhclusters",
+            "vhcull", "vhlate", "vhheight", "vhflicker",
         })
         {
-            c.True(mod.Contains($"renderer.{setting} = {value};", StringComparison.Ordinal),
-                $"every Phase 8 preset explicitly controls {setting}");
+            c.False(mod.Contains($"ChatCommands.Create(\"{retired}\")", StringComparison.Ordinal),
+                $"the retired staging command .{retired} is gone");
         }
-        c.True(mod.Contains("if (renderer.GpuShadowRequested != arenas)", StringComparison.Ordinal)
-            && mod.Contains("renderer.RequestGpuShadow(arenas ? \"on\" : \"off\");",
-                StringComparison.Ordinal),
-            "every Phase 8 preset explicitly controls the regional arenas too");
-        foreach (string preset in new[] { "off", "batch", "cull", "late", "packed", "clusters" })
-        {
-            c.True(mod.Contains($"\"{preset}\"", StringComparison.Ordinal),
-                $"the one-command Phase 8 ladder includes the {preset} stage");
-        }
+
+        // One in-game way back to the established renderer, and it is saved, so a client that
+        // misbehaves can be returned to the legacy path without editing a file or restarting.
+        c.True(mod.Contains("ChatCommands.Create(\"vhgpu\")", StringComparison.Ordinal),
+            "the fast path keeps exactly one in-game off switch");
+        c.True(mod.Contains("ChatCommands.Create(\"vhhzb\")", StringComparison.Ordinal),
+            "and the depth report the owner reads stays available");
         c.True(bench.Contains("VINTAGEHORIZONS_GPU_INDIRECT", StringComparison.Ordinal)
             && bench.Contains("$GpuIndirect", StringComparison.Ordinal),
             "the benchmark runner can pin either side of the comparison for a whole run");
         c.True(renderer.Contains("VINTAGEHORIZONS_GPU_PACKED", StringComparison.Ordinal)
-            && mod.Contains("ChatCommands.Create(\"vhpacked\")", StringComparison.Ordinal)
             && bench.Contains("$GpuPacked", StringComparison.Ordinal),
-            "packed drawing has live and whole-run comparison controls");
+            "packed drawing keeps its whole-run comparison control");
         c.True(packedBackend.Contains("GL.MultiDrawElementsIndirect(", StringComparison.Ordinal)
             && packedBackend.Contains(
                 "GL.BindBuffer(BufferTarget.ElementArrayBuffer, sharedIndexBuffer);",

@@ -92,6 +92,11 @@ Completion evidence:
   patch component by exactly one in both `modinfo.json` and the project file (for example,
   `0.3.40` -> `0.3.41`). Never put changed binaries behind an already-used version. Ordinary
   compile and test runs are not playable artifacts and do not consume a version number.
+- **The human may direct a minor or major promotion at a milestone** (for example
+  `0.3.103` -> `0.4.0`, done on 2026-08-25 when the GPU renderer became the default path).
+  Promote the build that was actually accepted, changing only the two version strings, so the
+  released version is the one somebody played. The patch rule above continues to govern every
+  ordinary test artifact; only the human calls a promotion.
 - Standing owner instruction (2026-08-24): whenever source is ready for the owner's in-game
   testing, automatically advance the patch, create the ready test zip, verify it, and copy it to
   `%APPDATA%\VintagestoryData\Mods`. Do not stop at a source-only handoff. This authorizes the

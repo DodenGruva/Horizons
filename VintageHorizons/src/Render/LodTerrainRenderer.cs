@@ -737,13 +737,8 @@ public class LodTerrainRenderer : IRenderer
         }
     }
 
-    bool lateDepthPyramid;
-    /// <summary>
-    /// Safety margin for the second picture only, in normalized 24-bit depth steps. Four is
-    /// the established ordinary cull. Larger values are a live diagnostic for the precise-
-    /// angle cached-on-cached flicker and never weaken vanilla-only culling.
-    /// </summary>
-    public int SplitDepthBiasSteps { get; set; } = LodHzbProjection.OcclusionDepthBiasSteps;
+    bool lateDepthPyramid =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_LATE") != "0";
     readonly float[] explainViewProjection = new float[16];
     public long SplitDepthFrames { get; private set; }
     public long SplitDepthNearCommands { get; private set; }
@@ -803,7 +798,8 @@ public class LodTerrainRenderer : IRenderer
     /// It needs the indirect path: culling works by zeroing an indirect command, and the
     /// established path has no commands to zero.
     /// </summary>
-    public bool GpuCullEnabled { get; set; }
+    public bool GpuCullEnabled { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_CULL") != "0";
 
     /// <summary>
     /// Sections the indirect pass could not batch: the arenas do not hold them, or a
@@ -3539,10 +3535,7 @@ public class LodTerrainRenderer : IRenderer
             depthPyramid.Width,
             depthPyramid.Height,
             depthPyramid.Levels,
-            bucket == LodGpuCullBucket.SplitFar
-                ? LodHzbProjection.DepthBiasForSteps(SplitDepthBiasSteps)
-                : LodHzbProjection.OcclusionDepthBias,
-            bucket == LodGpuCullBucket.SplitFar ? 1 : 0,
+            LodHzbProjection.OcclusionDepthBias,
             bucket);
     }
 
@@ -3692,7 +3685,7 @@ public class LodTerrainRenderer : IRenderer
     /// match; a chat command cannot be part of a scripted route.
     /// </remarks>
     public bool IndirectDrawEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_INDIRECT") == "1";
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_INDIRECT") != "0";
 
     /// <summary>
     /// Pull exact twelve-byte greedy quads instead of expanded vertices/indices. It is an
@@ -3700,7 +3693,7 @@ public class LodTerrainRenderer : IRenderer
     /// culling and fallback as the accepted indirect path.
     /// </summary>
     public bool PackedDrawEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_PACKED") == "1";
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_PACKED") != "0";
 
     /// <summary>
     /// Phase 8 comparison: draw the packed stream as moderate 4x4 spatial clusters, each
@@ -3708,7 +3701,7 @@ public class LodTerrainRenderer : IRenderer
     /// default-off until the extra commands and split quads beat their measured cost.
     /// </summary>
     public bool ClusterDrawEnabled { get; set; } =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_CLUSTERS") == "1";
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_CLUSTERS") != "0";
 
     /// <summary>
     /// Everything that has to hold before a frame may take the fast path. Read once per
@@ -3806,23 +3799,6 @@ public class LodTerrainRenderer : IRenderer
             : "nothing was culled last frame";
         return "on: " + cullPass.Describe() + ". " + ran + ".";
     }
-
-    public string StartFlickerCapture()
-    {
-        if (!LateDepthPyramid || !ClusterDrawEnabled)
-            return "not armed: apply `.vhphase8 clusters` first so split-far cluster commands exist";
-        if (cullPass == null)
-            return "not armed: GPU terrain buffers are not attached yet";
-        return cullPass.StartFlickerCapture();
-    }
-
-    public string StopFlickerCapture() => cullPass == null
-        ? "flicker capture unavailable: GPU terrain buffers are not attached"
-        : cullPass.StopFlickerCapture();
-
-    public string DescribeFlickerCapture() => cullPass == null
-        ? "flicker capture unavailable: GPU terrain buffers are not attached"
-        : cullPass.DescribeFlickerCapture();
 
     public string DescribeIndirectDraw()
     {
@@ -5019,7 +4995,8 @@ public class LodTerrainRenderer : IRenderer
             return "same-frame near/far split requested, but no split frame has drawn yet";
 
         return $"same-frame split at {LodGpuDepthSplitPolicy.NearRadiusBlocks:0} blocks "
-            + $"with a {SplitDepthBiasSteps}-step cached-on-cached safety margin: "
+            + $"with the established {LodHzbProjection.OcclusionDepthBiasSteps}-step safety "
+            + $"margin on both buckets: "
             + $"{SplitDepthFrames} frames, {SplitDepthNearCommands} near commands and "
             + $"{SplitDepthFarCommands} far commands, {SplitDepthMidBuilds} mid-frame "
             + "pictures completed. A failed picture draws the far bucket without culling.";

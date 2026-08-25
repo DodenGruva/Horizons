@@ -2,10 +2,11 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-24
-**Mod version:** `0.3.101`; the Phase 8 precise-angle flicker is fixed and human-accepted (`0.2.1`
-is the public released version; the next changed playable artifact must increment exactly once to
-`0.3.102`)
+**Status date:** 2026-08-25
+**Mod version:** `0.4.0`; **the GPU terrain renderer is the default path and has been played and
+accepted** on the primary driver (`0.2.1` remains the public released version - 0.4.0 is packaged
+and installed locally but not pushed, tagged or published; the next changed playable artifact must
+increment exactly once to `0.4.1`)
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `70` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -176,6 +177,25 @@ The fix was gated on reproduction: the unfixed tier failed exactly one of 5,089 
 predicted peeking box - with all five controls in the same new fixture passing. Post-fix the tier
 passes 5,089, verified twice and re-run independently during review.
 
+**Version 0.3.102 is the cleanup that follows.** `.vhsplitbias` and its far-bucket-only bias
+plumbing are removed, since the margin they searched was answered by finding the real cause; both
+buckets use the one four-step margin. The 0.3.99 sky guard is kept but now counted, so `.vhhzb`
+reports perimeter refusals and the guard can be deleted on evidence rather than on argument. The
+box test fails open when its screen size is not the pyramid's own base size, which is the
+assumption pixel anchoring silently depends on. Cull uniform locations resolve once at link time.
+The fast tier passes 5,091 assertions. Nothing here is expected to change a pixel, and one ordinary
+play session is owed to confirm the shader still compiles and to read the guard counter.
+
+**The widening figure was re-measured offline and the result is about noise, not about the fix.**
+Four `HzbField` runs against the corrected mapping on the same day's cache: of the sections the old
+narrow width could not hide, eight texels hides 18.4% and 25.6% on two camera seeds at a 350-block
+modelled vanilla distance, and 16.2% and 23.8% at the 192 blocks `clientsettings.json` now holds.
+Changing only the camera seed moves the figure about seven points - more than the mapping
+correction or the vanilla distance move it - so the previously quoted `25.0%` sits inside its own
+measurement noise and was never precise to a decimal. What is stable across all four runs is the
+ordering, wide-4 below wide-8 below wide-16, and that ordering is what the choice of eight rests
+on. Sixteen added 3.9 to 5.4 points over eight rather than the 2.5 recorded earlier.
+
 **Depth verdicts stop terrain being drawn, and it is confirmed on hardware.** `cull: on: 67008
 dispatches over 1733784 commands. last frame's commands were culled on the card.` AMD RX 9070 XT
 under GL 4.3. The shader compiles, the driver accepts a buffer used as both a compute target and a
@@ -271,8 +291,8 @@ correctness gate is now closed:** 0.3.101 fixed the depth-test texel mapping and
 the precise-angle flicker is gone. What remains for the phase is measurement and cleanup rather
 than correctness - the suppression and FPS figures above all predate the fix, which strictly
 reduces hiding, so they must be re-measured before they are quoted as current, and the now-probably
-redundant 0.3.99 sky guard and rejected `.vhsplitbias` diagnostic should be retired once a capture
-shows the guard idle.
+redundant 0.3.99 sky guard should be retired once a session shows its new refusal counter reading
+zero. The rejected `.vhsplitbias` diagnostic was removed in 0.3.102.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -941,15 +961,26 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-0. **Convert the fast path from a working experiment into an accepted default.** The Phase 8
-flicker is fixed and human-accepted in 0.3.101, so the blocking correctness defect is gone and the
-next steps are cleanup, one pinned assumption, and the outstanding acceptance gates. In order:
-retire the 0.3.99 sky guard once a capture shows it never fires, and remove the rejected
-`.vhsplitbias` plumbing; assert that the cull's screen dimensions equal the depth pyramid's, which
-the pixel-anchored mapping now silently depends on; re-measure cluster suppression and FPS, because
-every recorded figure predates a fix that strictly reduces hiding; then close the second-driver,
-motion, and paired packed-route gates. Ranked optimisation candidates - subtree vertical bounds
-first - are recorded in `dev/TODO.md` and none is funded.
+0. **Prove the accepted default elsewhere, and find out what it actually buys.** Ordinary play on
+the primary driver is accepted as of 0.4.0, which makes the two never-closed gates more important
+rather than less: **a second GPU driver has still never run this path**, and it is now what every
+supported player gets, so the capability probe and the same-frame fallbacks have only ever been
+exercised on one machine. Second is the **paired packed route** (`-GpuIndirect 1 -GpuPacked 0|1`),
+which would separate the 12-byte format's memory and bandwidth benefit from its decode cost and is
+what allows the temporary expanded regional mirror to be dropped. Alongside both, **re-measure
+suppression and frame rate**, because every figure recorded here predates the 0.3.101 fix. Ranked
+optimisation candidates - subtree vertical bounds first - are in `dev/TODO.md` and none is funded.
+Historical note on how it got here: the Phase 8
+flicker is fixed and human-accepted in 0.3.101, and 0.3.102 completed the cleanup that followed:
+`.vhsplitbias` and its bias plumbing are gone, the anchoring assumption is asserted in the shader,
+and the 0.3.99 sky guard now counts its own refusals. What remains, in order: **play one ordinary
+session on 0.3.102 under `.vhphase8 clusters` and read the `perimeter-guard refusals` figure on the
+`.vhhzb` line** - zero retires the guard, non-zero means the mapping fix missed a case, and either
+way that session is the first evidence the changed shader still compiles on the primary driver;
+re-measure cluster suppression and FPS, because every recorded figure predates a fix that strictly
+reduces hiding, reporting a range and its conditions rather than a single value (G98); then close
+the second-driver, motion, and paired packed-route gates. Ranked optimisation candidates - subtree
+vertical bounds first - are recorded in `dev/TODO.md` and none is funded.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against
@@ -1243,6 +1274,17 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Human-tested
 
+- **The owner played 0.4.0 (as 0.3.103) on 2026-08-25 and accepted it.** He reports that everything
+  looks visually correct and that performance is a large improvement. This is the acceptance of the
+  GPU terrain renderer as the default path: the first build drawing cached terrain through it
+  without anyone turning it on, and the first with the 0.3.99 sky guard removed. It closes the
+  visual and motion question that had failed repeatedly since Phase 6.
+
+  It is **qualitative** and deliberately carries no figure, because none was measured. It covers one
+  machine, one driver, one world and ordinary play. It is not evidence about a second driver, about
+  the paired packed route, about long sessions, resizes, shader reloads, multiplayer or
+  competing-LOD-mod deferral, and it does not supply a current suppression or frame-rate number.
+
 - The owner ran 0.3.101 on 2026-08-24 and confirmed the Phase 8 precise-angle terrain flicker is
   gone. This accepts the pixel-anchored HZB texel mapping as the fix for that artifact, and is also
   the first evidence that the changed culling shader compiles and runs on the primary driver. It is
@@ -1314,12 +1356,22 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   quoted in `LodHzbProjection` were all measured through the defective mapping. They are retained
   as the historical record of why the path is worth keeping, not as current numbers, and must be
   re-measured before either appears in a gate.
-- **The sky guard has not been observed idle.** The 0.3.99 one-texel perimeter refusal is expected
-  to be redundant now that the texel it reached for lies inside the sampled rectangle, but that is
-  reasoning, not a capture. It remained active in the build the owner accepted.
-- **The pixel-anchored mapping depends on an unasserted invariant.** It is correct only because the
-  cull's screen dimensions are the depth pyramid's own, which holds by construction today and is
-  checked nowhere. A future reduced-resolution pyramid would reintroduce the flicker silently.
+- **The sky guard was measured and removed, and the removal is unobserved.** 0.3.102's counter read
+  169,994 refusals over 2,495,527 sampled far commands - not the zero that was predicted - so the
+  guard was drawing already-hidden terrain rather than protecting anything, and 0.3.103 deletes it.
+  The 26.5%-to-33.3% far-suppression figure is arithmetic over that one 582-sample report at one
+  location, not a re-measurement, and no FPS effect has been observed. The guard's index-weighted
+  cost was never counted.
+- **Default-on is accepted on one machine only.** 0.4.0 was played and accepted on the primary AMD
+  driver, which is real evidence for that configuration and none at all for any other. A second GPU
+  driver has never run this path, and it is now what every supported player receives. The capability
+  probe and the same-frame fallbacks are the protection and have only ever been exercised here.
+- **The acceptance carries no number.** "Performance is fantastic" is a qualitative report. No FPS,
+  frame-time or suppression figure was taken on the accepted build, so the repository still holds no
+  current measurement of what the corrected path removes or costs.
+- **Longer-tail Phase 9 coverage is unexercised with the path default-on**: MSAA and SSAO settings,
+  window resize, fullscreen changes, shader reload, dimension and world changes, long sessions,
+  large caches, multiplayer, and competing-LOD-mod deferral.
 - **Phase 7 portability and final memory policy.** On the primary AMD driver, 0.3.86's indexed
   `lodterrainpacked` path matches the expanded picture and frame rate. No second driver has run it,
   and paired route telemetry has not yet separated upload, opaque-GPU and total-frame effects.

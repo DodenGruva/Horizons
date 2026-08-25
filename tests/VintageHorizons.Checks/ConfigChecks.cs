@@ -188,22 +188,30 @@ public static class ConfigChecks
         return config;
     }
     /// <summary>
-    /// The client's GPU path switches, which are saved but must never be defaulted on.
+    /// The client's GPU path switches, which are saved and, since 0.3.103, default ON.
     ///
     /// A fresh install has no config file, so these defaults ARE what every new player gets.
-    /// Turning them on by default would trade a measured win for an unmeasured one: batching
-    /// suspends the delayed occlusion queries, and those were worth 170 to 500 FPS on a hill
-    /// view, while depth culling does not yet pay for itself. Until that comparison is run
-    /// and won, off is the only defensible default - and a default flipped by accident is
-    /// silent, because the symptom is somebody else's frame rate.
+    /// They were off for as long as the path was an experiment, and the reasoning is worth
+    /// keeping because it says what had to change: batching suspends the delayed occlusion
+    /// queries, which were worth 170 to 500 FPS on a hill view, and depth culling could not
+    /// pay for itself while cached terrain could not occlude cached terrain. The same-frame
+    /// near/far split answered the second, the measured far-command suppression answered the
+    /// first, and the 0.3.101 texel-mapping fix closed the correctness defect that stood in
+    /// the way. The owner made the call to default it on.
+    ///
+    /// This check is still here for the same reason it always was: a default flipped by
+    /// ACCIDENT is silent, because the symptom is somebody else's frame rate. It now pins the
+    /// deliberate value rather than the cautious one. Note that these are not a capability
+    /// claim - a failed probe, shader, allocation or draw still selects the legacy renderer.
     /// </summary>
     static void ClientGpuDefaults(Check c)
     {
         var config = new VintageHorizonsConfig();
 
-        c.False(config.GpuArenas, "the regional arenas are off for a fresh install");
-        c.False(config.IndirectDraw, "batched drawing is off for a fresh install");
-        c.False(config.DepthCull, "depth culling is off for a fresh install");
+        c.True(config.GpuArenas, "the regional arenas are on for a fresh install");
+        c.True(config.IndirectDraw, "batched drawing is on for a fresh install");
+        c.True(config.DepthCull, "depth culling is on for a fresh install");
+        c.True(config.LateDepthPicture, "and so is the same-frame near/far split");
 
         // The settings the mod has always shipped, checked alongside so a new field cannot
         // quietly change one of them.

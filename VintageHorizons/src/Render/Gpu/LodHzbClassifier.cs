@@ -110,7 +110,6 @@ uniform int levelCount;
 uniform int sectionCount;
 uniform sampler2D hzb;
 uniform float occlusionDepthBias;
-uniform int backgroundGuardTexels;
 
 const uint VERDICT_VISIBLE = 0u;
 const uint VERDICT_OCCLUDED = 1u;
@@ -245,6 +244,15 @@ uint TestBoxDetailed(
     // integer uniform set through the engine's vector overload silently stays zero.
     if (screenWidth <= 0 || screenHeight <= 0) return VERDICT_DEGENERATE;
 
+    // The anchoring below divides a SCREEN pixel index down by the level, which reproduces
+    // the pyramid's own mapping only while these uniforms are the pyramid's base size. Both
+    // callers pass depthPyramid.Width/Height, so it holds by construction - but if a
+    // reduced-resolution pyramid ever arrived with frame-sized uniforms the arithmetic would
+    // go wrong silently and hide visible terrain again, which is exactly the failure G96
+    // describes. Fail open instead: an assumption that has stopped being true is not a
+    // verdict this test is entitled to reach.
+    if (textureSize(hzb, 0) != ivec2(screenWidth, screenHeight)) return VERDICT_DEGENERATE;
+
     // Anchored in screen PIXELS, then divided down by the level's own halving. A texel at
     // level L stands for exactly 2^L pixels, because that is how the pyramid was built - it
     // is not 1/count of the screen, and the two stop agreeing the moment a dimension halves
@@ -296,38 +304,13 @@ uint TestBoxDetailed(
 
     // Equality and the quantization/rasterization band around it are coplanar cases and
     // must draw. Without the band, whole commands flicker at precise camera angles.
-    if (nearestDepth > farthest + occlusionDepthBias)
-    {
-        // The still-camera capture isolated the remaining split-far flicker to a core texel
-        // alternating between terrain and the exact 1.0 clear value. Before hiding a far
-        // cluster against freshly drawn cached terrain, inspect a one-texel perimeter for
-        // stable sky. The perimeter is a refusal guard only: non-sky depths outside the
-        // projected box never participate in the occlusion comparison.
-        int guard = clamp(backgroundGuardTexels, 0, 1);
-        if (guard > 0)
-        {
-            int gx0 = max(0, x0 - guard);
-            int gy0 = max(0, y0 - guard);
-            int gx1 = min(levelSize.x - 1, x1 + guard);
-            int gy1 = min(levelSize.y - 1, y1 + guard);
-            for (int y = gy0; y <= gy1; y++)
-            {
-                for (int x = gx0; x <= gx1; x++)
-                {
-                    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
-                    float guardDepth = texelFetch(hzb, ivec2(x, y), level).r;
-                    if (isinf(guardDepth) || isnan(guardDepth))
-                        return VERDICT_DEGENERATE;
-                    if (guardDepth >= 1.0)
-                    {
-                        farthestDepthOut = guardDepth;
-                        return VERDICT_BACKGROUND;
-                    }
-                }
-            }
-        }
-        return VERDICT_OCCLUDED;
-    }
+    // The 0.3.99 one-texel sky perimeter refusal that used to sit here is GONE, and must not
+    // come back for this artifact. It was built for a sky-silhouette theory that the 0.3.101
+    // texel-mapping fix superseded (G96), and 0.3.102 measured what keeping it cost: 169,994
+    // refusals over 2,495,527 sampled far commands, every one of them a piece the depth test
+    // had already proved hidden and the guard drew anyway. Removing it takes far-command
+    // suppression from 26.5% to 33.3% in that sample.
+    if (nearestDepth > farthest + occlusionDepthBias) return VERDICT_OCCLUDED;
     if (farthest >= 1.0) return VERDICT_BACKGROUND;
     return VERDICT_VISIBLE;
 }
@@ -451,10 +434,6 @@ layout(std430, binding = 1) buffer Commands { uint commands[]; };
 // Word offsets match LodGpuCullTelemetryLayout and are pinned by the fast checks.
 layout(std430, binding = 2) buffer LiveCullStats { uint liveCullStats[]; };
 
-// Full per-command facts are many orders of magnitude larger than the sampled counters,
-// so this buffer is written only while the owner explicitly arms `.vhflicker`. Eight words
-// per command match LodGpuFlickerLayout.
-layout(std430, binding = 3) buffer FlickerResults { uint flickerResults[]; };
 " + SharedSource + @"
 const uint COMMAND_WORDS = 5u;
 const uint INSTANCE_COUNT_WORD = 1u;
@@ -472,21 +451,6 @@ const uint STATS_DEGENERATE = 10u;
 const uint STATS_BAND_BASE = 11u;
 const uint STATS_BAND_STRIDE = 6u;
 uniform int telemetryEnabled;
-uniform int flickerCaptureEnabled;
-
-void WriteFlickerResult(uint index, uint verdict, float nearestDepth,
-    float farthestDepth, int level, ivec4 texelRect)
-{
-    uint word = index * 8u;
-    flickerResults[word] = verdict;
-    flickerResults[word + 1u] = floatBitsToUint(nearestDepth);
-    flickerResults[word + 2u] = floatBitsToUint(farthestDepth);
-    flickerResults[word + 3u] = uint(level);
-    flickerResults[word + 4u] = uint(texelRect.x);
-    flickerResults[word + 5u] = uint(texelRect.y);
-    flickerResults[word + 6u] = uint(texelRect.z);
-    flickerResults[word + 7u] = uint(texelRect.w);
-}
 
 uint DistanceBand(float distanceBlocks)
 {
@@ -516,12 +480,8 @@ void main()
     if (index >= uint(sectionCount)) return;
 
     uint commandWord = index * COMMAND_WORDS;
-    if (commands[commandWord + INSTANCE_COUNT_WORD] == 0u)
-    {
-        if (flickerCaptureEnabled != 0)
-            WriteFlickerResult(index, 0xffffffffu, -1.0, -1.0, -1, ivec4(-1));
-        return;
-    }
+    // Already zeroed by the CPU, so there is nothing for this pass to decide.
+    if (commands[commandWord + INSTANCE_COUNT_WORD] == 0u) return;
 
     vec3 lo = boxes[index * 2u].xyz;
     vec3 hi = boxes[index * 2u + 1u].xyz;
@@ -531,8 +491,6 @@ void main()
     ivec4 texelRect;
     uint verdict = TestBoxDetailed(lo, hi, TEXELS_PRIMARY,
         nearestDepth, farthestDepth, level, texelRect);
-    if (flickerCaptureEnabled != 0)
-        WriteFlickerResult(index, verdict, nearestDepth, farthestDepth, level, texelRect);
     uint indexCount = commands[commandWord];
 
     if (telemetryEnabled != 0)
@@ -987,7 +945,6 @@ void main()
         GL.Uniform1(GL.GetUniformLocation(program, "hzb"), 0);
         GL.Uniform1(GL.GetUniformLocation(program, "occlusionDepthBias"),
             LodHzbProjection.OcclusionDepthBias);
-        GL.Uniform1(GL.GetUniformLocation(program, "backgroundGuardTexels"), 0);
     }
 
     void Disable(string reason)

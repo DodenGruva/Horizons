@@ -2,6 +2,112 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-25 - GPU terrain renderer accepted in play and promoted to 0.4.0
+
+- The owner played 0.3.103, the first build drawing cached terrain through the GPU path by default
+  and the first without the 0.3.99 sky guard, and reported the picture correct and performance a
+  large improvement. This closes the visual and motion gate on the primary driver in ordinary play -
+  the gate that had failed repeatedly since Phase 6.
+- Recorded as qualitative acceptance on one machine with no figure attached, because none was
+  measured. Every suppression and frame-rate number in the repository still predates the 0.3.101
+  mapping fix and remains flagged as historical rather than current.
+- Verified before promoting that none of the retired diagnostics is required by any open TODO item.
+  All thirteen environment overrides survive, as do the live cull telemetry, the GPU stage timings,
+  the section-height distribution and vertical-cull counters, the distance-band report and the
+  offline `HzbField` harness. Only switches were removed. The subtree-vertical-bounds item will want
+  a new toggle of its own, which is new instrumentation rather than a resurrection.
+- Recorded the two things that did become slower to diagnose: isolating culling from batching now
+  needs an environment variable and a restart rather than one command, and a flicker recurrence
+  would mean restoring the capture from git.
+- Version 0.4.0 promoted from the accepted build with no code change beyond the two version strings,
+  packaged, verified and installed copy-only. `CLAUDE.md`'s patch-only versioning rule was amended
+  to name owner-directed milestone promotions rather than being silently broken.
+- Still open and unchanged by the acceptance: a second driver has never run the fast path, the
+  paired packed route is untimed, and no current suppression or frame-rate figure exists.
+
+## 2026-08-25 - The GPU terrain path becomes the default and the staging scaffolding is removed
+
+- The owner read 0.3.102's new counter: 169,994 perimeter-guard refusals over 2,495,527 sampled far
+  commands (6.8%), against 660,943 culled (26.5%). Every refusal was a command the depth test had
+  already proved hidden and the guard drew anyway, so removing it takes far-command suppression to
+  33.3% in that sample. Session 51 predicted zero; that prediction was wrong and is withdrawn. With
+  the rectangle corrected the guard inspects a genuinely outside ring of texels and trips on any far
+  piece with exact clear sky within one texel of its outline, which near a ridge is common. The
+  guard is deleted.
+- The same log confirmed 0.3.102 healthy on the primary driver: 0 degenerate verdicts, meaning the
+  base-size fail-open passes rather than misfires, and 34,868 of 34,868 pyramid builds completed.
+- It also corrected the display assumed by sessions 50 and 51. The owner runs 1920x1080, so the
+  texel-mapping defect began at pyramid level 4 vertically and also affected width from level 8 -
+  wider than the 2560x1440 write-up implied. G96 now states the rule and uses the real display.
+- On the owner's decision, every stage of the path defaults on: regional arenas, batched indirect
+  drawing, the depth pyramid, GPU culling, the same-frame near/far split, packed quads and clusters.
+  Environment overrides flipped from opt-in to opt-out so the benchmark harness can still pin either
+  side of a controlled comparison. Capability, shader, allocation and draw failures still select the
+  established renderer in the same frame.
+- Eight staging commands were retired with the code behind them: `.vhphase8`, `.vhindirect`,
+  `.vhpacked`, `.vhclusters`, `.vhcull`, `.vhlate`, `.vhheight` and `.vhflicker`, plus the phase-8
+  preset helpers and the entire armed flicker-capture machinery - shader buffer and uniform, the
+  eight-slot fenced readback ring, the CPU transition tracker and its checks. `.vhgpu` remains as
+  the single saved in-game off switch and `.vhhzb` remains for reading the depth report.
+- Checks were inverted rather than dropped: fresh-install defaults now pin ON with the reasoning
+  that changed, the retired commands are pinned absent, and the surviving switches pinned present.
+- Version 0.3.103 packaged, verified and installed copy-only. Built and harness-tested only, and
+  taken deliberately ahead of Phase 9's second-driver and motion gates.
+
+## 2026-08-24 - Post-fix cleanup: rejected diagnostic removed, sky guard made accountable
+
+- `.vhsplitbias`, the far-bucket-only depth-margin search, is removed together with
+  `DepthBiasForSteps` and `MaximumDiagnosticDepthBiasSteps`. Its 4/16/64/256 comparison was
+  answered by finding the real cause in 0.3.101; both buckets use the established four-step margin,
+  which was already the default, so no shipped verdict changed.
+- The 0.3.99 one-texel sky perimeter guard is retained but now counts its own refusals. A word
+  appended after the distance bands in the live cull telemetry records every far cluster the
+  perimeter refused to hide, and `.vhhzb` prints it even at zero. Deleting the guard is now gated
+  on one ordinary session reading zero rather than on the argument that the mapping fix made it
+  redundant.
+- The box test fails open when `textureSize(hzb, 0)` is not `ivec2(screenWidth, screenHeight)`.
+  Pixel anchoring reproduces the pyramid's mapping only while those agree; the check sits in the
+  shader because the C# call site passes the pyramid's own fields and could only compare a value
+  with itself.
+- The cull program's ten uniform locations resolve once at link time instead of by name per
+  dispatch.
+- The `HzbField` widening figure was re-measured against the corrected mapping and the earlier
+  same-day annotation calling `25.0%` an overstatement was withdrawn as unmeasured. Four runs gave
+  18.4% and 25.6% at a 350-block modelled vanilla distance and 16.2% and 23.8% at the configured
+  192 blocks. The camera seed alone moves the figure about seven points, so the old value sits
+  inside its own noise; it is now recorded as a range with its conditions, and the choice of eight
+  texels rests on the wide-4/wide-8/wide-16 ordering that held in every run. Sixteen added 3.9 to
+  5.4 points over eight rather than the 2.5 previously recorded. G98 carries the trap.
+- Version 0.3.102 packaged, verified and installed copy-only. Built and harness-tested only: it
+  changes the culling shader, and every failure path disables culling rather than hiding terrain.
+
+## 2026-08-24 - Phase 8 precise-angle flicker diagnosed from source and fixed
+
+- The depth pyramid halves each level with floor and folds the leftover odd row and column into its
+  last texel, so a level-L texel covers exactly `2^L` screen pixels. Both copies of the occlusion
+  box test scaled the projected rectangle by the level's texel COUNT instead, which is equivalent
+  only while `levelSize * 2^level == screenSize`. At 1440 rows the chain reaches 45 and then 22, so
+  from level 6 up the sampled rectangle fell one texel short at its far edge and skipped precisely
+  the texel holding whatever lay beyond an occluder's silhouette. Terrain peeking over a ridge was
+  declared occluded, against invariant 8. Screen width was unaffected because 2560 divides exactly
+  at every selectable level, making the fault vertical only and pitch-sensitive.
+- Under the same-frame split, one wrongly suppressed near command leaves the exact `1.0` clear
+  value where its pixels belonged, and every far cluster whose rectangle covers that hole flips
+  wholesale between `occluded` and `background` as sub-texel noise decides the near verdict each
+  frame. That single mechanism accounts for the null margin ladder, the failed one-texel perimeter
+  guard, why clusters multiplied the affected spots, and why `.vhcull off` stopped everything.
+- The rectangle is now anchored in screen pixels and shifted down by the level, with the far edge
+  clamped to the last texel so the odd-dimension fold is honoured, applied identically to the GLSL
+  test and its C# mirror. The change can only widen the sampled region, so it strictly reduces
+  hiding and cannot cause missing terrain.
+- Gated on reproduction: a new fixture reduces a real 1440-row pyramid and pins the peeking box,
+  the folded remainder, two exactly-divisible control levels, the nine-texel sampling boundary and
+  a box in front of the occluder. The unfixed code failed exactly that one case out of 5,089
+  assertions before the fix was written.
+- Version 0.3.101 packaged and installed; the owner ran it and confirmed the precise-angle flicker
+  is gone. G96 records the texel-footprint rule and G97 that a reference implementation mirroring a
+  shader cannot catch a shared assumption.
+
 ## 2026-08-24 - Phase 8 value proved and flicker capture narrowed to real draw-state changes
 
 - A controlled adjacent comparison measured 386 FPS under both `late` and `cull`; the known

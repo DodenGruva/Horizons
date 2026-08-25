@@ -38,25 +38,31 @@ public class VintageHorizonsConfig
     /// <summary>
     /// The GPU render path switches, remembered per install.
     ///
-    /// Saved rather than defaulted on. Shipping them on would trade a measured win for an
-    /// unmeasured one: batching suspends the delayed occlusion queries, those were worth
-    /// 170 to 500 FPS on a hill view in session 34, and depth culling does not yet pay for
-    /// itself while cached terrain cannot occlude cached terrain. So the default stays off
-    /// for everyone, and someone who has decided to run them does not have to say so again
-    /// every session.
+    /// **Default ON since 0.3.103**, which is the owner's product decision after the Phase 8
+    /// correctness defect was found and fixed in 0.3.101 and the cleanup landed in 0.3.102.
+    /// The reasoning that kept them off - that batching suspends the delayed occlusion queries
+    /// and that depth culling could not pay for itself while cached terrain could not occlude
+    /// cached terrain - was answered by the same-frame near/far split and by the measured
+    /// far-command suppression that followed it.
     ///
-    /// All three default false, which is exactly what an install with no config file gets.
+    /// Off is still reachable and still remembered: `.vhgpu off` clears GpuArenas, and because
+    /// every other stage is nested under it that one switch returns the whole client to the
+    /// established renderer for good. An environment variable set to "0" wins over both, which
+    /// is what keeps a scripted A/B honest.
+    ///
+    /// These are NOT a capability claim. A driver that fails the probe, a refused shader, a
+    /// refused allocation or any draw failure still selects the legacy path in the same frame.
     /// </summary>
-    public bool GpuArenas = false;
-    public bool IndirectDraw = false;
-    public bool DepthCull = false;
+    public bool GpuArenas = true;
+    public bool IndirectDraw = true;
+    public bool DepthCull = true;
 
     /// <summary>
-    /// Take the depth picture at the end of the frame and cull against it on the next one, so
-    /// cached terrain can hide cached terrain. Saved alongside the others because it is the
-    /// same kind of choice: off for everyone by default, remembered for whoever turns it on.
+    /// Take the second depth picture mid-frame, between the near and far cached buckets, so
+    /// cached terrain can hide cached terrain within the same frame. Default on with the rest
+    /// of the path; `.vhgpu off` disables it along with everything above it.
     /// </summary>
-    public bool LateDepthPicture = false;
+    public bool LateDepthPicture = true;
 }
 
 /// <summary>
@@ -177,11 +183,11 @@ public class VintageHorizonsModSystem : ModSystem
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_OCCLUSION_CULLING") != "0",
             SectionHeightCulling =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_SECTION_HEIGHT_CULLING") != "0",
-            // Off unless asked for, matching the command's default. Pinned by the harness
-            // rather than typed in game, because its whole gate is a controlled A/B and a
-            // comparison whose switches were set by hand is how session 40 lost a run.
+            // On unless the environment takes it away. The harness can still pin either side
+            // for a controlled A/B, which is what keeps a scripted comparison honest; what
+            // changed in 0.3.103 is only which way an unset variable falls.
             DepthPyramidEnabled =
-                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_DEPTH_PYRAMID") == "1",
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_DEPTH_PYRAMID") != "0",
         };
 
         // The saved setting applies unless the environment variable has taken a side, which
@@ -1635,93 +1641,6 @@ public class VintageHorizonsModSystem : ModSystem
             Mod.Logger.Notification("  {0}: {1}", label, line.Trim());
         }
     }
-
-    /// <summary>
-    /// One command for the complete GPU-renderer experiment. The named presets are a
-    /// chronological ladder: each adds exactly one accepted or experimental stage to the
-    /// previous preset. That retains the convenience of one player-facing command without
-    /// collapsing seven variables into an all-or-nothing comparison.
-    /// </summary>
-    bool TrySetPhase8TestStack(string requested, out string preset)
-    {
-        preset = requested.Trim().ToLowerInvariant() switch
-        {
-            "off" or "legacy" => "off",
-            "batch" or "batching" => "batch",
-            "cull" or "culling" => "cull",
-            "late" => "late",
-            "packed" => "packed",
-            "on" or "cluster" or "clusters" => "clusters",
-            _ => "",
-        };
-        if (preset.Length == 0) return false;
-
-        bool arenas = preset != "off";
-        bool batching = preset != "off";
-        bool depthCull = preset is "cull" or "late" or "packed" or "clusters";
-        bool late = preset is "late" or "packed" or "clusters";
-        bool packed = preset is "packed" or "clusters";
-        bool clusters = preset == "clusters";
-
-        // The arena request is applied on the render thread next frame; every other flag can
-        // be set now and will become effective as soon as those buffers are ready. Every
-        // preset assigns all seven controls so a later test cannot inherit a hidden switch.
-        // Re-requesting an already-on shadow is not a no-op: it queues every live section
-        // for re-meshing. Presets above "off" share the same arenas, so moving between
-        // them must preserve the filled mirror or the comparison measures warm-up work.
-        if (renderer.GpuShadowRequested != arenas)
-            renderer.RequestGpuShadow(arenas ? "on" : "off");
-        renderer.IndirectDrawEnabled = batching;
-        renderer.PackedDrawEnabled = packed;
-        renderer.DepthPyramidEnabled = depthCull;
-        renderer.GpuCullEnabled = depthCull;
-        renderer.LateDepthPyramid = late;
-        renderer.ClusterDrawEnabled = clusters;
-        renderer.ResetDepthPyramidInterval();
-        return true;
-    }
-
-    string DescribePhase8TestStack()
-    {
-        bool[] flags =
-        {
-            renderer.GpuShadowRequested,
-            renderer.IndirectDrawEnabled,
-            renderer.PackedDrawEnabled,
-            renderer.DepthPyramidEnabled,
-            renderer.GpuCullEnabled,
-            renderer.LateDepthPyramid,
-            renderer.ClusterDrawEnabled,
-        };
-        string state = flags.All(value => !value) ? "OFF"
-            : flags.SequenceEqual(new[] { true, true, false, false, false, false, false }) ? "BATCH"
-            : flags.SequenceEqual(new[] { true, true, false, true, true, false, false }) ? "CULL"
-            : flags.SequenceEqual(new[] { true, true, false, true, true, true, false }) ? "LATE"
-            : flags.SequenceEqual(new[] { true, true, true, true, true, true, false }) ? "PACKED"
-            : flags.All(value => value) ? "CLUSTERS"
-            : "MIXED";
-
-        string active = state switch
-        {
-            "OFF" => "Legacy path: arenas " + renderer.DescribeGpuShadow(),
-            "BATCH" => "Batch path: " + renderer.DescribeIndirectDraw(),
-            "CULL" => "Cull path: " + renderer.DescribeGpuCull(),
-            "LATE" => "Cull path: " + renderer.DescribeGpuCull()
-                + " Picture: " + renderer.DescribeLateDepthPyramid(),
-            "PACKED" => "Packed path: " + renderer.DescribePackedDraw()
-                + " Culling: " + renderer.DescribeGpuCull(),
-            "CLUSTERS" => "Cluster path: " + renderer.DescribeClusterDraw()
-                + " Culling: " + renderer.DescribeGpuCull(),
-            _ => "Cluster path: " + renderer.DescribeClusterDraw(),
-        };
-
-        static string Bit(bool value) => value ? "on" : "off";
-        return $"{state}: arenas {Bit(flags[0])}, batching {Bit(flags[1])}, "
-            + $"packed {Bit(flags[2])}, HZB {Bit(flags[3])}, culling {Bit(flags[4])}, "
-            + $"same-frame near/far {Bit(flags[5])}, clusters {Bit(flags[6])}. "
-            + active;
-    }
-
     void RegisterCommands()
     {
         capi.ChatCommands.Create("vhinfo")
@@ -1998,42 +1917,17 @@ public class VintageHorizonsModSystem : ModSystem
                 return TextCommandResult.Success($"[VintageHorizons] lighting: {DescribeLight()}. {note}");
             });
 
-        // The player-facing control for the current experiment. The individual phase
-        // commands remain useful diagnostics, but the ordinary performance bisect uses one
-        // chronological preset ladder and cannot silently inherit a mixed state.
-        capi.ChatCommands.Create("vhphase8")
-            .WithDescription("Select one GPU terrain test stage. off | batch | cull | late | packed | clusters. 'on' means clusters.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("preset"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-
-                string? applied = null;
-                if (!args.Parsers[0].IsMissing)
-                {
-                    if (!TrySetPhase8TestStack((string)args[0], out applied))
-                        return TextCommandResult.Error(
-                            "[VintageHorizons] use: .vhphase8 off | batch | cull | late | packed | clusters");
-                    SaveConfig();
-                }
-
-                string status = DescribePhase8TestStack();
-                LogReportLines("phase8", status);
-                return TextCommandResult.Success(
-                    "[VintageHorizons] Phase 8 test stack " + status
-                    + (args.Parsers[0].IsMissing
-                        ? " Presets: off, batch, cull, late, packed, clusters. No other GPU commands are needed."
-                        : applied == "off"
-                            ? " The regional buffers are released on the next frame; this is the complete legacy baseline."
-                            : $" Applied the {applied} preset. After switching up from off, let the regional buffers fill and run .vhphase8 once more before measuring."));
-            });
-
-        // Measurement only. The shadow copies cached geometry into the regional buffers a
-        // future renderer would draw from and reports how far draw calls would fall, while
-        // the established renderer keeps drawing every pixel exactly as before.
+        // The one in-game switch for the whole GPU terrain path, and since 0.3.103 that path
+        // is the default rather than a measurement. Every other stage is nested under the
+        // regional arenas this controls - batching draws from them, culling zeroes the
+        // commands batching writes, the split needs something to cull - so turning this off
+        // returns the client to the established renderer completely, and the choice is saved.
+        //
+        // It is deliberately the ONLY remaining switch. The staging commands it used to sit
+        // beside could each select a half-built configuration, which is a way to collect a
+        // bug report against something nobody ships.
         capi.ChatCommands.Create("vhgpu")
-            .WithDescription("Measure what a regional GPU renderer would submit. off | on | verify. Draws nothing; remembered between sessions.")
+            .WithDescription("Turn the GPU terrain renderer off or on. off | on | verify. On by default; remembered between sessions.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalWord("mode"))
             .HandleWith(args =>
             {
@@ -2041,7 +1935,7 @@ public class VintageHorizonsModSystem : ModSystem
                     return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
                 if (args.Parsers[0].IsMissing)
                     return TextCommandResult.Success(
-                        "[VintageHorizons] GPU measurement shadow " + renderer.DescribeGpuShadow());
+                        "[VintageHorizons] GPU terrain renderer " + renderer.DescribeGpuShadow());
 
                 string mode = (string)args[0];
                 if (!renderer.RequestGpuShadow(mode))
@@ -2050,232 +1944,12 @@ public class VintageHorizonsModSystem : ModSystem
                 SaveConfig();
                 bool off = mode.Equals("off", StringComparison.OrdinalIgnoreCase);
                 return TextCommandResult.Success(off
-                    ? "[VintageHorizons] GPU measurement shadow switching off; buffers released next frame."
-                    : "[VintageHorizons] GPU measurement shadow switching on"
+                    ? "[VintageHorizons] GPU terrain renderer switching off; buffers released next frame and cached terrain returns to the established renderer."
+                    : "[VintageHorizons] GPU terrain renderer switching on"
                         + (mode.Equals("verify", StringComparison.OrdinalIgnoreCase)
                             ? " with content verification" : "")
                         + ". Live sections are re-meshed into it first, so wait a few seconds, "
                         + "then run .vhgpu again for the numbers.");
-            });
-
-        // The first switch in the mod that changes where a cached-terrain pixel comes
-        // from: with it on, opaque terrain is drawn out of the regional arenas with a few
-        // multi-draws instead of one call per section. Off by default, session-only, and
-        // it needs .vhgpu on first, because the arenas are what it draws from.
-        capi.ChatCommands.Create("vhindirect")
-            .WithDescription("Draw distant terrain in a few big batches instead of one call each. Needs .vhgpu on. Off by default; remembered between sessions.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-                if (args.Parsers[0].IsMissing)
-                    return TextCommandResult.Success(
-                        "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw());
-
-                renderer.IndirectDrawEnabled = (bool)args[0];
-                SaveConfig();
-                return TextCommandResult.Success(
-                    "[VintageHorizons] batched terrain drawing " + renderer.DescribeIndirectDraw()
-                    + " Compare it against off in the same spot: the picture should be "
-                    + "identical, and anything that differs is a bug worth reporting.");
-            });
-
-        // Phase 7 keeps the accepted expanded batching path beside the packed one for a
-        // controlled A/B. This switch is deliberately session-only until the shader-pull
-        // path has passed a real-world visual and timing gate on representative hardware.
-        capi.ChatCommands.Create("vhpacked")
-            .WithDescription("Use 12-byte opaque quad records for batched distant terrain. Needs .vhgpu on and .vhindirect on. Experimental and session-only.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-                if (args.Parsers[0].IsMissing)
-                    return TextCommandResult.Success(
-                        "[VintageHorizons] packed opaque drawing " + renderer.DescribePackedDraw());
-
-                renderer.PackedDrawEnabled = (bool)args[0];
-                return TextCommandResult.Success(
-                    "[VintageHorizons] packed opaque drawing " + renderer.DescribePackedDraw()
-                    + " This switch is not saved yet. Compare the same view against off; "
-                    + "the picture must remain identical.");
-            });
-
-        // Phase 8 changes the HZB draw unit from one section box to a moderate 4x4 grid
-        // of exact packed ranges. It remains session-only so its metadata/command cost can
-        // be measured against the accepted whole-section path before any default decision.
-        capi.ChatCommands.Create("vhclusters")
-            .WithDescription("Split packed distant terrain into 4x4 depth-culling clusters. Needs .vhgpu, .vhindirect and .vhpacked. Experimental and session-only.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-                if (args.Parsers[0].IsMissing)
-                {
-                    string status = renderer.DescribeClusterDraw();
-                    LogReportLines("clusters", status);
-                    return TextCommandResult.Success(
-                        "[VintageHorizons] clustered opaque drawing " + status);
-                }
-
-                renderer.ClusterDrawEnabled = (bool)args[0];
-                string changed = renderer.DescribeClusterDraw();
-                LogReportLines("clusters", changed);
-                return TextCommandResult.Success(
-                    "[VintageHorizons] clustered opaque drawing " + changed
-                    + " This switch is not saved. Compare the same view against off; "
-                    + "terrain must never disappear or change shape.");
-            });
-
-        // The first switch in this mod that can take terrain OFF the screen rather than
-        // change how it gets there. Off by default, not saved, and it says plainly what to
-        // look for - because the only failure that matters here is terrain that should be
-        // visible and is not, and no counter can see that.
-        capi.ChatCommands.Create("vhcull")
-            .WithDescription("Let the depth test stop distant terrain being drawn. Needs .vhgpu on and .vhindirect on; turning it on also switches on the depth pyramid. Off by default; remembered between sessions.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-                // Logged as well as shown, exactly like .vhhzb. Game chat cannot be copied
-                // out, so a status that exists only on screen cannot be handed to anybody -
-                // and this is the line that says whether a playtest was testing the thing it
-                // was meant to. A run where nobody can tell afterwards is a wasted run.
-                if (args.Parsers[0].IsMissing)
-                {
-                    string status = renderer.DescribeGpuCull();
-                    LogReportLines("cull", status);
-                    return TextCommandResult.Success("[VintageHorizons] depth culling " + status);
-                }
-
-                bool wanted = (bool)args[0];
-                renderer.GpuCullEnabled = wanted;
-                renderer.ResetDepthPyramidInterval();
-
-                // Culling has no meaning without a pyramid to test against, and asking
-                // someone to know that is how a switch ends up on with nothing under it -
-                // which is exactly what happened on 0.3.69 and cost a whole playtest. Turning
-                // it ON brings the pyramid with it; turning it off leaves the pyramid alone,
-                // because the pyramid is also a measurement someone may want on its own.
-                if (wanted && !renderer.DepthPyramidEnabled) renderer.DepthPyramidEnabled = true;
-
-                SaveConfig();
-                LogReportLines("cull", renderer.DescribeGpuCull());
-                return TextCommandResult.Success(
-                    "[VintageHorizons] depth culling " + renderer.DescribeGpuCull()
-                    + " Look for terrain that should be there and is not, especially while "
-                    + "turning: that is the failure this can cause and the only one worth "
-                    + "reporting. Turn it off in the same spot to compare.");
-            });
-
-        // A narrow, explicitly armed correctness capture for the precise-angle Phase 8
-        // flicker. It records both command buckets so a far verdict can be separated from
-        // an unstable near occluder; ordinary frames retain only the tiny aggregate counters.
-        capi.ChatCommands.Create("vhflicker")
-            .WithDescription("Capture which near/far terrain clusters change draw state while the camera is held still. Use on | off; not saved.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("mode"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-
-                if (args.Parsers[0].IsMissing)
-                {
-                    string status = renderer.DescribeFlickerCapture();
-                    LogReportLines("flicker", status);
-                    return TextCommandResult.Success("[VintageHorizons] "
-                        + status.Split(Environment.NewLine)[0]
-                        + ". Full offender details were written to client-main.log.");
-                }
-
-                string mode = ((string)args[0]).ToLowerInvariant();
-                if (mode != "on" && mode != "off")
-                    return TextCommandResult.Error("[VintageHorizons] use: .vhflicker on | off");
-
-                string report = mode == "on"
-                    ? renderer.StartFlickerCapture()
-                    : renderer.StopFlickerCapture();
-                LogReportLines("flicker", report);
-                string chatReport = report.Split(Environment.NewLine)[0];
-                return TextCommandResult.Success("[VintageHorizons] " + chatReport
-                    + (mode == "on" && report.StartsWith("flicker capture armed", StringComparison.Ordinal)
-                        ? ". Hold the camera completely still at the flickering angle for 3-5 seconds, then run `.vhflicker off`."
-                        : ". Full offender details were written to client-main.log."));
-            });
-
-        // The Phase 6 switch, and the reason it is a switch rather than a second build: the
-        // question it settles is a comparison, and a comparison whose two halves are different
-        // builds is one nobody can run while looking at the same hillside.
-        capi.ChatCommands.Create("vhlate")
-            .WithDescription("Split cached terrain near/far and take a fresh depth picture between them, so cached hills can hide farther terrain in the same frame. Needs .vhcull on. Off by default; remembered between sessions.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-
-                if (args.Parsers[0].IsMissing)
-                {
-                    string status = renderer.DescribeLateDepthPyramid();
-                    LogReportLines("late", status);
-                    return TextCommandResult.Success("[VintageHorizons] depth picture " + status);
-                }
-
-                renderer.LateDepthPyramid = (bool)args[0];
-
-                // Always, not only when the value changed. Someone typing the command is
-                // starting a measurement, and the commonest way to run this comparison is to
-                // set the arrangement, play, read, set it again. If setting it to what it
-                // already is left the counters running, that second reading would cover both
-                // halves and look entirely reasonable.
-                renderer.ResetDepthPyramidInterval();
-
-                // Same coupling as .vhcull on, and for the same reason: adding a second
-                // picture does nothing at all unless something reads it, and a switch
-                // sitting on with nothing underneath it is how a playtest gets spent measuring
-                // an instrument (G72).
-                if (renderer.LateDepthPyramid && !renderer.DepthPyramidEnabled)
-                    renderer.DepthPyramidEnabled = true;
-
-                SaveConfig();
-                LogReportLines("late", renderer.DescribeLateDepthPyramid());
-                return TextCommandResult.Success(
-                    "[VintageHorizons] depth picture " + renderer.DescribeLateDepthPyramid()
-                    + (renderer.LateDepthPyramid
-                        ? " Watch the frame-time graph for new hitches and compare the same "
-                          + "view with it off; every verdict is now from the current frame."
-                        : ""));
-            });
-
-        // Live-only diagnostic for the precise-angle cached-on-cached flicker. It changes
-        // only the far bucket after the split's second picture; ordinary vanilla-only HZB
-        // culling keeps the established four-step margin. Suggested powers make the search
-        // short while still allowing an exact threshold once the flicker disappears.
-        capi.ChatCommands.Create("vhsplitbias")
-            .WithDescription("Set the same-frame cached-on-cached depth safety margin. Try 4, 16, 64, then 256. Diagnostic and not remembered.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalInt("depthSteps"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-
-                if (!args.Parsers[0].IsMissing)
-                {
-                    renderer.SplitDepthBiasSteps = Math.Clamp(
-                        (int)args[0],
-                        LodHzbProjection.OcclusionDepthBiasSteps,
-                        LodHzbProjection.MaximumDiagnosticDepthBiasSteps);
-                    renderer.ResetDepthPyramidInterval();
-                }
-
-                string report = $"{renderer.SplitDepthBiasSteps} depth steps; "
-                    + "only the far cached bucket after the second picture uses this margin. "
-                    + "Suggested comparison: 4, 16, 64, 256 at the same angle.";
-                LogReportLines("split bias", report);
-                return TextCommandResult.Success("[VintageHorizons] split safety margin " + report);
             });
 
         capi.ChatCommands.Create("vhskip")
@@ -2366,25 +2040,6 @@ public class VintageHorizonsModSystem : ModSystem
                     + "frame, and nothing reads the result yet. Turn it on, play, and read the "
                     + "hzb line in the log: the question is what it costs, not what it hides. "
                     + "GPU timing " + renderer.DescribeGpuTiming() + ".");
-            });
-
-        capi.ChatCommands.Create("vhheight")
-            .WithDescription("Cull cached sections by how tall their terrain actually is. On by default and not saved.")
-            .WithArgs(capi.ChatCommands.Parsers.OptionalBool("on"))
-            .HandleWith(args =>
-            {
-                if (renderer == null)
-                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
-                if (args.Parsers[0].IsMissing)
-                    return TextCommandResult.Success(
-                        $"[VintageHorizons] section height culling {(renderer.SectionHeightCulling ? "on" : "off")} "
-                        + $"(on by default, not saved). {renderer.SectionHeights.Describe(renderer.WorldHeight)}");
-
-                renderer.SectionHeightCulling = (bool)args[0];
-                return TextCommandResult.Success(
-                    $"[VintageHorizons] section height culling {(renderer.SectionHeightCulling ? "on" : "off")} "
-                    + "(on by default, not saved). Applies on the next frame. With it off, every section is "
-                    + "bounded from bedrock to sky again, which is what the renderer did before.");
             });
 
         capi.ChatCommands.Create("vhfront")

@@ -8,6 +8,93 @@ first.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-25
+
+**The GPU-driven terrain renderer is the default path, and it has been played and accepted.**
+
+This is the milestone the 0.3.4x-0.3.103 development series was building toward. Cached terrain
+beyond vanilla view distance is now stored in regional GPU buffers, submitted as a small number of
+batched indirect draws instead of one call per section, culled against a hierarchical depth buffer
+so terrain hidden behind hills and ridges is never drawn, stored as 12-byte packed quads, and
+subdivided into clusters so a near hill can hide far terrain within the same frame.
+
+The owner reports the result as visually correct and the performance as a large improvement on his
+machine. This is qualitative acceptance on one system rather than a measured figure; the recorded
+suppression and frame-rate numbers in this file all predate the 0.3.101 correctness fix and are
+retained as history, not as current measurements.
+
+**Unsupported systems are unaffected.** The established renderer remains complete and is selected
+whenever the capability probe, a shader, an allocation or a draw fails - in the same frame, without
+a restart and without touching the terrain cache. `.vhgpu off` returns any client to it deliberately
+and is remembered between sessions.
+
+**The command surface is much smaller.** The switches that staged this work - `.vhphase8`,
+`.vhindirect`, `.vhpacked`, `.vhclusters`, `.vhcull`, `.vhlate`, `.vhheight`, `.vhflicker` and
+`.vhsplitbias` - are retired along with the code behind them, because each could select a
+half-finished configuration that is not the product. `.vhgpu` and `.vhhzb` remain. Scripted
+benchmark comparisons are unaffected; the environment overrides still pin either side of an A/B for
+a whole run.
+
+Nothing in the terrain cache, the assist protocol, the section blob format or the database schema
+changed. An existing cache is used as-is.
+
+The complete fast tier passes 5,067 assertions.
+
+## [0.3.103] - 2026-08-25
+
+**The GPU terrain renderer is now the default.** Cached terrain is drawn from regional GPU buffers
+in a few batched calls, culled against a depth pyramid, packed into 12-byte quads and subdivided
+into clusters, without anyone turning anything on. Unsupported hardware is unaffected: a failed
+capability probe, shader, allocation or draw still selects the established renderer in the same
+frame, and that path remains complete.
+
+`.vhgpu off` turns the whole thing off and is remembered between sessions, so a client that
+misbehaves can be returned to the old renderer without editing files or restarting. It is now the
+only switch, and the only other command kept is `.vhhzb`.
+
+**The sky guard is removed.** The 0.3.102 counter measured what it was costing: 169,994 refusals
+over 2,495,527 sampled far commands, each one a piece of terrain the depth test had already proved
+hidden and the guard drew anyway. Removing it raises far-command suppression from 26.5% to 33.3%
+in that sample. It was written for a sky-silhouette theory that the 0.3.101 mapping fix superseded.
+
+**The staging commands are retired**, along with the code behind them:
+`.vhphase8`, `.vhindirect`, `.vhpacked`, `.vhclusters`, `.vhcull`, `.vhlate`,
+`.vhheight` and `.vhflicker`. They existed to compare stages of an experiment that is now the
+product, and each could select a half-built configuration. The armed per-command flicker capture
+they fed is deleted with them; the artifact it was built for is fixed. Scripted A/B comparisons are
+unaffected - the environment variables still pin either side for a whole benchmark run, and now
+read as opt-out rather than opt-in.
+
+Unrelated commands are untouched. The complete fast tier passes 5,067 assertions.
+
+
+## [0.3.102] - 2026-08-24
+
+**Cleanup and one safety net, after the flicker fix.** No visual change is intended.
+
+`.vhsplitbias` is removed. It searched a larger safety margin for the far cached bucket, and the
+4/16/64/256 comparison it existed for was answered by finding the real cause; both buckets now use
+the one established four-step margin. The 0.3.99 one-texel sky guard is **retained but now counted**:
+`.vhhzb` reports how many far clusters it refused to hide, so the guard can be deleted on evidence
+that it never fires rather than on the argument that it should not. A run reporting zero there is
+what retires it.
+
+The depth test now fails open if its screen size is ever not the depth pyramid's own base size.
+The pixel-anchored sampling introduced in 0.3.101 reproduces the pyramid's mapping only while those
+two agree, which is true by construction today and checked nowhere; a future reduced-resolution
+pyramid would otherwise reintroduce the flicker silently.
+
+The culling shader's uniform locations are resolved once when the program links instead of by name
+on every dispatch.
+
+The offline `HzbField` widening measurement was re-run against the corrected mapping. Of the
+sections the old narrow width could not hide, eight texels hides 18.4% and 25.6% on two camera
+seeds at a 350-block modelled vanilla distance, and 16.2%/23.8% at the 192 blocks currently
+configured. Changing only the camera seed moves that figure about seven points, which is more than
+the mapping correction moved it, so the previously recorded `25.0%` is inside the noise of its own
+measurement and is now quoted as a range. The complete fast tier passes 5,091 assertions.
+
+
 ## [0.3.101] - 2026-08-24
 
 **The precise-angle terrain flicker is fixed.** Cached terrain no longer alternates between drawn

@@ -131,12 +131,17 @@ public static class HzbChecks
             "the C# safety band remains exactly four normalized 24-bit depth steps");
         c.True(source.Contains("nearestDepth > farthest + occlusionDepthBias"),
             "the shader fails open inside the depth safety band");
-        c.True(source.Contains("uniform int backgroundGuardTexels"),
-            "the cached-on-cached silhouette guard is an explicit per-dispatch policy");
-        c.True(source.Contains("if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue"),
-            "the silhouette guard samples only the perimeter outside the projected box");
-        c.True(source.Contains("if (guardDepth >= 1.0)"),
-            "only exact clear-sky depth in that perimeter can refuse an otherwise hidden box");
+        // The 0.3.99 silhouette guard is deliberately gone as of 0.3.103, and these assert
+        // that it stays gone. It refused to hide a box whose projected rectangle had exact
+        // clear sky within one texel OUTSIDE it - a rule written for a sky theory that the
+        // 0.3.101 texel-mapping fix superseded (G96). Measured in 0.3.102, it drew 169,994
+        // already-proved-hidden far commands out of 2,495,527 sampled.
+        c.False(source.Contains("backgroundGuardTexels"),
+            "the retired silhouette guard has no remaining uniform");
+        c.False(source.Contains("guardDepth"),
+            "and no remaining perimeter sampling");
+        c.True(source.Contains("if (nearestDepth > farthest + occlusionDepthBias) return VERDICT_OCCLUDED;"),
+            "a box past the safety band is hidden on its own rectangle alone");
         c.True(LodHzbClassifier.CullSource.Contains(
                 "binding = 2) buffer LiveCullStats", StringComparison.Ordinal),
             "the live cull writes diagnostics beside the exact indirect command buffer");
@@ -148,30 +153,25 @@ public static class HzbChecks
                 $"STATS_BAND_STRIDE = {LodGpuCullTelemetryLayout.BandStride}u",
                 StringComparison.Ordinal),
             "the shader and CPU agree on command, geometry, background, and refusal words");
+        // The pixel anchoring reproduces the pyramid's own halving only while the uniforms
+        // ARE the pyramid's base size. Nothing else in the frame would notice if that ever
+        // stopped being true, and the symptom would be G96 again - hidden visible terrain.
+        c.True(LodHzbClassifier.SharedSource.Contains(
+                "if (textureSize(hzb, 0) != ivec2(screenWidth, screenHeight)) return VERDICT_DEGENERATE;",
+                StringComparison.Ordinal),
+            "the box test fails open when its screen size is not the pyramid's own base size");
+
         c.True(LodHzbClassifier.CullSource.Contains(
                 "commands[commandWord + INSTANCE_COUNT_WORD] = 0u", StringComparison.Ordinal),
             "the instrumented verdict still zeroes the exact command the driver will read");
         c.True(LodHzbClassifier.CullSource.Contains(
                 "telemetryEnabled != 0", StringComparison.Ordinal),
             "ordinary frames avoid counter atomics between asynchronous samples");
-        c.True(LodHzbClassifier.CullSource.Contains(
-                "binding = 3) buffer FlickerResults", StringComparison.Ordinal),
-            "an explicitly armed capture has a separate per-command result buffer");
-        c.True(LodHzbClassifier.CullSource.Contains(
-                "uniform int flickerCaptureEnabled", StringComparison.Ordinal)
-            && LodHzbClassifier.CullSource.Contains(
-                "if (flickerCaptureEnabled != 0)", StringComparison.Ordinal),
-            "ordinary frames do not write the large flicker result stream");
         c.True(LodHzbClassifier.SharedSource.Contains(
                 "uint TestBoxDetailed(", StringComparison.Ordinal)
             && LodHzbClassifier.CullSource.Contains(
                 "uint verdict = TestBoxDetailed(lo, hi, TEXELS_PRIMARY", StringComparison.Ordinal),
             "the captured verdict and its depth details come from one box test");
-        c.True(LodHzbClassifier.CullSource.Contains(
-                "floatBitsToUint(nearestDepth)", StringComparison.Ordinal)
-            && LodHzbClassifier.CullSource.Contains(
-                "floatBitsToUint(farthestDepth)", StringComparison.Ordinal),
-            "both sides of the exact depth comparison survive asynchronous readback");
 
         // The verdict and the sub-cells must be taken at the same width. They were both
         // narrow before the switch and both primary after it; one moving without the other
