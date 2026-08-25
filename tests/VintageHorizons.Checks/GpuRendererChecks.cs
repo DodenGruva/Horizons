@@ -305,6 +305,8 @@ public static class GpuRendererChecks
             GenericSsbo = 11,
             IndexedSsbo = 13,
             IndexedSsbo1 = 37,
+            IndexedSsbo2 = 41,
+            IndexedSsbo3 = 43,
             DrawFramebuffer = 17,
             ReadFramebuffer = 19,
             ActiveTexture = LodGlStateGuard.Texture0 + 3,
@@ -324,6 +326,8 @@ public static class GpuRendererChecks
         api.GenericSsbo = 103;
         api.IndexedSsbo = 107;
         api.IndexedSsbo1 = 109;
+        api.IndexedSsbo2 = 111;
+        api.IndexedSsbo3 = 113;
         api.DrawFramebuffer = 109;
         api.ReadFramebuffer = 113;
         api.ActiveTexture = LodGlStateGuard.Texture0 + 1;
@@ -344,6 +348,10 @@ public static class GpuRendererChecks
         // of the frame. The cull pass makes that a second site, and the buffer it leaves
         // bound there is the one the driver reads draw commands from.
         c.Eq(37, api.IndexedSsbo1, "the incoming indexed SSBO binding at slot one is restored");
+        c.Eq(41, api.IndexedSsbo2,
+            "the incoming indexed SSBO binding at slot two is restored for live counters");
+        c.Eq(43, api.IndexedSsbo3,
+            "the incoming indexed SSBO binding at slot three is restored for flicker capture");
         c.Eq(17, api.DrawFramebuffer, "the incoming draw framebuffer is restored");
         c.Eq(19, api.ReadFramebuffer, "the incoming read framebuffer is restored");
         c.Eq(LodGlStateGuard.Texture0 + 3, api.ActiveTexture,
@@ -507,6 +515,8 @@ public static class GpuRendererChecks
         public int GenericSsbo;
         public int IndexedSsbo;
         public int IndexedSsbo1;
+        public int IndexedSsbo2;
+        public int IndexedSsbo3;
         public int DrawFramebuffer;
         public int ReadFramebuffer;
         public int ActiveTexture;
@@ -532,6 +542,20 @@ public static class GpuRendererChecks
             IndexedSsbo1 = value;
             GenericSsbo = value;
             Operations.Add("indexed-ssbo-1");
+        }
+        public int GetIndexedShaderStorageBuffer2() => IndexedSsbo2;
+        public void BindIndexedShaderStorageBuffer2(int value)
+        {
+            IndexedSsbo2 = value;
+            GenericSsbo = value;
+            Operations.Add("indexed-ssbo-2");
+        }
+        public int GetIndexedShaderStorageBuffer3() => IndexedSsbo3;
+        public void BindIndexedShaderStorageBuffer3(int value)
+        {
+            IndexedSsbo3 = value;
+            GenericSsbo = value;
+            Operations.Add("indexed-ssbo-3");
         }
         public void BindGenericShaderStorageBuffer(int value)
         {

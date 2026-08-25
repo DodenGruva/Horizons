@@ -67,6 +67,10 @@ public static class StaticAssetChecks
             "and can still be flipped live for a side-by-side look");
         c.True(mod.Contains("ChatCommands.Create(\"vhphase8\")", StringComparison.Ordinal),
             "the complete Phase 8 experiment has one player-facing preset command");
+        c.True(mod.Contains("ChatCommands.Create(\"vhsplitbias\")", StringComparison.Ordinal),
+            "the precise-angle cached-on-cached verdict has a live safety-margin diagnostic");
+        c.True(mod.Contains("ChatCommands.Create(\"vhflicker\")", StringComparison.Ordinal),
+            "the precise-angle issue has an explicitly armed per-cluster capture command");
         foreach ((string setting, string value) in new[]
         {
             ("IndirectDrawEnabled", "batching"),

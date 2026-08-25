@@ -228,7 +228,18 @@ internal static class LodHzbProjection
     /// That verdict flickers at a precise camera angle and cluster subdivision multiplies
     /// how many independently visible pieces can hit it. Treat this band as undecidable.
     /// </summary>
-    public const float OcclusionDepthBias = 4f / 16777215f;
+    public const int OcclusionDepthBiasSteps = 4;
+    public const int MaximumDiagnosticDepthBiasSteps = 4096;
+    public const float OcclusionDepthBias = OcclusionDepthBiasSteps / 16777215f;
+
+    /// <summary>
+    /// Converts a player-selected 24-bit depth-step margin into normalized depth. The
+    /// ordinary verdict remains fixed at four steps; only the same-frame cached-on-cached
+    /// diagnostic uses larger values while the precise-angle flicker is localized.
+    /// </summary>
+    public static float DepthBiasForSteps(int steps) =>
+        Math.Clamp(steps, OcclusionDepthBiasSteps, MaximumDiagnosticDepthBiasSteps)
+        / 16777215f;
 
     public static int LevelFor(float widthPixels, float heightPixels, int levels) =>
         LevelFor(widthPixels, heightPixels, levels, DefaultTexelsPerAxis);

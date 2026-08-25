@@ -2,6 +2,40 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-24 - Phase 8 value proved and flicker capture narrowed to real draw-state changes
+
+- A controlled adjacent comparison measured 386 FPS under both `late` and `cull`; the known
+  precise-angle flicker occurred only under `late`. This localized the artifact to far cached
+  commands testing against the same-frame near cached depth, without rejecting the split or the
+  cluster units that make cached-on-cached occlusion useful.
+- Version 0.3.96 exposed a live far-only 4/16/64/256-step margin ladder. Every value behaved alike
+  and clusters merely made more affected spots visible, rejecting a simple near-equality bias.
+- Version 0.3.97 measured the exact live command stream rather than the separate whole-section
+  shadow population. In the owner's ridge/end-of-map view, split-near removed 53.3% of commands
+  and 52.9% of indices; split-far removed 80.5%/77.1%, reaching 92.4%/94.8% at 4-8k. FPS rose from
+  roughly 340 to 460. The earlier 9.8% shadow figure was a different population and view, not a
+  broken cull path.
+- Version 0.3.98 added an explicitly armed, fenced per-command capture. A stationary run recorded
+  8,416 split-far samples and 27,065,856 observations with no dropped readbacks or matrix drift.
+  Its leading fixed identities alternated between `occluded` and exact-clear `background`, never
+  ordinary visible depth.
+- Version 0.3.99 added a one-texel clear-sky refusal around only the split-far test. The owner found
+  the flicker still bad and clarified that most affected meshes are inside terrain, not at a sky
+  silhouette. Its report also ranked 6,592 draw-safe `visible/background` transitions above 8,666
+  real cull-state transitions. The sky guard is therefore a failed hypothesis, not a correctness
+  result. G95.
+- Version 0.3.100 captures split-near and split-far independently, tracks command presence before
+  compute separately from verdict changes, ranks only transitions that can change drawing, and
+  labels each offender by projected screen region. It remains view-wide because the exact camera
+  angle generally cannot also place the defect under the crosshair. Eight asynchronous slots keep
+  the diagnostic nonblocking and dormant until armed.
+- A proposed texture barrier was withdrawn before implementation: the pyramid reads and writes
+  disjoint, explicitly clamped mip levels, so the same-texel feedback requirement was not shown.
+  A partially implemented crosshair capture was also fully reverted before the 0.3.100 build.
+- The complete fast tier passes 5,073 assertions. `vintagehorizons_0.3.100.zip` was verified and
+  installed without launching the game. Human capture and diagnosis remain open; no flicker fix is
+  claimed.
+
 ## 2026-08-24 - Cache startup, panoramic refinement, appearance, and near priority accepted
 
 - Source tracing turned a 75.1-second first-mesh join into a zero-work bootstrap fault: persisted

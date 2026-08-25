@@ -2,7 +2,7 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## TOP PRIORITY - resume Phase 8 at the controlled preset boundary
+## TOP PRIORITY - capture the real draw-state chain at a precise flicker angle
 
 The cache startup/refinement plan is complete and human-accepted through 0.3.95. Cached terrain now
 bootstraps immediately, loads without camera orientation, sharpens radially, prepares L0 beneath the
@@ -10,12 +10,37 @@ player, reveals only after its tint is ready, and gives the closest band the dom
 Its completed narrative is in `dev/history/DONE.md`, Session 48, and
 `PLAN_CACHE_STARTUP_AND_REFINEMENT.md`; do not reopen it without a new observed regression.
 
-Resume `PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` exactly where Session 47 paused it. The next adjacent
-experiment is one settled-session comparison of `.vhphase8 late` against `.vhphase8 cull`, without
-visiting `off` between them. Version 0.3.91 made active preset changes preserve filled arenas; the
-old 362 FPS `late` figure is invalid because 0.3.90 re-meshed 1,678 sections during selection.
-Determine whether the remaining single precise-angle flicker belongs to whole-section HZB culling
-or to the same-frame near/far split before changing any culling code.
+The controlled comparison is complete: `late` and `cull` both measured 386 FPS, while the known
+precise-angle flicker appeared only under `late`. This isolates the artifact to the same-frame far
+cached bucket testing against near cached terrain. It does not reject the split or clusters:
+whole-section boxes overlap sky, and clusters are the smaller occlusion units that allow cached
+terrain to hide farther cached terrain.
+
+The 0.3.96 margin ladder is rejected: clusters exposed more flickering spots and 4, 16, 64, and
+256 steps behaved alike. The log proves all 2,190 mid-frame pictures completed, but the shadow
+classifier reported only 9.8% whole-section hiding and 9.2% simulated subdivision headroom. The
+owner deliberately faced a ridge expected to hide roughly 60% of the terrain behind it, making the
+small result suspicious until 0.3.97 established that it described a different whole-section
+population rather than the live cluster command stream.
+
+The 0.3.97 ridge result closes the suppression question. FPS rose from about 340 to 460; the actual
+split-far stream zeroed 80.5% of commands and removed 77.1% of indices, reaching 92.4%/94.8% at
+4-8k. Split-near also removed 53.3%/52.9%. There were no whole-section fallbacks or instrumentation
+warnings. The split and clusters are working and materially valuable in the terrain-heavy view.
+
+The stationary 0.3.98 capture answered that question: 8,416 samples, 27,065,856 observations, no
+dropped readbacks, and exactly zero matrix change. Every leading offender was
+`occluded/background`, with zero `occluded/visible` transitions. The leading cluster flipped 4,021
+times as its fixed HZB footprint alternated between cached-terrain depth and exact clear `1.0`.
+
+Version 0.3.99's one-texel refusal did not cure the visible artifact. Most flickering meshes are
+inside visible terrain rather than touching sky, and that run's largest raw offenders were
+draw-safe visible/background changes. Version 0.3.100 therefore captures both split-near and
+split-far streams, separates command presence changes from culling-verdict changes, ranks only
+events that can alter drawing, and reports each offender's screen region. Revisit any known angle
+under `.vhphase8 clusters`, run `.vhflicker on`, hold still 3-5 seconds, then `.vhflicker off`.
+Chat shows the far summary; both complete bucket reports remain in `client-main.log`. Do not repeat
+the split-bias ladder or widen the sky guard without new evidence.
 
 ## Cached terrain lighting: the sky band is the only untested part left
 
@@ -102,59 +127,32 @@ the primary-driver format/draw-topology gate is accepted.
 
 ### Phase 8 cluster/preset results and active resume point
 
-Cache startup/refinement is human-accepted. The active resume point is the adjacent `late` versus
-`cull` comparison described at the top of this document; no earlier rendering diagnosis needs to be
-repeated.
+The implementation, preset ladder, rejected margin search, real-command suppression measurements,
+and failed 0.3.99 sky guard are completed history in `dev/history/DONE.md` and Sessions 47-49. The
+open question is only which actual draw-state input changes at the owner's precise angle.
 
-Cluster subdivision has not been forgotten or replaced by packing. Whole-section boxes remain the largest measured
-visibility limitation: in every sampled view most sections the HZB could not hide overlapped open
-sky, at one spot all of them. The offline 4x4 estimate removes a further 13-34% of what remains,
-depending on view. Packing comes first because cluster ranges, commands and bounds should point at
-the compact format rather than force two geometry-layout migrations.
+Version 0.3.100 is installed but not yet human-run. Under `.vhphase8 clusters`, settle at any known
+flicker angle, run `.vhflicker on`, keep the camera completely still for 3-5 seconds, then run
+`.vhflicker off`. The crosshair does not need to touch the affected terrain. Chat contains only a
+concise far summary; inspect both complete `split near` and `split far` reports in
+`client-main.log`, including the screen-region labels.
 
-The primary-driver packed gate is closed and the measured cluster branch is now source- and
-harness-complete in 0.3.87. Workers produce a separate 4x4 packed stream with contiguous ranges
-and exact local geometry bounds; `.vhclusters` expands each CPU-approved section into up to sixteen
-independently culled commands. The accepted whole-section packed stream remains the immediate
-control, and missing cluster data or a failed draw repairs the whole section through the
-established renderer. GPU LOD authority was deliberately not added.
+Interpret the capture in this order:
 
-**First owner result:** one scene improved from 360 to 390 FPS with clusters on, about 0.21 ms.
-Normally shaped terrain pieces also flickered at precise angles; `.vhcull off` stopped every old
-and new case with clusters on, clearing the clustered ranges and isolating the shared depth verdict.
-The comparison had no quantization/rasterization margin despite the GPU plan requiring one. Version
-0.3.88 adds a four-step 24-bit fail-open depth band.
+- Far command-presence transitions mean the command list, traversal, or builder changed before
+  compute.
+- Split-near presence or culling transitions mean the near occluder input changed and therefore
+  changed the far HZB picture.
+- Stable near input plus far culling transitions localizes the fault to the far HZB source,
+  projection, or depth classification.
+- A reported offender in a different screen region from the observed defect is not the defect;
+  retain the view-wide evidence and improve attribution rather than asking for crosshair targeting.
 
-**The first 0.3.88 follow-up was not a valid performance result.** Its log shows `.vhlate` off for
-the initial reports (0.5% hidden), then 4.6% hidden after the same-frame split was enabled, while
-clusters remained `on, but idle` because packed drawing was off. Seven dependent live commands are
-too much operator state. Version 0.3.89 replaces that setup with `.vhphase8 on|off`, which changes
-arenas, batching, packing, HZB, culling, late depth, and clusters together and reports mixed state.
-
-**The valid 0.3.89 all-on/all-off result is negative but does not contradict the earlier wins.**
-The log confirms every prerequisite on, 5,577 cluster commands in 68 multi-draws, then every switch
-off and the arenas released. The owner saw flicker return with the complete stack and higher FPS on
-the legacy baseline. That rejects the complete stack as one candidate; it does not say whether the
-accepted batching/culling/late stages still win before a later addition gives the benefit back.
-
-**Still owed:** use the single-command chronological ladder in one settled scene:
-`.vhphase8 off`, `batch`, `cull`, `late`, `packed`, then `clusters`. Record approximate FPS and the
-first preset at which flicker appears. Do not use any individual GPU commands. Switching up from
-`off` rebuilds the regional mirrors, so wait until a no-argument `.vhphase8` reports the requested
-stage and its path is available before measuring. Once the boundary is known, run only that paired
-scripted comparison and inspect cluster commands, hidden share, classify/opaque GPU time, total
-frame time, arena bytes, uploads, and fallbacks. The extra metadata, split quads, and dispatch must
-cost less than the work they remove; otherwise reject the responsible branch rather than tuning it
-into the default.
-
-**First ladder result and correction:** 0.3.90's `late` preset produced about 362 FPS and the one
-older flickering section, but none of the additional cluster flickers. Its log also showed that
-merely selecting an active preset re-requested already-on arenas and queued 1,678 live sections for
-re-mesh, so that FPS number is not a settled comparison. Version 0.3.91 preserves filled buffers
-between `batch`, `cull`, `late`, `packed`, and `clusters`; only `off` crosses the expensive arena
-boundary. Re-test `late` after warm-up, then select `cull` without visiting `off`. If the old
-flicker remains, it belongs to the shared whole-section HZB verdict; if it stops, it belongs to the
-same-frame near/far split.
+Do not repeat the stage ladder or split-bias values, widen the one-texel sky guard, add a texture
+barrier, or build a crosshair-targeted capture without new evidence. The margin ladder behaved the
+same at 4/16/64/256 steps; the guard failed visually; and the HZB reduction reads and writes
+disjoint, explicitly clamped mip levels, so the same-texel feedback condition for a texture barrier
+has not been established.
 
 ## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
 

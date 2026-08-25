@@ -2171,6 +2171,41 @@ public class VintageHorizonsModSystem : ModSystem
                     + "reporting. Turn it off in the same spot to compare.");
             });
 
+        // A narrow, explicitly armed correctness capture for the precise-angle Phase 8
+        // flicker. It records both command buckets so a far verdict can be separated from
+        // an unstable near occluder; ordinary frames retain only the tiny aggregate counters.
+        capi.ChatCommands.Create("vhflicker")
+            .WithDescription("Capture which near/far terrain clusters change draw state while the camera is held still. Use on | off; not saved.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("mode"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                if (args.Parsers[0].IsMissing)
+                {
+                    string status = renderer.DescribeFlickerCapture();
+                    LogReportLines("flicker", status);
+                    return TextCommandResult.Success("[VintageHorizons] "
+                        + status.Split(Environment.NewLine)[0]
+                        + ". Full offender details were written to client-main.log.");
+                }
+
+                string mode = ((string)args[0]).ToLowerInvariant();
+                if (mode != "on" && mode != "off")
+                    return TextCommandResult.Error("[VintageHorizons] use: .vhflicker on | off");
+
+                string report = mode == "on"
+                    ? renderer.StartFlickerCapture()
+                    : renderer.StopFlickerCapture();
+                LogReportLines("flicker", report);
+                string chatReport = report.Split(Environment.NewLine)[0];
+                return TextCommandResult.Success("[VintageHorizons] " + chatReport
+                    + (mode == "on" && report.StartsWith("flicker capture armed", StringComparison.Ordinal)
+                        ? ". Hold the camera completely still at the flickering angle for 3-5 seconds, then run `.vhflicker off`."
+                        : ". Full offender details were written to client-main.log."));
+            });
+
         // The Phase 6 switch, and the reason it is a switch rather than a second build: the
         // question it settles is a comparison, and a comparison whose two halves are different
         // builds is one nobody can run while looking at the same hillside.
@@ -2213,6 +2248,34 @@ public class VintageHorizonsModSystem : ModSystem
                         ? " Watch the frame-time graph for new hitches and compare the same "
                           + "view with it off; every verdict is now from the current frame."
                         : ""));
+            });
+
+        // Live-only diagnostic for the precise-angle cached-on-cached flicker. It changes
+        // only the far bucket after the split's second picture; ordinary vanilla-only HZB
+        // culling keeps the established four-step margin. Suggested powers make the search
+        // short while still allowing an exact threshold once the flicker disappears.
+        capi.ChatCommands.Create("vhsplitbias")
+            .WithDescription("Set the same-frame cached-on-cached depth safety margin. Try 4, 16, 64, then 256. Diagnostic and not remembered.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalInt("depthSteps"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                if (!args.Parsers[0].IsMissing)
+                {
+                    renderer.SplitDepthBiasSteps = Math.Clamp(
+                        (int)args[0],
+                        LodHzbProjection.OcclusionDepthBiasSteps,
+                        LodHzbProjection.MaximumDiagnosticDepthBiasSteps);
+                    renderer.ResetDepthPyramidInterval();
+                }
+
+                string report = $"{renderer.SplitDepthBiasSteps} depth steps; "
+                    + "only the far cached bucket after the second picture uses this margin. "
+                    + "Suggested comparison: 4, 16, 64, 256 at the same angle.";
+                LogReportLines("split bias", report);
+                return TextCommandResult.Success("[VintageHorizons] split safety margin " + report);
             });
 
         capi.ChatCommands.Create("vhskip")

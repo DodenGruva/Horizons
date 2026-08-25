@@ -3,8 +3,10 @@
 **Status:** Phases 0-5 are implemented and have drawn on the primary AMD driver. Phase 6's
 same-frame near/far depth split is packaged in 0.3.84 and removed the obvious previous-frame
 motion flicker. Later play found a few normally shaped pieces still alternating at precise angles;
-`.vhcull off` stops every case, and 0.3.88 adds the conservative depth margin step 10.2 required.
-Human verification of that correction remains open. Phase 7's exact 12-byte opaque
+`.vhcull off` stops every case. Version 0.3.88 added the conservative depth margin step 10.2
+required, but later controlled testing and the 0.3.96 margin ladder rejected insufficient bias as
+the remaining cause. Version 0.3.100's two-bucket draw-state capture is the active correctness
+gate. Phase 7's exact 12-byte opaque
 quad representation, direct mesher output, bounded regional arena, vertex-pulling shader,
 multi-draw backend, controls and deterministic checks are source-complete on 2026-08-24.
 0.3.86's indexed path is human-accepted on the primary AMD driver: it looks identical and
@@ -31,9 +33,43 @@ arenas and queuing 1,678 live sections for re-mesh, contaminating that performan
 0.3.91 preserves filled arenas between every active preset and reports the selected stage's
 effective path; only crossing the `off` boundary now performs the expensive mirror transition.
 
-**Phase 8 resumes after human acceptance of cache startup/refinement through 0.3.95.** The next
-adjacent experiment remains `late` versus `cull` in one settled session, without visiting `off`
-between them. Do not repeat earlier diagnosis or mix scheduler changes into the culling comparison.
+The corrected settled comparison measured 386 FPS under both `late` and `cull`. The known
+precise-angle flicker occurred only under `late`, localizing it to same-frame cached-on-cached
+culling. Equal FPS at the whole-section stage does not reject the split: whole-section bounds
+overlap sky, while clusters provide the smaller units required for near cached terrain to hide
+farther cached terrain. Version 0.3.96 keeps both mechanisms and adds `.vhsplitbias`, an unsaved
+4/16/64/256-step search applied only to the far cached bucket after the second depth picture.
+Ordinary vanilla-only culling remains at the established four-step margin.
+
+The owner then rejected that margin hypothesis: clusters produced more flickering locations and
+4, 16, 64, and 256 steps looked alike. The 0.3.96 log proves all 2,190 requested mid-frame pictures
+completed, while the shadow classifier found only 9.8% whole-section suppression and 9.2%
+simulated subdivision headroom in a ridge scene expected to hide roughly 60% of the terrain.
+Version 0.3.97 therefore instruments the real draw-command compute pass. Fenced asynchronous
+samples separately report ordinary, split-near, and split-far commands tested/zeroed, index work
+tested/removed, verdict causes, and those figures per distance band. This is diagnostic only and
+does not alter any visibility verdict.
+
+The owner's ridge run closes the value/path gate: FPS rose from about 340 to 460, split-far removed
+80.5% of actual commands and 77.1% of their indices, and the 4-8k band reached 92.4%/94.8% with no
+fallbacks. Version 0.3.98 therefore targets only the remaining precise-angle correctness defect.
+While explicitly armed, `.vhflicker` follows stable section/cluster identities and asynchronously
+captures the real verdict, nearest/farthest comparison depths, mip, texel rectangle, and camera
+matrix drift. Ordinary frames remain unchanged. The next gate is whether offenders alternate with
+background/sky or cross the visible depth threshold. That was the 0.3.98 gate, not the current one.
+
+The 0.3.98 still-camera result is entirely background/sky: 8,416 samples, 27,065,856 observations,
+zero view-projection movement, no dropped samples, and zero occluded/visible transitions among the
+leading offenders. Version 0.3.99 adds a one-texel exact-clear perimeter refusal only to the
+split-far cached-on-cached verdict. Perimeter terrain never contributes to the depth comparison.
+The same-angle visual and capture re-test must show stability while retaining material far-command
+suppression before the correctness gate closes. The owner then found 0.3.99 still flickered and
+clarified that most affected meshes lie inside terrain, not along sky. Version 0.3.100 keeps the
+capture view-wide, observes both near and far command streams, distinguishes command presence from
+GPU cull-verdict changes, ranks only transitions that alter drawing, and reports their screen
+regions. This is now the active diagnostic; do not widen the sky guard from the misleading raw
+verdict ranking.
+
 **Created:** 2026-08-21
 **Scope:** Client rendering of Vintage Horizons cached terrain. Storage, capture, mip
 generation, networking, and the persisted section format remain unchanged unless a later
@@ -1125,8 +1161,17 @@ quantization or rasterization margin despite step 10.2 requiring one. Version 0.
 four-step 24-bit fail-open band to the C# reference and both compute uses. In 0.3.89's first valid
 complete-stack comparison, flicker returned and legacy was faster, even though earlier staged work
 had produced substantial gains. Version 0.3.90 therefore exposes the chronological preset ladder
-needed to locate the first visual and performance regression. Human stability, retained
+needed to locate the first visual and performance regression. The later controlled comparison
+measured 386 FPS in both `late` and `cull`, with the precise-angle flicker only in `late`. Version
+0.3.96 adds a far-bucket-only live depth-margin search so the smallest stable cached-on-cached
+margin can be measured without weakening vanilla-only culling. Human stability, retained cluster
 performance, paired GPU timing/rejection evidence and turning/streaming behavior remain open.
+
+The margin search did not change the artifact and is closed. Version 0.3.97's live-command gate is
+also closed by the ridge result: actual far-cluster commands and index workload are removed at a
+high rate and FPS increases materially. Version 0.3.100's armed two-bucket draw-state capture is now
+the only active Phase 8 diagnostic; it must identify whether the near input, far command presence,
+or far cull verdict changes at the affected screen region before the culling rule is changed again.
 
 **Purpose:** Remove only a measured remaining bottleneck.
 

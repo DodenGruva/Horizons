@@ -8,6 +8,88 @@ first.
 
 ## [Unreleased]
 
+## [0.3.100] - 2026-08-24
+
+**The flicker capture now follows the actual draw-state chain across both halves of the same-frame
+split.** The owner found the one-texel sky guard did not cure the artifact and clarified that most
+flickering meshes sit inside visible terrain rather than at a sky silhouette. The 0.3.99 capture
+also contained 6,592 high-ranked transitions between two verdicts that both draw, obscuring the
+8,666 transitions that actually switched culling on and off.
+
+While explicitly armed, `.vhflicker` now captures split-near as well as split-far commands, tracks
+commands disappearing before compute separately from GPU verdict changes, ranks only transitions
+that can alter drawing, and labels each offender's screen region. Harmless verdict changes remain
+counted in the summary but cannot displace a real offender. Eight fenced slots accommodate both
+dispatches without waiting; ordinary frames remain unchanged. The complete fast tier passes 5,073
+assertions.
+
+## [0.3.99] - 2026-08-24
+
+**The same-frame far cull now fails open at a cached-terrain silhouette instead of alternating
+against sky.** A completely stationary 0.3.98 capture collected 8,416 split-far samples and
+27,065,856 command observations with no dropped readbacks and exactly zero view-projection change.
+Every leading offender alternated only between `occluded` and `background`; none crossed the
+visible-depth threshold. The leading cluster flipped 4,021 times, with its HZB sample alternating
+between terrain depth and the exact `1.0` clear value. This closes depth bias as a cause.
+
+Only the split-far cached-on-cached verdict now checks a one-HZB-texel perimeter around an
+otherwise hidden projected box. Exact clear sky in that perimeter returns `background` and draws
+the cluster; non-sky perimeter depths never participate in its occlusion comparison. Ordinary
+vanilla-only culling and the projected box's core depth rule remain unchanged. `.vhflicker` now
+keeps its full offender list in the log but shows a concise summary in chat, and replaces the
+angle-bracket transition label that Vintage Story misread as markup. The complete fast tier passes
+5,071 assertions. The subsequent owner test rejected this as the visible fix: flicker remained
+bad, most affected meshes were inside terrain, and 0.3.100 replaced the report's raw-verdict
+ranking with actual draw-state attribution. The guard remains narrow historical code and must not
+be widened without new evidence.
+
+## [0.3.98] - 2026-08-24
+
+**The precise-angle split flicker now has an explicitly armed per-cluster capture.** The owner's
+ridge run on 0.3.97 proves the Phase 8 mechanism is working: the actual split-far command stream
+zeroed 80.5% of commands and removed 77.1% of triangle indices, including 92.4%/94.8% at 4-8k,
+while FPS rose from about 340 to 460 in that terrain-heavy view. The earlier 9.8% result described
+the separate whole-section shadow classifier in a different view, not broken live culling.
+
+The remaining problem is therefore narrow correctness, not whether to retain the split or
+clusters. `.vhflicker on` records the actual split-far verdict, nearest box depth, farthest HZB
+depth, mip, and texel rectangle for every enabled cluster command, aligned with stable section and
+4x4-cell identities. Fenced four-slot readback never waits. `.vhflicker off` ranks repeated
+verdict transitions and separates `occluded<->background` sky-edge changes from
+`occluded<->visible` depth-threshold changes while reporting camera-matrix drift. The large result
+stream is completely dormant until armed; any capture failure disables only the diagnostic.
+The complete fast tier passes 5,066 assertions.
+
+## [0.3.97] - 2026-08-24
+
+**`.vhhzb` now reports what the live GPU cull actually removes from the real draw-command
+stream.** The earlier percentages came from a separate whole-section shadow classifier, so they
+could not establish whether cluster verdicts reached the multi-draw. The real compute pass now
+samples its exact enabled command slots asynchronously, once per 30 dispatches per bucket. It
+reports commands zeroed, triangle indices removed, background/sky refusals, undecided verdicts,
+and all four figures by distance for the ordinary, split-near, and split-far paths. Each
+denominator is the enabled command or index workload in sampled frames, never all terrain resident
+in memory.
+
+The counter buffers are fenced and polled without waiting; an unfinished sample is kept for a
+later frame, and any instrumentation failure disables only the counters while culling and drawing
+continue unchanged. Unsampled frames execute no counter atomics. The active packed drawer now also
+supplies `.vhcull`'s last-frame status instead of that status always consulting the expanded
+drawer. The complete fast tier passes 5,038 assertions.
+
+## [0.3.96] - 2026-08-24
+
+**The same-frame split now has a live safety-margin diagnostic for its cached-on-cached depth
+verdict.** The controlled Phase 8 comparison measured the same 386 FPS under `late` and `cull`,
+but the known precise-angle flicker appeared only under `late`. This localizes the artifact to the
+far cached bucket testing against the freshly drawn near cached bucket; it does not reject the
+split or clusters, because clusters provide the smaller units that let near cached terrain hide
+farther cached terrain despite whole-section sky overlap.
+
+`.vhsplitbias 4|16|64|256` changes that far-bucket margin live without rebuilding meshes or
+weakening ordinary vanilla-only culling. Four preserves the established 0.3.95 behavior, and the
+setting is deliberately not saved. The complete fast tier passes 5,018 assertions.
+
 ## [0.3.95] - 2026-08-24
 
 **The closest terrain band now receives most of the bounded sharpening allowance.** The accepted

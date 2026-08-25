@@ -125,12 +125,53 @@ public static class HzbChecks
             "the shader takes its verdict at the same width as the C# default");
         c.True(source.Contains($"TEXELS_NARROW = {LodHzbProjection.NarrowTexelsPerAxis}"),
             "and its comparison baseline is the width the test used before it was widened");
-        c.True(source.Contains("OCCLUSION_DEPTH_BIAS = 4.0 / 16777215.0"),
-            "the shader carries the four-step 24-bit depth safety band used by its C# twin");
+        c.True(source.Contains("uniform float occlusionDepthBias"),
+            "the shader receives the selected 24-bit depth safety band explicitly");
         c.Near(4.0 / 16777215.0, LodHzbProjection.OcclusionDepthBias, 1e-12,
             "the C# safety band remains exactly four normalized 24-bit depth steps");
-        c.True(source.Contains("nearestDepth > farthest + OCCLUSION_DEPTH_BIAS"),
+        c.True(source.Contains("nearestDepth > farthest + occlusionDepthBias"),
             "the shader fails open inside the depth safety band");
+        c.True(source.Contains("uniform int backgroundGuardTexels"),
+            "the cached-on-cached silhouette guard is an explicit per-dispatch policy");
+        c.True(source.Contains("if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue"),
+            "the silhouette guard samples only the perimeter outside the projected box");
+        c.True(source.Contains("if (guardDepth >= 1.0)"),
+            "only exact clear-sky depth in that perimeter can refuse an otherwise hidden box");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "binding = 2) buffer LiveCullStats", StringComparison.Ordinal),
+            "the live cull writes diagnostics beside the exact indirect command buffer");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                $"STATS_BAND_BASE = {LodGpuCullTelemetryLayout.BandBase}u",
+                StringComparison.Ordinal),
+            "the shader and CPU agree where per-distance live counters begin");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                $"STATS_BAND_STRIDE = {LodGpuCullTelemetryLayout.BandStride}u",
+                StringComparison.Ordinal),
+            "the shader and CPU agree on command, geometry, background, and refusal words");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "commands[commandWord + INSTANCE_COUNT_WORD] = 0u", StringComparison.Ordinal),
+            "the instrumented verdict still zeroes the exact command the driver will read");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "telemetryEnabled != 0", StringComparison.Ordinal),
+            "ordinary frames avoid counter atomics between asynchronous samples");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "binding = 3) buffer FlickerResults", StringComparison.Ordinal),
+            "an explicitly armed capture has a separate per-command result buffer");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "uniform int flickerCaptureEnabled", StringComparison.Ordinal)
+            && LodHzbClassifier.CullSource.Contains(
+                "if (flickerCaptureEnabled != 0)", StringComparison.Ordinal),
+            "ordinary frames do not write the large flicker result stream");
+        c.True(LodHzbClassifier.SharedSource.Contains(
+                "uint TestBoxDetailed(", StringComparison.Ordinal)
+            && LodHzbClassifier.CullSource.Contains(
+                "uint verdict = TestBoxDetailed(lo, hi, TEXELS_PRIMARY", StringComparison.Ordinal),
+            "the captured verdict and its depth details come from one box test");
+        c.True(LodHzbClassifier.CullSource.Contains(
+                "floatBitsToUint(nearestDepth)", StringComparison.Ordinal)
+            && LodHzbClassifier.CullSource.Contains(
+                "floatBitsToUint(farthestDepth)", StringComparison.Ordinal),
+            "both sides of the exact depth comparison survive asynchronous readback");
 
         // The verdict and the sub-cells must be taken at the same width. They were both
         // narrow before the switch and both primary after it; one moving without the other
@@ -355,13 +396,14 @@ public static class HzbChecks
         // Assignments INTO the array, which is "...] =". Matching a bare "=" also catches the
         // buffer declaration, because "binding = 1" lives on that line.
         string[] writes = source.Split((char)10)
-            .Where(line => line.Contains("commands[") && line.Contains("] ="))
+            .Where(line => System.Text.RegularExpressions.Regex.IsMatch(
+                line, @"commands\[[^]]+\]\s*=(?!=)\s*"))
             .Select(line => line.Trim())
             .ToArray();
         c.Eq(1, writes.Length, "the cull shader writes to the command buffer exactly once");
         c.True(writes[0].EndsWith("= 0u;", StringComparison.Ordinal),
             "and the only value it ever writes is zero");
-        c.True(source.Contains("if (TestBox(lo, hi, TEXELS_PRIMARY) == VERDICT_OCCLUDED)"),
+        c.True(source.Contains("if (verdict == VERDICT_OCCLUDED)"),
             "guarded by the occluded verdict alone, so every fail-open cause still draws");
 
         // The widening counter's precondition, pinned where it can be read next to the code

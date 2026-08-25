@@ -312,6 +312,7 @@ internal sealed class LodGpuIndirectBuilder
         LodGpuArenaRange PackedRange,
         long FirstPackedQuad,
         int PackedQuadCount,
+        int ClusterCell,
         bool Visible);
 
     readonly List<List<Entry>> buckets = new();
@@ -320,6 +321,7 @@ internal sealed class LodGpuIndirectBuilder
     byte[] commands = [];
     byte[] records = [];
     byte[] boxes = [];
+    LodGpuCullIdentity[] identities = [];
     int bucketCount;
 
     public bool Packed { get; }
@@ -370,6 +372,14 @@ internal sealed class LodGpuIndirectBuilder
     /// </summary>
     public ReadOnlySpan<byte> Boxes =>
         boxes.AsSpan(0, CommandCount * LodGpuCullBox.StrideBytes);
+
+    /// <summary>
+    /// Stable CPU identities in command order. The optional flicker capture copies these
+    /// beside an asynchronous GPU verdict sample, so a command slot can be followed even
+    /// when page regrouping gives it a different index on the following frame.
+    /// </summary>
+    public ReadOnlySpan<LodGpuCullIdentity> Identities =>
+        identities.AsSpan(0, CommandCount);
 
     public void Begin()
     {
@@ -429,6 +439,7 @@ internal sealed class LodGpuIndirectBuilder
                     section.ClusteredPackedQuads,
                     section.FirstClusteredPackedQuad + cluster.FirstQuad,
                     cluster.QuadCount,
+                    cluster.Cell,
                     visible));
             }
         }
@@ -441,6 +452,7 @@ internal sealed class LodGpuIndirectBuilder
                 section.PackedQuads,
                 section.FirstPackedQuad,
                 section.PackedQuadCount,
+                -1,
                 visible));
         }
 
@@ -526,6 +538,8 @@ internal sealed class LodGpuIndirectBuilder
                 LodGpuCullBox.Encode(
                     entry.Bounds,
                     boxes.AsSpan(CommandCount * LodGpuCullBox.StrideBytes));
+                identities[CommandCount] = new LodGpuCullIdentity(
+                    entry.Facts.SectionKey, entry.ClusterCell);
                 CommandCount++;
                 if (entry.Visible) VisibleCommands++;
                 else ZeroedCommands++;
@@ -544,5 +558,7 @@ internal sealed class LodGpuIndirectBuilder
         if (commands.Length < commandBytes) commands = new byte[Math.Max(commandBytes, 4096)];
         if (records.Length < recordBytes) records = new byte[Math.Max(recordBytes, 16384)];
         if (boxes.Length < boxBytes) boxes = new byte[Math.Max(boxBytes, 8192)];
+        if (identities.Length < commandSlots)
+            identities = new LodGpuCullIdentity[Math.Max(commandSlots, 256)];
     }
 }

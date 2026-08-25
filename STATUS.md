@@ -3,11 +3,11 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-24
-**Mod version:** `0.3.95`; the complete cache startup/refinement protocol is packaged, installed,
-and human-accepted (`0.2.1` is the public released version; the next changed playable artifact must
-increment exactly once to `0.3.96`)
+**Mod version:** `0.3.100`; two-bucket draw-state flicker capture is ready for the owner's precise-angle
+verification (`0.2.1` is the public released version; the next changed playable artifact must
+increment exactly once to `0.3.101`)
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `69` C# files under `VintageHorizons/src`
+**Source files:** `70` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -92,7 +92,64 @@ of the unchanged 32 unresolved slots and six of eight new requests per frame; th
 eight/two, including one outstanding reservation per direction. This should bring the eye-priority
 band to final detail sooner without increasing total loading pressure or stopping panoramic
 progress. Twenty-five focused radial assertions and the 5,013-assertion fast tier pass; runtime
-pacing is human-accepted. The next work is Phase 8's controlled `late` versus `cull` comparison.
+pacing is human-accepted.
+
+The controlled Phase 8 comparison is now complete: the owner measured 386 FPS under both `late`
+and `cull` in the same settled view. The known precise-angle flicker appeared under `late` and was
+gone under `cull`, localizing it to the split's same-frame cached-on-cached verdict rather than the
+ordinary vanilla-only depth picture. Equal FPS does not disprove the split's value: whole-section
+boxes overlap sky and are poor cached occlusion units, while clusters provide the smaller units
+that let near cached terrain suppress farther cached terrain. Version 0.3.96 therefore keeps the
+split and clusters intact and adds `.vhsplitbias`: a live, unsaved 4/16/64/256-step search applied
+only to the far cached bucket after the mid-frame depth picture. Ordinary culling remains fixed at
+four normalized 24-bit depth steps. The source builds without warnings and the complete fast tier
+passes 5,018 assertions; the smallest visually stable margin awaits the owner's precise-angle test.
+
+That margin search is rejected. The owner found more flickering locations under clusters and no
+meaningful difference among 4, 16, 64, and 256 steps, so this is not a simple near-equality
+threshold. The 0.3.96 log confirms every one of 2,190 requested mid-frame pictures completed. Its
+shadow classifier reported 9.8% whole sections hidden overall, only 3% at 1-2k and 4% at 2-4k,
+with 9.2% simulated 4x4 headroom. The owner deliberately chose a large ridge with extensive
+terrain behind it and expects suppression nearer 60%, making that result an observed diagnostic
+failure rather than an acceptable small win.
+
+Version 0.3.97 instruments the exact command buffer that the live compute pass edits. Once every
+30 dispatches per ordinary, split-near, or split-far bucket, a fenced counter buffer records
+enabled commands tested and zeroed, index-weighted geometry tested and removed, verdict causes,
+and the same command/index/background/undecided figures per distance band. Readback never waits;
+instrumentation failure disables only counters. `.vhhzb` prints these actual live-command totals
+beside the older shadow classifier, allowing the ridge test to distinguish a lost command write,
+low-value rejected clusters, and sky/background refusal. The complete fast tier passes 5,038
+assertions.
+
+The owner has now closed that ridge gate. In the end-of-map view with most cached terrain ahead,
+FPS rose from about 340 to 460. Actual split-near culling zeroed 53.3% of commands and removed
+52.9% of indices; split-far zeroed 80.5% of commands and removed 77.1% of indices. The far 4-8k
+band reached 92.4% commands and 94.8% indices, with no whole-section fallbacks or instrumentation
+warnings. The earlier low shadow percentage came from a different view and a different
+whole-section measurement; it did not mean cluster culling was broken.
+
+Version 0.3.98 narrows the remaining work to the precise-angle artifact. `.vhflicker on` arms a
+four-slot asynchronous split-far capture that follows stable `(section, cluster-cell)` identities
+and records each real command's verdict, nearest depth, farthest HZB depth, mip, and texel
+rectangle. `.vhflicker off` ranks transitions, distinguishes occluded/background sky-edge changes
+from occluded/visible depth-threshold changes, and reports view-projection drift. Ordinary frames
+do not write the large diagnostic stream, and capture failure leaves culling/drawing unchanged.
+The complete fast tier passes 5,066 assertions; primary-driver capture evidence is next.
+
+That capture is now conclusive. Over 8,416 split-far samples and 27,065,856 command observations,
+the camera matrix did not change at all and no readback was dropped. Every top offender alternated
+only between `occluded` and `background`, never `occluded` and ordinary `visible`; the leading
+cluster flipped 4,021 times. Background frames read exact clear depth `1.0`, while hidden frames
+read cached-terrain depth from the same fixed footprint. Version 0.3.99 therefore adds a one-texel
+clear-sky perimeter refusal only to the split-far cached-on-cached test. Perimeter terrain depths
+cannot affect occlusion, and ordinary culling is unchanged. The 5,071-assertion fast tier passes;
+the resulting test found that the guard did not solve the visible artifact and clarified that most
+flickering meshes lie inside terrain, not at its sky silhouette. The 0.3.99
+report also ranked thousands of visible/background changes that cannot affect drawing. Version
+0.3.100 therefore observes both split-near and split-far streams, separately counts command
+presence changes and culling-verdict changes, ranks only transitions that can change drawing, and
+adds a coarse screen region to every offender. The complete fast tier passes 5,073 assertions.
 
 **Depth verdicts stop terrain being drawn, and it is confirmed on hardware.** `cull: on: 67008
 dispatches over 1733784 commands. last frame's commands were culled on the card.` AMD RX 9070 XT
@@ -133,10 +190,14 @@ Phase 8 clusters multiplied those independent verdicts and made the latent defec
 margin despite the plan requiring one: any positive depth difference could cancel a draw, including
 quantization/rasterization noise. Version 0.3.88 reserves four normalized 24-bit depth steps as a
 fail-open band. That mixed run had no reported artifacts, but the valid 0.3.89 complete-cluster run
-flickered again. The margin is therefore not sufficient for the cluster verdict population, and
-simply widening it would discard more of the culling benefit. The obsolete stale-picture policy,
-camera-delta re-base and turning guard remain removed; the preset ladder now has to identify
-whether whole-section culling remains stable and where the cluster stack stops paying.
+flickered again. The later controlled 386-FPS comparison showed the single older flicker under
+`late` but not `cull`. The 0.3.96 far-bucket margin ladder did not affect the artifact, rejecting a
+simple near-equality threshold. The 0.3.98 capture proved stable identities alternating at a fixed
+view, but 0.3.99's sky-edge interpretation failed the visual test and over-ranked verdict changes
+that could not change drawing. Version 0.3.100 now captures both near and far command streams,
+separates pre-compute presence from culling transitions, and labels true draw-state offenders by
+screen region. The obsolete stale-picture policy, camera-delta re-base and turning guard remain
+removed.
 
 **Phase 7 now has an exact 12-byte opaque quad path in source.** The previous form uses four
 16-byte vertices plus six 4-byte indices, or 88 bytes per greedy rectangle. Eight bytes cannot
@@ -178,8 +239,11 @@ section to the established same-frame fallback. The cluster suite passes 1,048 a
 full fast tier passes 4,980. The first owner scene showed a 360-to-390 FPS cluster gain, but the
 first correctly controlled complete-stack comparison showed returned flicker and lower FPS than
 legacy. The result is internally consistent with an earlier stage winning and a later stage losing.
-Cache startup/refinement is now human-accepted. The next adjacent ladder gate is `late` versus
-`cull`, and Phase 8 resumes there without repeating earlier diagnosis.
+Cache startup/refinement is human-accepted, and the later ridge run proves that the complete
+cluster/split path can remove most far commands and raise FPS substantially. The remaining Phase 8
+gate is the view-wide two-bucket `.vhflicker` capture at a known precise angle, not another stage,
+bias, sky-guard, or crosshair-targeted comparison. Version 0.3.100 is installed and source-checked
+but has not yet been human-run; it is diagnostic instrumentation, not a claimed flicker fix.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -848,11 +912,12 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-0. **Resume Phase 8 with `.vhphase8 late` versus `.vhphase8 cull`.** Use one settled session and
-do not visit `off` between samples. Version 0.3.91 preserves the filled arenas across active
-presets; the older 362 FPS `late` observation is warm-up-contaminated and does not count. This
-adjacent comparison decides whether the remaining precise-angle flicker belongs to whole-section
-HZB culling or the same-frame near/far split. `dev/TODO.md` and the GPU plan carry the exact setup.
+0. **Capture the remaining Phase 8 flicker with `.vhflicker`.** Apply `.vhphase8 clusters`, settle
+at a known precise flicker angle, hold the camera completely still, run `.vhflicker on`, wait 3-5
+seconds, then run `.vhflicker off`. The log will identify whether repeated commands alternate
+between presence and absence, whether the near or far bucket changes its culling verdict, and where
+each real draw-state offender projects on screen. No crosshair targeting is required. Do not repeat
+the already rejected split-bias ladder or widen the sky guard without new evidence.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against

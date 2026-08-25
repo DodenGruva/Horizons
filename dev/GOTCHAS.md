@@ -1636,7 +1636,10 @@ inference had also been used to argue the underlying design was salvageable.
 **Do:** ask where on the screen, at what distance, and whether it recovers on its own, before
 proposing a mechanism. He answers precisely and immediately; the question costs one exchange and
 this one would have saved a build, a guard, a set of checks and a wrong conclusion about the
-design.
+design. Keep an exact-angle capture view-wide and label projected regions. Do not require the
+defect under the crosshair: the angle that exposes it generally points the crosshair somewhere
+else. In the current Phase 8 case, most affected meshes are inside visible terrain rather than at
+the sky silhouette.
 
 **Found:** 2026-08-24, session 45.
 
@@ -1835,6 +1838,25 @@ incremental and atomically published, and retain each affected mesh obligation u
 uses is ready. Data-resident is not necessarily reveal-ready.
 
 **Found:** 2026-08-24, first accepted 0.3.93 radial-loading playtest.
+
+### G95 - A verdict transition is not necessarily a draw-state transition
+
+**Trigger:** ranking commands that alternate among several diagnostic verdicts in a GPU cull
+capture.
+
+**Trap:** `visible` and `background` are different explanations but both leave the command drawn.
+The 0.3.99 capture ranked 6,592 of those harmless transitions ahead of 8,666
+`occluded/background` transitions that actually switched drawing off and on. A plausible sky-edge
+story then dominated the investigation even though the owner's visible failures were mostly
+inside terrain.
+
+**Do:** define the externally observable state first. Count explanatory verdict changes for
+context, but rank only cull/draw transitions; separately track whether a command identity appeared
+or disappeared before compute. Capture every upstream bucket that can change the downstream depth
+picture, and retain stable identities and screen regions so the report can be matched to the
+owner's observation.
+
+**Found:** 2026-08-24, 0.3.99 flicker capture and 0.3.100 diagnostic correction.
 
 ## Reversals and disproved claims
 

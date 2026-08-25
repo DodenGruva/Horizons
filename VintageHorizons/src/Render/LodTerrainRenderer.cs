@@ -738,6 +738,12 @@ public class LodTerrainRenderer : IRenderer
     }
 
     bool lateDepthPyramid;
+    /// <summary>
+    /// Safety margin for the second picture only, in normalized 24-bit depth steps. Four is
+    /// the established ordinary cull. Larger values are a live diagnostic for the precise-
+    /// angle cached-on-cached flicker and never weaken vanilla-only culling.
+    /// </summary>
+    public int SplitDepthBiasSteps { get; set; } = LodHzbProjection.OcclusionDepthBiasSteps;
     readonly float[] explainViewProjection = new float[16];
     public long SplitDepthFrames { get; private set; }
     public long SplitDepthNearCommands { get; private set; }
@@ -765,6 +771,7 @@ public class LodTerrainRenderer : IRenderer
         gpuTelemetry.ResetInterval();
         depthPyramid?.ResetInterval();
         hzbClassifier?.ResetInterval();
+        cullPass?.ResetInterval();
         SplitDepthFrames = 0;
         SplitDepthNearCommands = 0;
         SplitDepthFarCommands = 0;
@@ -3459,7 +3466,12 @@ public class LodTerrainRenderer : IRenderer
                     ApplyFrameUniforms(
                         drawProgram, ApprovedViewDistance(), ref uploadedIndirectTintVersion);
             }
-            drew = drawer.Draw(builder, BuildCullRequest());
+            LodGpuCullBucket cullBucket = !depthSplitThisFrame
+                ? LodGpuCullBucket.General
+                : ReferenceEquals(builder, ActiveFarBuilder)
+                    ? LodGpuCullBucket.SplitFar
+                    : LodGpuCullBucket.SplitNear;
+            drew = drawer.Draw(builder, BuildCullRequest(cullBucket));
         }
         catch (Exception e)
         {
@@ -3503,7 +3515,7 @@ public class LodTerrainRenderer : IRenderer
     /// the top of this frame from the engine's own matrices and the boxes are camera-relative
     /// against that same camera, so the two agree by construction.
     /// </summary>
-    LodGpuCullRequest BuildCullRequest()
+    LodGpuCullRequest BuildCullRequest(LodGpuCullBucket bucket)
     {
         if (!GpuCullEnabled || !DepthPyramidEnabled || cullPass == null) return default;
 
@@ -3526,7 +3538,12 @@ public class LodTerrainRenderer : IRenderer
             depthPyramid.TextureName,
             depthPyramid.Width,
             depthPyramid.Height,
-            depthPyramid.Levels);
+            depthPyramid.Levels,
+            bucket == LodGpuCullBucket.SplitFar
+                ? LodHzbProjection.DepthBiasForSteps(SplitDepthBiasSteps)
+                : LodHzbProjection.OcclusionDepthBias,
+            bucket == LodGpuCullBucket.SplitFar ? 1 : 0,
+            bucket);
     }
 
     /// <summary>
@@ -3784,11 +3801,28 @@ public class LodTerrainRenderer : IRenderer
                     + "Play for a moment and run .vhcull again";
         }
 
-        string ran = indirectDrawer is { Culled: true }
+        string ran = ActiveDrawer is { Culled: true }
             ? "last frame's commands were culled on the card"
             : "nothing was culled last frame";
         return "on: " + cullPass.Describe() + ". " + ran + ".";
     }
+
+    public string StartFlickerCapture()
+    {
+        if (!LateDepthPyramid || !ClusterDrawEnabled)
+            return "not armed: apply `.vhphase8 clusters` first so split-far cluster commands exist";
+        if (cullPass == null)
+            return "not armed: GPU terrain buffers are not attached yet";
+        return cullPass.StartFlickerCapture();
+    }
+
+    public string StopFlickerCapture() => cullPass == null
+        ? "flicker capture unavailable: GPU terrain buffers are not attached"
+        : cullPass.StopFlickerCapture();
+
+    public string DescribeFlickerCapture() => cullPass == null
+        ? "flicker capture unavailable: GPU terrain buffers are not attached"
+        : cullPass.DescribeFlickerCapture();
 
     public string DescribeIndirectDraw()
     {
@@ -4921,6 +4955,11 @@ public class LodTerrainRenderer : IRenderer
         report.AppendLine();
         report.Append("picture: ").Append(DescribeLateDepthPyramid());
 
+        report.AppendLine();
+        report.Append("actual live commands: ")
+            .Append(cullPass?.DescribeLiveTelemetry()
+                ?? "the live cull pass has not been created");
+
         string byDistance = DescribeDepthPyramidByDistance();
         if (byDistance.Length > 0)
         {
@@ -4979,7 +5018,8 @@ public class LodTerrainRenderer : IRenderer
         if (SplitDepthFrames == 0)
             return "same-frame near/far split requested, but no split frame has drawn yet";
 
-        return $"same-frame split at {LodGpuDepthSplitPolicy.NearRadiusBlocks:0} blocks: "
+        return $"same-frame split at {LodGpuDepthSplitPolicy.NearRadiusBlocks:0} blocks "
+            + $"with a {SplitDepthBiasSteps}-step cached-on-cached safety margin: "
             + $"{SplitDepthFrames} frames, {SplitDepthNearCommands} near commands and "
             + $"{SplitDepthFarCommands} far commands, {SplitDepthMidBuilds} mid-frame "
             + "pictures completed. A failed picture draws the far bucket without culling.";

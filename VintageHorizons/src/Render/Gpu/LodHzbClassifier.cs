@@ -109,6 +109,8 @@ uniform int screenHeight;
 uniform int levelCount;
 uniform int sectionCount;
 uniform sampler2D hzb;
+uniform float occlusionDepthBias;
+uniform int backgroundGuardTexels;
 
 const uint VERDICT_VISIBLE = 0u;
 const uint VERDICT_OCCLUDED = 1u;
@@ -151,16 +153,27 @@ const int SUBDIVISIONS_PER_AXIS = 4;
 const int TEXELS_PRIMARY = 8;
 const int TEXELS_NARROW = 2;
 
-// Four normalized steps of a 24-bit depth buffer. Box corners and rasterized triangles
-// arrive at depth through different arithmetic, so values inside this band are coplanar for
-// visibility purposes and must draw. Matches LodHzbProjection.OcclusionDepthBias.
-const float OCCLUSION_DEPTH_BIAS = 4.0 / 16777215.0;
+// Box corners and rasterized triangles arrive at depth through different arithmetic, so
+// values inside this band are coplanar for visibility purposes and must draw. The shadow
+// classifier receives the ordinary four-step value. The visible cull can receive a larger
+// value only for the same-frame cached-on-cached diagnostic.
 
 // One box, one verdict. Shared by the section and by each of its sub-cells so a cell can
 // never be judged by looser rules than the whole - the measurement would be meaningless if
 // the two disagreed about what hidden means.
-uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
+uint TestBoxDetailed(
+    vec3 lo,
+    vec3 hi,
+    int texelsPerAxis,
+    out float nearestDepthOut,
+    out float farthestDepthOut,
+    out int levelOut,
+    out ivec4 texelRectOut)
 {
+    nearestDepthOut = -1.0;
+    farthestDepthOut = -1.0;
+    levelOut = -1;
+    texelRectOut = ivec4(-1);
     if (hi.x < lo.x || hi.y < lo.y || hi.z < lo.z) return VERDICT_DEGENERATE;
 
     float minU = 1.0 / 0.0;
@@ -201,6 +214,7 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
         maxV = max(maxV, v);
         nearestDepth = min(nearestDepth, depth);
     }
+    nearestDepthOut = nearestDepth;
 
     // Off screen is the frustum test business, not ours.
     if (maxU < 0.0 || minU > 1.0 || maxV < 0.0 || minV > 1.0) return VERDICT_OFF_SCREEN;
@@ -221,6 +235,7 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
     int level = 0;
     if (longest > perAxis) level = int(ceil(log2(longest / perAxis)));
     level = clamp(level, 0, levelCount - 1);
+    levelOut = level;
 
     ivec2 levelSize = textureSize(hzb, level);
     if (levelSize.x <= 0 || levelSize.y <= 0) return VERDICT_DEGENERATE;
@@ -236,6 +251,7 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
     y0 = clamp(y0, 0, levelSize.y - 1);
     x1 = clamp(x1, x0, levelSize.x - 1);
     y1 = clamp(y1, y0, levelSize.y - 1);
+    texelRectOut = ivec4(x0, y0, x1, y1);
 
     if ((x1 - x0) > texelsPerAxis || (y1 - y0) > texelsPerAxis) return VERDICT_DEGENERATE;
 
@@ -251,12 +267,54 @@ uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
             farthest = max(farthest, texel);
         }
     }
+    farthestDepthOut = farthest;
 
     // Equality and the quantization/rasterization band around it are coplanar cases and
     // must draw. Without the band, whole commands flicker at precise camera angles.
-    if (nearestDepth > farthest + OCCLUSION_DEPTH_BIAS) return VERDICT_OCCLUDED;
+    if (nearestDepth > farthest + occlusionDepthBias)
+    {
+        // The still-camera capture isolated the remaining split-far flicker to a core texel
+        // alternating between terrain and the exact 1.0 clear value. Before hiding a far
+        // cluster against freshly drawn cached terrain, inspect a one-texel perimeter for
+        // stable sky. The perimeter is a refusal guard only: non-sky depths outside the
+        // projected box never participate in the occlusion comparison.
+        int guard = clamp(backgroundGuardTexels, 0, 1);
+        if (guard > 0)
+        {
+            int gx0 = max(0, x0 - guard);
+            int gy0 = max(0, y0 - guard);
+            int gx1 = min(levelSize.x - 1, x1 + guard);
+            int gy1 = min(levelSize.y - 1, y1 + guard);
+            for (int y = gy0; y <= gy1; y++)
+            {
+                for (int x = gx0; x <= gx1; x++)
+                {
+                    if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
+                    float guardDepth = texelFetch(hzb, ivec2(x, y), level).r;
+                    if (isinf(guardDepth) || isnan(guardDepth))
+                        return VERDICT_DEGENERATE;
+                    if (guardDepth >= 1.0)
+                    {
+                        farthestDepthOut = guardDepth;
+                        return VERDICT_BACKGROUND;
+                    }
+                }
+            }
+        }
+        return VERDICT_OCCLUDED;
+    }
     if (farthest >= 1.0) return VERDICT_BACKGROUND;
     return VERDICT_VISIBLE;
+}
+
+uint TestBox(vec3 lo, vec3 hi, int texelsPerAxis)
+{
+    float nearestDepth;
+    float farthestDepth;
+    int level;
+    ivec4 texelRect;
+    return TestBoxDetailed(lo, hi, texelsPerAxis,
+        nearestDepth, farthestDepth, level, texelRect);
 }
 
 ";
@@ -362,21 +420,125 @@ layout(std430, binding = 0) readonly buffer Boxes { vec4 boxes[]; };
 // LodGpuIndirectCommand.StrideBytes; word 1 is instanceCount. Declared as uint[] rather than
 // a struct so the layout cannot drift from the 20-byte stride the driver reads.
 layout(std430, binding = 1) buffer Commands { uint commands[]; };
+
+// Sampled counters from the exact command stream the following multi-draw consumes. The
+// buffer is touched only when telemetryEnabled is one, so ordinary frames pay no atomics.
+// Word offsets match LodGpuCullTelemetryLayout and are pinned by the fast checks.
+layout(std430, binding = 2) buffer LiveCullStats { uint liveCullStats[]; };
+
+// Full per-command facts are many orders of magnitude larger than the sampled counters,
+// so this buffer is written only while the owner explicitly arms `.vhflicker`. Eight words
+// per command match LodGpuFlickerLayout.
+layout(std430, binding = 3) buffer FlickerResults { uint flickerResults[]; };
 " + SharedSource + @"
 const uint COMMAND_WORDS = 5u;
 const uint INSTANCE_COUNT_WORD = 1u;
+const uint STATS_TESTED_COMMANDS = 0u;
+const uint STATS_CULLED_COMMANDS = 1u;
+const uint STATS_TESTED_INDICES = 2u;
+const uint STATS_CULLED_INDICES = 3u;
+const uint STATS_VISIBLE = 4u;
+const uint STATS_OCCLUDED = 5u;
+const uint STATS_FAILED_OPEN = 6u;
+const uint STATS_BACKGROUND = 7u;
+const uint STATS_NEAR_PLANE = 8u;
+const uint STATS_OFF_SCREEN = 9u;
+const uint STATS_DEGENERATE = 10u;
+const uint STATS_BAND_BASE = 11u;
+const uint STATS_BAND_STRIDE = 6u;
+uniform int telemetryEnabled;
+uniform int flickerCaptureEnabled;
+
+void WriteFlickerResult(uint index, uint verdict, float nearestDepth,
+    float farthestDepth, int level, ivec4 texelRect)
+{
+    uint word = index * 8u;
+    flickerResults[word] = verdict;
+    flickerResults[word + 1u] = floatBitsToUint(nearestDepth);
+    flickerResults[word + 2u] = floatBitsToUint(farthestDepth);
+    flickerResults[word + 3u] = uint(level);
+    flickerResults[word + 4u] = uint(texelRect.x);
+    flickerResults[word + 5u] = uint(texelRect.y);
+    flickerResults[word + 6u] = uint(texelRect.z);
+    flickerResults[word + 7u] = uint(texelRect.w);
+}
+
+uint DistanceBand(float distanceBlocks)
+{
+    if (distanceBlocks < 1000.0) return 0u;
+    if (distanceBlocks < 2000.0) return 1u;
+    if (distanceBlocks < 4000.0) return 2u;
+    if (distanceBlocks < 8000.0) return 3u;
+    if (distanceBlocks < 16000.0) return 4u;
+    return 5u;
+}
+
+void CountVerdict(uint verdict)
+{
+    uint word = verdict == VERDICT_OCCLUDED ? STATS_OCCLUDED
+        : verdict == VERDICT_FAILED_OPEN ? STATS_FAILED_OPEN
+        : verdict == VERDICT_BACKGROUND ? STATS_BACKGROUND
+        : verdict == VERDICT_NEAR_PLANE ? STATS_NEAR_PLANE
+        : verdict == VERDICT_OFF_SCREEN ? STATS_OFF_SCREEN
+        : verdict == VERDICT_DEGENERATE ? STATS_DEGENERATE
+        : STATS_VISIBLE;
+    atomicAdd(liveCullStats[word], 1u);
+}
 
 void main()
 {
     uint index = gl_GlobalInvocationID.x;
     if (index >= uint(sectionCount)) return;
 
+    uint commandWord = index * COMMAND_WORDS;
+    if (commands[commandWord + INSTANCE_COUNT_WORD] == 0u)
+    {
+        if (flickerCaptureEnabled != 0)
+            WriteFlickerResult(index, 0xffffffffu, -1.0, -1.0, -1, ivec4(-1));
+        return;
+    }
+
     vec3 lo = boxes[index * 2u].xyz;
     vec3 hi = boxes[index * 2u + 1u].xyz;
+    float nearestDepth;
+    float farthestDepth;
+    int level;
+    ivec4 texelRect;
+    uint verdict = TestBoxDetailed(lo, hi, TEXELS_PRIMARY,
+        nearestDepth, farthestDepth, level, texelRect);
+    if (flickerCaptureEnabled != 0)
+        WriteFlickerResult(index, verdict, nearestDepth, farthestDepth, level, texelRect);
+    uint indexCount = commands[commandWord];
 
-    if (TestBox(lo, hi, TEXELS_PRIMARY) == VERDICT_OCCLUDED)
+    if (telemetryEnabled != 0)
     {
-        commands[index * COMMAND_WORDS + INSTANCE_COUNT_WORD] = 0u;
+        atomicAdd(liveCullStats[STATS_TESTED_COMMANDS], 1u);
+        atomicAdd(liveCullStats[STATS_TESTED_INDICES], indexCount);
+        CountVerdict(verdict);
+
+        float distanceBlocks = length((lo.xz + hi.xz) * 0.5);
+        uint bandWord = STATS_BAND_BASE + DistanceBand(distanceBlocks) * STATS_BAND_STRIDE;
+        atomicAdd(liveCullStats[bandWord], 1u);
+        atomicAdd(liveCullStats[bandWord + 2u], indexCount);
+        if (verdict == VERDICT_BACKGROUND)
+            atomicAdd(liveCullStats[bandWord + 4u], 1u);
+        if (verdict == VERDICT_FAILED_OPEN || verdict == VERDICT_NEAR_PLANE
+            || verdict == VERDICT_OFF_SCREEN || verdict == VERDICT_DEGENERATE)
+            atomicAdd(liveCullStats[bandWord + 5u], 1u);
+    }
+
+    if (verdict == VERDICT_OCCLUDED)
+    {
+        commands[commandWord + INSTANCE_COUNT_WORD] = 0u;
+        if (telemetryEnabled != 0)
+        {
+            atomicAdd(liveCullStats[STATS_CULLED_COMMANDS], 1u);
+            atomicAdd(liveCullStats[STATS_CULLED_INDICES], indexCount);
+            uint bandWord = STATS_BAND_BASE
+                + DistanceBand(length((lo.xz + hi.xz) * 0.5)) * STATS_BAND_STRIDE;
+            atomicAdd(liveCullStats[bandWord + 1u], 1u);
+            atomicAdd(liveCullStats[bandWord + 3u], indexCount);
+        }
     }
 }
 ";
@@ -798,6 +960,9 @@ void main()
         GL.Uniform1(GL.GetUniformLocation(program, "levelCount"), levels);
         GL.Uniform1(GL.GetUniformLocation(program, "sectionCount"), count);
         GL.Uniform1(GL.GetUniformLocation(program, "hzb"), 0);
+        GL.Uniform1(GL.GetUniformLocation(program, "occlusionDepthBias"),
+            LodHzbProjection.OcclusionDepthBias);
+        GL.Uniform1(GL.GetUniformLocation(program, "backgroundGuardTexels"), 0);
     }
 
     void Disable(string reason)

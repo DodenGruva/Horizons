@@ -97,6 +97,11 @@ Completion evidence:
   `%APPDATA%\VintagestoryData\Mods`. Do not stop at a source-only handoff. This authorizes the
   private test artifact and local Mods-folder copy; it does not authorize launching the game,
   committing, pushing, tagging, or publishing.
+- Installing a new test artifact is copy-only. Never delete, move, rename, back up, replace, or
+  otherwise remove an older Vintage Horizons zip from the owner's Mods folder; Vintage Story
+  selects the highest version and the older files are the owner's rollback set. If the exact new
+  destination already exists, stop and inspect it instead of overwriting it unless the owner
+  explicitly directs otherwise.
 - Full test tiers and isolated game-process rules are documented in `README.md`.
 - Set `VINTAGE_STORY` to the game install when it is not at the project fallback location.
 - Never launch or stop a Vintage Story test process outside the repository's isolation scripts,

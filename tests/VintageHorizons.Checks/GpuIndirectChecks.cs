@@ -22,6 +22,8 @@ public static class GpuIndirectChecks
         CullBoxesFollowCommandOrder(c);
         CullRunsBetweenUploadAndDraw(c);
         ADeclinedCullStillDrawsEverything(c);
+        LiveCullTelemetry(c);
+        FlickerTransitionCapture(c);
         DepthSplitBoundary(c);
         TwoSameFrameBucketsStayIndependent(c);
     }
@@ -41,6 +43,130 @@ public static class GpuIndirectChecks
             "an invalid distance cannot become a near occluder");
         c.False(LodGpuDepthSplitPolicy.IsNear(float.PositiveInfinity),
             "an unbounded distance cannot become a near occluder");
+        c.Eq(LodHzbProjection.OcclusionDepthBias,
+            LodHzbProjection.DepthBiasForSteps(LodHzbProjection.OcclusionDepthBiasSteps),
+            "the split diagnostic starts at the established ordinary safety margin");
+        c.Eq(LodHzbProjection.DepthBiasForSteps(64),
+            64f / 16777215f,
+            "a selected split margin converts exact 24-bit depth steps");
+        c.Eq(LodHzbProjection.DepthBiasForSteps(int.MaxValue),
+            LodHzbProjection.MaximumDiagnosticDepthBiasSteps / 16777215f,
+            "the split diagnostic margin has a finite fail-open ceiling");
+    }
+
+    static void LiveCullTelemetry(Check c)
+    {
+        c.Eq(47, LodGpuCullTelemetryLayout.WordCount,
+            "the live counter buffer has the pinned shader word count");
+        c.Eq(0, LodGpuCullTelemetryLayout.BandFor(999f),
+            "live command distance telemetry starts in the near kilometre");
+        c.Eq(1, LodGpuCullTelemetryLayout.BandFor(1000f),
+            "and uses the same inclusive kilometre boundary as its shader");
+        c.Eq(5, LodGpuCullTelemetryLayout.BandFor(float.PositiveInfinity),
+            "an unbounded command lands in the final diagnostic band");
+
+        var words = new uint[LodGpuCullTelemetryLayout.WordCount];
+        words[LodGpuCullTelemetryLayout.TestedCommands] = 10;
+        words[LodGpuCullTelemetryLayout.CulledCommands] = 6;
+        words[LodGpuCullTelemetryLayout.TestedIndices] = 1000;
+        words[LodGpuCullTelemetryLayout.CulledIndices] = 750;
+        words[LodGpuCullTelemetryLayout.BackgroundVerdicts] = 3;
+        words[LodGpuCullTelemetryLayout.OccludedVerdicts] = 6;
+        words[LodGpuCullTelemetryLayout.VisibleVerdicts] = 1;
+        int far = LodGpuCullTelemetryLayout.BandBase
+            + 2 * LodGpuCullTelemetryLayout.BandStride;
+        words[far] = 10;
+        words[far + 1] = 6;
+        words[far + 2] = 1000;
+        words[far + 3] = 750;
+        words[far + 4] = 3;
+
+        var statistics = new LodGpuCullStatistics();
+        statistics.Add(words);
+        c.Eq(1L, statistics.Samples,
+            "one asynchronous read becomes one live-command sample");
+        c.Eq(10UL, statistics.TestedCommands,
+            "the live total counts commands that were actually enabled before culling");
+        c.Eq(6UL, statistics.CulledCommands,
+            "the live total counts the exact commands zeroed by compute");
+        c.Eq(750UL, statistics.CulledIndices,
+            "geometry weighting follows the index count in those exact commands");
+        string report = statistics.Describe("split far live cull");
+        c.True(report.Contains("60.0%", StringComparison.Ordinal),
+            "the report exposes actual command suppression as a percentage");
+        c.True(report.Contains("75.0%", StringComparison.Ordinal),
+            "and separately exposes geometry-weighted suppression");
+        c.True(report.Contains("2-4k", StringComparison.Ordinal),
+            "the ridge result remains attributable by distance");
+        c.True(report.Contains("30.0% background", StringComparison.Ordinal),
+            "each distance band exposes how often sky overlap defeated rejection");
+        statistics.Reset();
+        c.Eq(0L, statistics.Samples,
+            "a preset change starts a clean live-command interval");
+    }
+
+    static void FlickerTransitionCapture(Check c)
+    {
+        c.Eq(8, LodGpuFlickerLayout.WordCount,
+            "one armed command sample has verdict, depths, mip, and texel rectangle words");
+        long key = LodWorld.SectionKey(2, 7, 11);
+        LodGpuCullIdentity[] identities = [new(key, 6)];
+        var capture = new LodGpuFlickerCapture();
+        var matrix = new float[16];
+
+        uint[] Sample(uint verdict, float nearest, float farthest, int mip)
+        {
+            var words = new uint[LodGpuFlickerLayout.WordCount];
+            words[LodGpuFlickerLayout.Verdict] = verdict;
+            words[LodGpuFlickerLayout.NearestDepth] = BitConverter.SingleToUInt32Bits(nearest);
+            words[LodGpuFlickerLayout.FarthestDepth] = BitConverter.SingleToUInt32Bits(farthest);
+            words[LodGpuFlickerLayout.MipLevel] = unchecked((uint)mip);
+            words[LodGpuFlickerLayout.X0] = 3;
+            words[LodGpuFlickerLayout.Y0] = 4;
+            words[LodGpuFlickerLayout.X1] = 7;
+            words[LodGpuFlickerLayout.Y1] = 8;
+            return words;
+        }
+
+        capture.Add(1, identities, Sample(1, 0.7f, 0.6f, 4), matrix, 1920, 1080);
+        capture.Add(2, identities, Sample(3, 0.7f, 1.0f, 4), matrix, 1920, 1080);
+        matrix[5] = 0.25f;
+        capture.Add(3, identities, Sample(1, 0.7f, 0.6f, 4), matrix, 1920, 1080);
+        capture.Add(4, identities, Sample(0, 0.7f, 0.69f, 4), matrix, 1920, 1080);
+        string report = capture.Describe(armed: false, "split far");
+
+        c.True(report.Contains("3 culling flips", StringComparison.Ordinal),
+            "successive verdict changes that alter drawing are ranked for the offender");
+        c.True(report.Contains("occluded/background 2", StringComparison.Ordinal),
+            "sky-edge alternation is counted separately from an ordinary visible edge");
+        c.True(report.Contains("occluded/visible 1", StringComparison.Ordinal),
+            "the depth threshold alternative remains distinguishable");
+        c.True(report.Contains("L2 (7,11) cluster 6 (2,1)", StringComparison.Ordinal),
+            "the report carries the stable section and cluster identity");
+        c.True(report.Contains("mip 4, texels 3,4-7,8", StringComparison.Ordinal),
+            "the last projected HZB footprint can be investigated directly");
+        c.True(report.Contains("screen left-lower", StringComparison.Ordinal),
+            "the footprint is translated into a view-wide region without requiring aiming");
+        c.True(report.Contains("0.250000", StringComparison.Ordinal),
+            "camera movement is exposed rather than mistaken for a still-view oscillation");
+        c.False(report.Contains('<'),
+            "the diagnostic avoids angle-bracket labels that Vintage Story parses as chat markup");
+
+        capture.Reset();
+        capture.Add(1, identities, Sample(1, 0.7f, 0.6f, 4), new float[16], 1920, 1080);
+        capture.Add(2, Array.Empty<LodGpuCullIdentity>(), Array.Empty<uint>(),
+            new float[16], 1920, 1080);
+        capture.Add(3, identities, Sample(1, 0.7f, 0.6f, 4),
+            new float[16], 1920, 1080);
+        c.True(capture.Describe(armed: false).Contains("2 presence flips", StringComparison.Ordinal),
+            "a command disappearing before compute and returning is distinguished from a verdict flip");
+
+        capture.Reset();
+        uint[] disabled = Sample(LodGpuFlickerLayout.DisabledVerdict, -1f, -1f, -1);
+        capture.Add(1, identities, disabled, new float[16], 1920, 1080);
+        c.True(capture.Describe(armed: true).Contains(
+                "no command changed draw state", StringComparison.Ordinal),
+            "CPU-disabled commands cannot become false flicker offenders");
     }
 
     static void TwoSameFrameBucketsStayIndependent(Check c)
@@ -141,6 +267,11 @@ public static class GpuIndirectChecks
             c.Eq(recordOriginZ, boxMinZ, $"slot {slot}: the box starts where its record does in z");
             c.Eq(recordOriginX + recordSize, boxMaxX, $"slot {slot}: the box spans the footprint in x");
             c.Eq(recordOriginZ + recordSize, boxMaxZ, $"slot {slot}: the box spans the footprint in z");
+            LodGpuCullIdentity identity = builder.Identities[slot];
+            c.Eq(-1, identity.ClusterCell,
+                $"slot {slot}: a whole-section command has the whole-section identity");
+            c.Eq(recordOriginX, Facts(identity.SectionKey).OriginRelX,
+                $"slot {slot}: its stable identity follows the regrouped command order");
 
             // And the vertical extent is the mesh's own, not the bedrock-to-sky fallback the
             // record's origin carries. Phase 3b exists precisely so this is the tighter one.
@@ -523,6 +654,18 @@ public static class GpuIndirectChecks
         c.Eq(builder.CommandCount * LodGpuCullBox.StrideBytes, builder.Boxes.Length,
             "packed commands preserve the parallel cull-box layout");
 
+        var clustered = new LodGpuIndirectBuilder(packed: true, clustered: true);
+        clustered.Begin();
+        clustered.Add(first, Facts(a));
+        clustered.Add(second, Facts(b));
+        clustered.End(mirror);
+        c.Eq(clustered.CommandCount, clustered.Identities.Length,
+            "cluster commands retain one stable identity per regrouped command slot");
+        c.Eq(a, clustered.Identities[0].SectionKey,
+            "the first cluster identity names its source section");
+        c.Eq(0, clustered.Identities[0].ClusterCell,
+            "and carries the packed cluster's stable 4x4 cell number");
+
         long expandedOnly = LodWorld.SectionKey(0, 2, 0);
         mirror.Mirror(Publication(expandedOnly, quads: 2, includePacked: false));
         mirror.TryGet(expandedOnly, out LodGpuGeometryMirror.MirroredSection expandedOnlySection);
@@ -653,7 +796,14 @@ public static class GpuIndirectChecks
             new LodRenderGeometry(
                 xyz, rgba, indices,
                 includePacked ? packedWords : null,
-                includePacked ? quads : 0));
+                includePacked ? quads : 0,
+                includePacked ? packedWords : null,
+                includePacked
+                    ? [new LodPackedCluster(
+                        Cell: 0, FirstQuad: 0, QuadCount: quads,
+                        MinX: 0, MinY: 0, MinZ: 0,
+                        MaxX: quads, MaxY: 1, MaxZ: quads)]
+                    : null));
     }
 
     static LodGpuSectionFacts Facts(long key)
@@ -790,9 +940,10 @@ public static class GpuIndirectChecks
     {
         var backend = new FakeDrawBackend();
         var warnings = new List<string>();
+        var pass = new FakeCullDispatch();
         using var drawer = new LodGpuIndirectDrawer(backend, warnings.Add);
 
-        drawer.Draw(BuiltList(out LodGpuGeometryMirror mirror), Cull());
+        drawer.Draw(BuiltList(out LodGpuGeometryMirror mirror), Cull(pass));
         mirror.Dispose();
 
         int upload = backend.Calls.IndexOf("upload");
@@ -804,6 +955,15 @@ public static class GpuIndirectChecks
         c.True(cullBegin > upload, "the cull binds only after the commands are on the card");
         c.True(cullEnd > cullBegin, "the cull is closed, which is where its barrier lives");
         c.True(drawBegin > cullEnd, "and nothing is drawn until after that barrier");
+        c.Eq(LodHzbProjection.DepthBiasForSteps(64),
+            pass.LastDepthBias,
+            "the selected cached-on-cached safety margin reaches the compute dispatch");
+        c.Eq(LodGpuCullBucket.SplitFar, pass.LastBucket,
+            "the real dispatch attributes its counters to the far split bucket");
+        c.Eq(1, pass.LastBackgroundGuardTexels,
+            "the split-far dispatch receives the one-texel silhouette guard");
+        c.Eq(pass.LastCount, pass.LastIdentityCount,
+            "the optional capture receives one stable identity per command slot");
         c.Eq(0, warnings.Count, "a clean cull warns about nothing");
     }
 
@@ -838,13 +998,17 @@ public static class GpuIndirectChecks
         }
 
         // A cull request with nothing usable in it is declined without touching the backend.
-        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 4).Wanted,
+        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 4,
+                LodHzbProjection.OcclusionDepthBias, 0, LodGpuCullBucket.General).Wanted,
             "a request with no cull pass is not wanted");
-        c.False(new LodGpuCullRequest(null, null, 1, 100, 100, 4).Wanted,
+        c.False(new LodGpuCullRequest(null, null, 1, 100, 100, 4,
+                LodHzbProjection.OcclusionDepthBias, 0, LodGpuCullBucket.General).Wanted,
             "nor one with no matrix");
-        c.False(new LodGpuCullRequest(null, new float[16], 0, 100, 100, 4).Wanted,
+        c.False(new LodGpuCullRequest(null, new float[16], 0, 100, 100, 4,
+                LodHzbProjection.OcclusionDepthBias, 0, LodGpuCullBucket.General).Wanted,
             "nor one with no pyramid texture");
-        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 0).Wanted,
+        c.False(new LodGpuCullRequest(null, new float[16], 1, 100, 100, 0,
+                LodHzbProjection.OcclusionDepthBias, 0, LodGpuCullBucket.General).Wanted,
             "nor one with no pyramid levels");
     }
 
@@ -873,7 +1037,9 @@ public static class GpuIndirectChecks
     /// without any GL. The ordering is then observable through the backend's call log.
     /// </summary>
     static LodGpuCullRequest Cull(FakeCullDispatch? pass = null) =>
-        new(pass ?? new FakeCullDispatch(), new float[16], HzbTexture: 1, ScreenW, ScreenH, Levels: 4);
+        new(pass ?? new FakeCullDispatch(), new float[16], HzbTexture: 1, ScreenW, ScreenH, Levels: 4,
+            LodHzbProjection.DepthBiasForSteps(64), BackgroundGuardTexels: 1,
+            LodGpuCullBucket.SplitFar);
 
     const int ScreenW = 1920;
     const int ScreenH = 1080;
@@ -885,12 +1051,23 @@ public static class GpuIndirectChecks
         public bool Refuse { get; init; }
         public int Dispatches;
         public int LastCount;
+        public int LastIdentityCount;
+        public float LastDepthBias;
+        public int LastBackgroundGuardTexels;
+        public LodGpuCullBucket LastBucket;
 
         public bool Dispatch(float[] viewProjection, int hzbTexture,
-            int screenWidth, int screenHeight, int levels, int count)
+            int screenWidth, int screenHeight, int levels, int count,
+            float occlusionDepthBias, int backgroundGuardTexels,
+            LodGpuCullBucket bucket,
+            ReadOnlySpan<LodGpuCullIdentity> identities)
         {
             Dispatches++;
             LastCount = count;
+            LastIdentityCount = identities.Length;
+            LastDepthBias = occlusionDepthBias;
+            LastBackgroundGuardTexels = backgroundGuardTexels;
+            LastBucket = bucket;
             return !Refuse;
         }
     }
