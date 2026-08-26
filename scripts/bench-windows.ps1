@@ -32,6 +32,10 @@ param(
     # in both halves of the A/B so this isolates packing rather than batching.
     [ValidateSet('0', '1')]
     [string]$GpuPacked,
+    # Phase 9 only: force one named GPU boundary to fail once so the fallback can be
+    # observed in the isolated client. This is recorded in scenario.json with the run.
+    [ValidateSet('arena', 'shader', 'depth-copy', 'draw')]
+    [string]$GpuFailure,
     # Split packed section geometry into a 4x4 grid of independently culled commands.
     [ValidateSet('0', '1')]
     [string]$GpuClusters,
@@ -652,7 +656,12 @@ function Get-ClientGpuRenderRecord {
 
     $timerPattern =
         'delayed GPU pass p95/p99/max us: opaque (?<opaqueP95>\d+)/(?<opaqueP99>\d+)/(?<opaqueMax>\d+) ' +
-        'over (?<opaqueSamples>\d+) samples \| water (?<waterP95>\d+)/(?<waterP99>\d+)/(?<waterMax>\d+) ' +
+        'over (?<opaqueSamples>\d+) samples \| ' +
+        'split near (?<splitNearP95>\d+)/(?<splitNearP99>\d+)/(?<splitNearMax>\d+) ' +
+        'over (?<splitNearSamples>\d+) \| ' +
+        'split far (?<splitFarP95>\d+)/(?<splitFarP99>\d+)/(?<splitFarMax>\d+) ' +
+        'over (?<splitFarSamples>\d+) \| ' +
+        'water (?<waterP95>\d+)/(?<waterP99>\d+)/(?<waterMax>\d+) ' +
         'over (?<waterSamples>\d+); (?<pending>\d+) pending, (?<skips>\d+) ring-full skips, ' +
         '(?<conflicts>\d+) time-query target conflicts, timing (?<state>active|inactive)'
     $timerSamples = @()
@@ -665,6 +674,14 @@ function Get-ClientGpuRenderRecord {
             opaqueP99Microseconds = [int64]$match.Groups['opaqueP99'].Value
             opaqueMaxMicroseconds = [int64]$match.Groups['opaqueMax'].Value
             opaqueSamples = [int64]$match.Groups['opaqueSamples'].Value
+            splitNearP95Microseconds = [int64]$match.Groups['splitNearP95'].Value
+            splitNearP99Microseconds = [int64]$match.Groups['splitNearP99'].Value
+            splitNearMaxMicroseconds = [int64]$match.Groups['splitNearMax'].Value
+            splitNearSamples = [int64]$match.Groups['splitNearSamples'].Value
+            splitFarP95Microseconds = [int64]$match.Groups['splitFarP95'].Value
+            splitFarP99Microseconds = [int64]$match.Groups['splitFarP99'].Value
+            splitFarMaxMicroseconds = [int64]$match.Groups['splitFarMax'].Value
+            splitFarSamples = [int64]$match.Groups['splitFarSamples'].Value
             waterP95Microseconds = [int64]$match.Groups['waterP95'].Value
             waterP99Microseconds = [int64]$match.Groups['waterP99'].Value
             waterMaxMicroseconds = [int64]$match.Groups['waterMax'].Value
@@ -673,6 +690,67 @@ function Get-ClientGpuRenderRecord {
             ringFullSkips = [int64]$match.Groups['skips'].Value
             targetConflicts = [int64]$match.Groups['conflicts'].Value
             timingActive = $match.Groups['state'].Value -eq 'active'
+        }
+    }
+
+    $uploadPattern =
+        'render gpu calls p95/p99/max us: upload (?<uploadP95>\d+)/(?<uploadP99>\d+)/(?<uploadMax>\d+) \| ' +
+        'dispose (?<disposeP95>\d+)/(?<disposeP99>\d+)/(?<disposeMax>\d+)'
+    $uploadSamples = @()
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, $uploadPattern)
+        if (-not $match.Success) { continue }
+        $uploadSamples += [ordered]@{
+            line = $line
+            uploadP95Microseconds = [int64]$match.Groups['uploadP95'].Value
+            uploadP99Microseconds = [int64]$match.Groups['uploadP99'].Value
+            uploadMaxMicroseconds = [int64]$match.Groups['uploadMax'].Value
+            disposeP95Microseconds = [int64]$match.Groups['disposeP95'].Value
+            disposeP99Microseconds = [int64]$match.Groups['disposeP99'].Value
+            disposeMaxMicroseconds = [int64]$match.Groups['disposeMax'].Value
+        }
+    }
+
+    $arenaPattern =
+        'gpu arena shadow: (?:retaining (?<retention>[^;]+); )?sections (?<sections>\d+) live[^|]*\| ' +
+        'vertices (?<vertexLive>[\d.,]+)/(?<vertexCapacity>[\d.,]+) MiB[^|]*\| ' +
+        'indices (?<indexLive>[\d.,]+)/(?<indexCapacity>[\d.,]+) MiB[^|]*\| ' +
+        'packed (?<packedLive>[\d.,]+)/(?<packedCapacity>[\d.,]+) MiB[^|]*\| ' +
+        'clusters (?<clusterLive>[\d.,]+)/(?<clusterCapacity>[\d.,]+) MiB'
+    $arenaSamples = @()
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, $arenaPattern)
+        if (-not $match.Success) { continue }
+        $arenaSamples += [ordered]@{
+            line = $line
+            retention = if ($match.Groups['retention'].Success) {
+                $match.Groups['retention'].Value
+            } else { $null }
+            liveSections = [int64]$match.Groups['sections'].Value
+            vertexLiveMiB = [double]::Parse(
+                $match.Groups['vertexLive'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            vertexCapacityMiB = [double]::Parse(
+                $match.Groups['vertexCapacity'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            indexLiveMiB = [double]::Parse(
+                $match.Groups['indexLive'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            indexCapacityMiB = [double]::Parse(
+                $match.Groups['indexCapacity'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            packedLiveMiB = [double]::Parse(
+                $match.Groups['packedLive'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            packedCapacityMiB = [double]::Parse(
+                $match.Groups['packedCapacity'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            clusterLiveMiB = [double]::Parse(
+                $match.Groups['clusterLive'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
+            clusterCapacityMiB = [double]::Parse(
+                $match.Groups['clusterCapacity'].Value.Replace(',', '.'),
+                [Globalization.CultureInfo]::InvariantCulture)
         }
     }
 
@@ -705,12 +783,15 @@ function Get-ClientGpuRenderRecord {
         }
     }
 
-    if (-not $probeLine -and $timerSamples.Count -eq 0 -and $drawSamples.Count -eq 0) {
+    if ((-not $probeLine) -and $timerSamples.Count -eq 0 -and $drawSamples.Count -eq 0 -and
+        $uploadSamples.Count -eq 0 -and $arenaSamples.Count -eq 0) {
         return $null
     }
     return [ordered]@{
         probeLine = $probeLine
         timerSamples = $timerSamples
+        uploadSamples = $uploadSamples
+        arenaSamples = $arenaSamples
         drawSamples = $drawSamples
     }
 }
@@ -1042,6 +1123,9 @@ if ($GpuIndirect) {
 if ($GpuPacked) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_PACKED = $GpuPacked
 }
+if ($GpuFailure) {
+    $clientEnvironment.VINTAGEHORIZONS_GPU_INJECT_FAILURE = $GpuFailure
+}
 if ($GpuClusters) {
     $clientEnvironment.VINTAGEHORIZONS_GPU_CLUSTERS = $GpuClusters
 }
@@ -1206,6 +1290,7 @@ try {
         gpuArenaPageMb = if ($GpuArenaPageMb) { $GpuArenaPageMb } else { $null }
         gpuIndirect = if ($GpuIndirect) { $GpuIndirect } else { $null }
         gpuPacked = if ($GpuPacked) { $GpuPacked } else { $null }
+        gpuFailure = if ($GpuFailure) { $GpuFailure } else { $null }
         gpuClusters = if ($GpuClusters) { $GpuClusters } else { $null }
         hzb = if ($Hzb) { $Hzb } else { $null }
         gpuRender = $gpuRenderRecord

@@ -29,7 +29,36 @@ public static class StaticAssetChecks
         NoIntegerVectorUniforms(c);
         SourceHasNoControlCharacters(c);
         IndirectShaderVariant(c);
+        SubtreeBoundsStayOutOfTheCoverageGate(c);
     }
+
+    /// <summary>
+    /// The aggregate subtree bound belongs to the draw walk and nowhere else.
+    ///
+    /// The trap it is kept out of: `AllVisibleChildrenCovered` does not decide what is
+    /// drawn, it decides whether a parent may STOP drawing its own coarse mesh over a
+    /// quadrant. The aggregate covers the meshes resident UNDER a child, not the parent's
+    /// coarser rendition of the same ground, and those have different vertical extents. A
+    /// child holding nothing but a deep cave mesh would be rejected vertically, the parent
+    /// would descend believing the quadrant covered, and the surface it had been drawing
+    /// there would become a hole - visible only from the angle nobody was testing.
+    ///
+    /// Passing the span there looks like an obvious consistency fix, which is exactly why
+    /// this is pinned rather than left to the comment beside it.
+    /// </summary>
+    static void SubtreeBoundsStayOutOfTheCoverageGate(Check c)
+    {
+        string renderer = File.ReadAllText(Path.Combine(GameAssemblies.RepoRoot,
+            "VintageHorizons", "src", "Render", "LodTerrainRenderer.cs"));
+
+        c.Eq(1, Regex.Matches(renderer, @"SubtreeSpan\(key\)").Count,
+            "exactly one traversal site culls a subtree with its aggregate");
+        c.Eq(0, Regex.Matches(renderer, @"SubtreeSpan\(ck\)").Count,
+            "and the child-coverage gate keeps the full-height box");
+        c.True(renderer.Contains("LodHeightSpan subtree = SubtreeSpan(key);", StringComparison.Ordinal),
+            "the walk reads the aggregate once per node rather than per test");
+    }
+
 
     /// <summary>
     /// The indirect path's acceptance gate is that it draws pixels identical to the
@@ -55,6 +84,15 @@ public static class StaticAssetChecks
         string bench = File.ReadAllText(Path.Combine(root, "scripts", "bench-windows.ps1"));
         string packedBackend = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
             "Render", "Gpu", "LodGpuPackedDrawBackend.cs"));
+        string injection = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "Gpu", "LodGpuFailureInjection.cs"));
+
+        c.True(injection.Contains("VINTAGEHORIZONS_GPU_INJECT_FAILURE", StringComparison.Ordinal)
+            && renderer.Contains("LodGpuFailureStage.ArenaSetup", StringComparison.Ordinal)
+            && renderer.Contains("LodGpuFailureStage.FastShaders", StringComparison.Ordinal)
+            && renderer.Contains("LodGpuFailureStage.DepthCopy", StringComparison.Ordinal)
+            && renderer.Contains("LodGpuFailureStage.IndirectDraw", StringComparison.Ordinal),
+            "Phase 9 can inject each runtime fallback boundary without changing normal defaults");
 
         // Default ON since 0.3.103, with an explicit environment override that still wins.
         // The direction flipped; the requirement did not. A phase gate is a controlled A/B,

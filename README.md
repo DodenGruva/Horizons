@@ -54,7 +54,7 @@ in advance.
 | `.vhcoarse` | Standing where far terrain looks blockier than it should, run this. It reports which nearby detail is missing and what it is waiting for. |
 | `.vhbackface [on\|off]` | Reject back-facing cached solid terrain before shading it. On by default and not saved; water and thin surfaces remain two-sided. |
 | `.vhheight [on\|off]` | Bound each cached piece by how tall its terrain actually is, instead of from bedrock to sky. On by default and not saved. Mostly it means looking up or down stops drawing pieces that are nowhere near the screen. Run it with no argument to see how tall your terrain really is. |
-| `.vhphase8 [off\|batch\|cull\|late\|packed\|clusters]` | Single-command ladder for the GPU terrain experiment. Each stage adds one major step: legacy, regional batching, depth culling, the same-frame near/far picture, packed quads, then 4x4 clusters. Every preset assigns all relevant switches, so no other GPU commands are needed. Active presets share their already-filled regional buffers; only moving to or from `off` rebuilds/releases them. Run it without an argument to report the exact stage and effective path; `on` is an alias for `clusters`. |
+| `.vhgpu [off\|on\|verify]` | Turn the GPU terrain renderer off or on. It is on by default and remembered. `off` releases regional buffers and returns cached terrain to the established renderer; `verify` rebuilds the selected regional representation with upload readback checks. Run it without an argument for the effective path and arena numbers. |
 | `.vhhzb [on\|off]` | Build the depth pyramid used to find terrain hidden behind hills. Measurement only - it hides nothing and the picture does not change. Off by default and not saved. Run it with no argument to see its state; the `hzb:` line in the log carries what it costs. |
 | `.vhfront [on\|off]` | Submit cached solid terrain nearest first so nearer ground can hide farther ground sooner. On by default and not saved; water keeps its original order. |
 | `.vhocclusion [on\|off]` | Draw cached terrain just after vanilla so the ordinary depth test rejects pixels behind current hills. On by default and not saved; `.vhocclusion off` immediately restores the pre-vanilla order. |
@@ -245,6 +245,17 @@ movement during the measure interval. For example:
 pwsh -File scripts/bench-windows.ps1 -Label moving-rotation `
   -Route bench/routes/moving-rotation.txt -Measure 30 -Laps 2
 ```
+
+Phase 9 fallback tests add `-GpuFailure arena|shader|depth-copy|draw`. The runner pins the chosen
+one-shot fault through `VINTAGEHORIZONS_GPU_INJECT_FAILURE` and records it as `gpuFailure` in the
+scenario JSON. Use this only in an isolated test launch: it deliberately disables a renderer stage
+for that session.
+
+For format-only comparisons, pin `-GpuClusters 0` in both halves and change only
+`-GpuPacked 0|1`; clusters consume packed geometry, so leaving them enabled would change two stages.
+The runner records current split-near/split-far GPU timers, upload tail latency, and live/committed
+bytes for expanded, packed, and clustered arenas. A completed route with missing telemetry arrays is
+a parser failure, not usable evidence.
 
 The bundled moving route targets active streaming/capture, renderer traversal, far-plane
 stability, and turn-around behavior. Warm-up laps make later measured laps the warmer

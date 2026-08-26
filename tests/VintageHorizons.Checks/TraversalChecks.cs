@@ -189,6 +189,25 @@ public static class TraversalChecks
         c.True(LodTraversalPolicy.NodeInView(frustum, containingCamera,
             cameraX, cameraY, cameraZ, worldHeight),
             "a coarse node containing the camera is kept conservatively");
+
+        // The aggregate subtree bound. Without it a node is bounded from bedrock to sky,
+        // which the side planes make harmless and the horizontal planes make useless: a
+        // subtree whose every mesh sits kilometres above the view is still traversed.
+        c.False(LodTraversalPolicy.NodeInView(frustum, ahead,
+            cameraX, cameraY, cameraZ, worldHeight, LodHeightSpan.Of(5000f, 5100f)),
+            "an aggregate wholly above the view rejects a node the full-height box kept");
+        c.True(LodTraversalPolicy.NodeInView(frustum, ahead,
+            cameraX, cameraY, cameraZ, worldHeight, LodHeightSpan.Of(120f, 140f)),
+            "an aggregate at the camera's own height is kept");
+        c.True(LodTraversalPolicy.NodeInView(frustum, ahead,
+            cameraX, cameraY, cameraZ, worldHeight, LodHeightSpan.Empty),
+            "and an unknown aggregate falls back to the full-height box");
+
+        // One-sided in the other direction too: the vertical extent may only ever take a
+        // node away, never hand one back that the cheaper planes already refused.
+        c.False(LodTraversalPolicy.NodeInView(frustum, behind,
+            cameraX, cameraY, cameraZ, worldHeight, LodHeightSpan.Of(120f, 140f)),
+            "a real aggregate cannot rescue a node behind the camera");
     }
 
     static void ResidencyIgnoresCameraDirection(Check c)

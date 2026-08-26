@@ -90,12 +90,47 @@ public static class LodMesher
     [ThreadStatic] static Buffers? opaqueBuffers;
     [ThreadStatic] static Buffers? waterBuffers;
 
+    /// <summary>
+    /// Vertices this thread would have emitted with and without cave culling, when the audit
+    /// is switched on. The offline harness says the rule removes a third of the geometry and
+    /// the game says it ADDS a fiftieth, so one of them is not measuring the real thing -
+    /// and the only way to settle that is to build both meshes from inside the game, on the
+    /// real sections, with the real neighbours.
+    /// </summary>
+    public static long AuditVerticesWithCulling;
+    public static long AuditVerticesWithout;
+    public static long AuditSections;
+
+    static readonly bool AuditEnabled =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CAVE_AUDIT") == "1";
+
     public static MeshResult BuildMesh(MeshJob job)
     {
+        // Before any buffer is touched, so the probe can borrow the same pooled buffers and
+        // be completely finished with them before the real build starts clearing them.
+        if (AuditEnabled && job.CaveCullReach > 0)
+        {
+            MeshResult plain = BuildMesh(new MeshJob
+            {
+                Key = job.Key,
+                Self = job.Self,
+                Neighbors = job.Neighbors,
+                AssumedCoveredSides = job.AssumedCoveredSides,
+                CaveCullReach = 0,
+            });
+            Interlocked.Add(ref AuditVerticesWithout, plain.VertexCount);
+            Interlocked.Increment(ref AuditSections);
+        }
+
         int level = LodWorld.KeyLevel(job.Key);
         int step = LodSection.ColumnStepBlocks << level;
         int gs = LodSection.GridSize;
-        SectionSnapshot self = job.Self;
+        // Before anything is measured or emitted: cavities daylight cannot reach become
+        // rock, so their floors, ceilings and walls are never built at all. Returns the same
+        // instance when there is nothing to fill, which is the common case for a column of
+        // open hillside.
+        SectionSnapshot self = LodCaveCull.FillUnseen(
+            job.Self, job.Neighbors, level, job.CaveCullReach);
 
         var opaque = opaqueBuffers ??= new Buffers(pack: true);
         var water = waterBuffers ??= new Buffers(pack: false);
@@ -175,6 +210,11 @@ public static class LodMesher
         opaque.ClusteredPacked!.Finish(
             out uint[] clusteredPackedQuads,
             out LodPackedCluster[] packedClusters);
+
+        if (AuditEnabled && job.CaveCullReach > 0)
+        {
+            Interlocked.Add(ref AuditVerticesWithCulling, opaque.Xyz.Count / 3);
+        }
 
         return new MeshResult
         {

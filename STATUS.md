@@ -2,16 +2,21 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-25
-**Mod version:** `0.4.0`; **the GPU terrain renderer is the default path and has been played and
-accepted** on the primary driver (`0.2.1` remains the public released version - 0.4.0 is packaged
-and installed locally but not pushed, tagged or published; the next changed playable artifact must
-increment exactly once to `0.4.1`)
+**Status date:** 2026-08-26
+**Mod version:** `0.3.113`; the development line remains 0.3.x (`0.2.1` is the public released
+version; 0.4.0 remains the human-accepted build and is preserved as a local rollback artifact).
+**Active branch:** `cave-culling`, branched from `render-overhaul` on 2026-08-26.
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `70` C# files under `VintageHorizons/src`
+**Source files:** `73` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
+
+> **Current open defect, ahead of everything else.** `.vhcaves` cave culling increases live
+> geometry by about 2.9% in game instead of reducing it, while the offline harness measures a
+> third removed at every level against the same cache. It is off by default and must stay off.
+> The diagnostic that splits the question is shipped in 0.3.113 and has not been run. Full detail
+> and what has already been ruled out are in `dev/TODO.md` under TOP PRIORITY.
 
 ## 1. Repository state
 
@@ -45,7 +50,14 @@ The visual result counts; the performance number is provisional. Version 0.3.91 
 between active presets preserve the filled arenas and adds an effective-path report. Only moving to
 or from `off` now triggers the documented mirror fill/release.
 
-**Cache startup and camera-independent refinement are complete; Phase 8 is the top priority again.**
+**Cache startup and camera-independent refinement are complete; Phase 9 hardening is the top priority.**
+The packed-memory slice is now closed. A controlled expanded/packed/packed/expanded matrix with
+clusters pinned off measured 2.4392 ms expanded and 2.4367 ms packed, a -0.10% delta below repeat
+variation. Version 0.3.105 retains exactly the selected expanded, whole-packed, or clustered-packed
+regional representation. On the measured route the product-default cluster copy was about 90.33
+MiB live against about 833.7 MiB for all three old regional copies. That roughly 89% saving is only
+duplicate regional geometry, not total game RSS; legacy per-section meshes remain the complete
+fallback. Phase 9's settings/lifecycle matrix and representative forced-legacy run remain open.
 The owner reports spending most testing time waiting 30-60 seconds for cached terrain, then seeing
 no coherent sharpening progression and having to turn around before rear terrain loads or leaves
 its coarsest level. The latest 5,317-section join proves the bootstrap failure: at ten seconds there
@@ -252,16 +264,16 @@ sixteen buys no fidelity over twelve. Workers emit the three packed words beside
 arrays, a bounded packed regional arena publishes them, and an indexed pulling shader decodes four
 unique corners through one reusable six-index pattern. `.vhpacked` and
 `VINTAGEHORIZONS_GPU_PACKED` select it only when
-the shader, arena and drawer are all ready; any refusal uses expanded batching or the established
-renderer in the same frame. 3,911 fast-tier assertions pass, including 782 packed-format checks.
+the shader, arena and drawer are all ready; any refusal uses the established renderer in the same
+frame. 3,911 fast-tier assertions passed at that boundary, including 782 packed-format checks.
 The 0.3.85 draw-arrays shader compiled and looked identical on the primary driver, closing visual
 parity for that representation, but dropped the same scene from about 300 to 260 FPS (roughly
 0.51 ms or 13%). It is rejected. 0.3.86 retains the 12-byte records and replaces six shader
 invocations per quad with four indexed unique corners. The owner reports exact visual parity and
 the exact same FPS as expanded batching in the same scene. That closes the primary-driver format
-and draw-topology gate: packing is neutral rather than an FPS optimization there, while preserving
-the compact representation that Phase 8 clusters will address. The second-driver gate and removal
-of the temporary expanded regional mirror remain open.
+and draw-topology gate: packing is neutral rather than an FPS optimization there. The later Phase 9
+ABBA route confirmed no frame-time regression above repeat variation. Version 0.3.105 retains only
+the selected regional representation; second-driver evidence was retired without being obtained.
 
 **A class of testing lives off the owner's machine.** `HzbField` reconstructs the in-game
 measurement from a real cache with no game process, and now also models a full-scene occluder
@@ -288,11 +300,10 @@ legacy. The result is internally consistent with an earlier stage winning and a 
 Cache startup/refinement is human-accepted, and the later ridge run proves that the complete
 cluster/split path can remove most far commands and raise FPS substantially. **Phase 8's
 correctness gate is now closed:** 0.3.101 fixed the depth-test texel mapping and the owner confirms
-the precise-angle flicker is gone. What remains for the phase is measurement and cleanup rather
-than correctness - the suppression and FPS figures above all predate the fix, which strictly
-reduces hiding, so they must be re-measured before they are quoted as current, and the now-probably
-redundant 0.3.99 sky guard should be retired once a session shows its new refusal counter reading
-zero. The rejected `.vhsplitbias` diagnostic was removed in 0.3.102.
+the precise-angle flicker is gone. The sky guard was measured, found costly, and removed before
+0.4.0; `.vhsplitbias` was also removed. On 2026-08-25 the owner retired a corrected-mapping
+suppression/FPS re-measurement, so every older figure remains historical and cannot be quoted as a
+current effect size. Metadata/dispatch and turning/streaming coverage transfer to Phase 9.
 
 The working branch contains the lifetime-tiered documentation workflow, portability and benchmark-harness work, deterministic moving/rotating routes with corrected PI-centred camera pitch, clean-cache capture-frontier and warm-join routes, pinned completed-sweep/generation and saturated-assist scenarios, expanded client/server performance and allocation instrumentation, versioned asynchronous mip propagation, revision-acknowledged persistence with retry/coalescing, incremental local/network key discovery with retry-safe request transitions, cached renderer bounds with stable projection changes, visibility-aware traversal with independent residency, incremental render-dirty priority scheduling, boundary-budgeted mesh snapshots and GPU uploads, tick-smoothed server work, time/byte-bounded client installs and capture publication, storage-owned foreign structural decode, ordered off-thread server-assist blob reads, and correlated server-assist setup/publication/admission/send/GC diagnostics. Synchronous periodic assist progress logging no longer runs inside the 50 ms owning-thread callback. The Windows runner can prove active client/server cache state, semantic generation completion, assist saturation and installation, final client mip/persistence convergence, durable mip interruption/recovery, integrated-singleplayer sibling retry/adoption, a fresh zero-obligation postcheck, pin fresh-server configuration, require terminal server state, install the server mod, and perform genuine stats-disabled comparisons. Private research and benchmark sandboxes remain ignored.
 
@@ -961,26 +972,37 @@ The approved and now evidence-reordered sequence is `dev/plans/PLAN_MAIN_THREAD_
 
 ## 7. Current open work
 
-0. **Prove the accepted default elsewhere, and find out what it actually buys.** Ordinary play on
-the primary driver is accepted as of 0.4.0, which makes the two never-closed gates more important
-rather than less: **a second GPU driver has still never run this path**, and it is now what every
-supported player gets, so the capability probe and the same-frame fallbacks have only ever been
-exercised on one machine. Second is the **paired packed route** (`-GpuIndirect 1 -GpuPacked 0|1`),
-which would separate the 12-byte format's memory and bandwidth benefit from its decode cost and is
-what allows the temporary expanded regional mirror to be dropped. Alongside both, **re-measure
-suppression and frame rate**, because every figure recorded here predates the 0.3.101 fix. Ranked
-optimisation candidates - subtree vertical bounds first - are in `dev/TODO.md` and none is funded.
-Historical note on how it got here: the Phase 8
-flicker is fixed and human-accepted in 0.3.101, and 0.3.102 completed the cleanup that followed:
-`.vhsplitbias` and its bias plumbing are gone, the anchoring assumption is asserted in the shader,
-and the 0.3.99 sky guard now counts its own refusals. What remains, in order: **play one ordinary
-session on 0.3.102 under `.vhphase8 clusters` and read the `perimeter-guard refusals` figure on the
-`.vhhzb` line** - zero retires the guard, non-zero means the mapping fix missed a case, and either
-way that session is the first evidence the changed shader still compiles on the primary driver;
-re-measure cluster suppression and FPS, because every recorded figure predates a fix that strictly
-reduces hiding, reporting a range and its conditions rather than a single value (G98); then close
-the second-driver, motion, and paired packed-route gates. Ranked optimisation candidates - subtree
-vertical bounds first - are recorded in `dev/TODO.md` and none is funded.
+0. **Finish the GPU plan's Phase 9 hardening.** The renderer became the accepted default before
+Phase 9 was complete. On 2026-08-25 the owner retired, without completing, both a
+corrected-mapping suppression/FPS re-measurement and a second-GPU/driver run. Their absence remains
+a documented evidence limit, not future work. The paired packed route and selected-only regional
+memory policy are complete in 0.3.105. What remains is primary-machine coverage of MSAA/SSAO
+changes, resize/fullscreen, shader reload, world/dimension changes, long sessions,
+large caches, multiplayer and competing-LOD-mod deferral; allocation pressure; and representative
+forced-legacy coverage. Only after that is deliberately closed should
+a new renderer optimisation be funded. Ranked candidates - subtree vertical bounds first - are in
+`dev/TODO.md`.
+
+Version 0.3.104 began that work with one-shot, test-only injections for arena setup, fast terrain
+shaders, the private depth copy, and indirect drawing. All four completed the isolated six-viewpoint
+route with zero settle timeouts on the primary AMD system. Version 0.3.105 adds the controlled
+packed-memory evidence and selected-only retention. Its warning-free Release build and 5,104 fast
+assertions pass; the verified 0.3.105 zip is copied into the Mods folder.
+
+Session 57 added 0.3.106 through 0.3.113, all verified and copy-installed. 0.3.106 was superseded
+before it was ever run - a hazard was found in review after packaging - and 0.3.107 through 0.3.112
+were human-played. 0.3.113 carries the cave-culling audit and has not been run. The preserved 0.4.0
+zip has a higher version and therefore wins normal mod selection; use the isolated runner for any
+0.3.x unless the owner explicitly directs a change to the rollback set.
+
+**Session 57 in brief.** Aggregate subtree vertical bounds shipped and were closed as answered
+rather than pending: they work, and at a leaf the aggregate contains the per-section box shipped in
+0.3.58, so it can only reject a subset of what that already rejects. The walk it speeds up is 44.3
+us of a roughly 2000 us frame. Following its measurements disproved the phantom-seam-wall theory
+for tall culling boxes and established the real cause: the mesher builds every buried cave in
+range, and 55% of all cached geometry sits below the surface. `LodCaveCull` was built to remove the
+part daylight never reaches - measured offline at about 30% of all geometry - and is currently
+defective in game (see the banner above). None of this session's work has frame-rate evidence.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against
@@ -1160,6 +1182,14 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ### Harness-tested
 
+- Phase 9's four guarded 0.3.104 failure injections are game-backed on the primary AMD system.
+  Arena, shader, depth-copy and draw each completed the frozen six-viewpoint `bodanboys` route with
+  zero settle timeouts. Arena refused its first setup with visible legacy unchanged and recovered on
+  retry; shader stayed on the established renderer; depth-copy disabled HZB while later frames
+  continued 1,700-2,059 packed cluster commands; draw permanently disabled both indirect drawers,
+  reported zero later cluster multi-draws, and kept expanded/established rendering alive. The runs
+  were automated and not human-watched. Their route CSVs and hash-bound proof summary are tracked
+  under `bench/results/2026-08-25-phase9-failure-injection`.
 - Phase 3's visible indirect path: the drawer issues every batch once against the page pair
   it named and at its own command offset, restores captured GL state even after a refused
   batch, disables itself for the session on a failure and warns once. The shader wrappers
@@ -1282,7 +1312,7 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
   It is **qualitative** and deliberately carries no figure, because none was measured. It covers one
   machine, one driver, one world and ordinary play. It is not evidence about a second driver, about
-  the paired packed route, about long sessions, resizes, shader reloads, multiplayer or
+  the later automated packed route, about long sessions, resizes, shader reloads, multiplayer or
   competing-LOD-mod deferral, and it does not supply a current suppression or frame-rate number.
 
 - The owner ran 0.3.101 on 2026-08-24 and confirmed the Phase 8 precise-angle terrain flicker is
@@ -1354,8 +1384,9 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   widens the sampled rectangle and therefore reduces what culling hides. The ridge result - 80.5%
   of far commands, 77.1% of indices, about 340 to 460 FPS - and the `25.0%` sampling-width figure
   quoted in `LodHzbProjection` were all measured through the defective mapping. They are retained
-  as the historical record of why the path is worth keeping, not as current numbers, and must be
-  re-measured before either appears in a gate.
+  as the historical record of why the path is worth keeping, not as current numbers. The owner
+  retired re-measurement on 2026-08-25, so no current effect-size claim will be made unless that
+  decision is reopened.
 - **The sky guard was measured and removed, and the removal is unobserved.** 0.3.102's counter read
   169,994 refusals over 2,495,527 sampled far commands - not the zero that was predicted - so the
   guard was drawing already-hidden terrain rather than protecting anything, and 0.3.103 deletes it.
@@ -1364,20 +1395,22 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
   cost was never counted.
 - **Default-on is accepted on one machine only.** 0.4.0 was played and accepted on the primary AMD
   driver, which is real evidence for that configuration and none at all for any other. A second GPU
-  driver has never run this path, and it is now what every supported player receives. The capability
-  probe and the same-frame fallbacks are the protection and have only ever been exercised here.
+  driver has never run this path. The owner retired that check on 2026-08-25, so this remains a
+  declared evidence boundary rather than open work. The capability probe and same-frame fallbacks
+  are the protection; the four controlled Phase 9 failure paths have now been exercised on this
+  primary system only.
 - **The acceptance carries no number.** "Performance is fantastic" is a qualitative report. No FPS,
   frame-time or suppression figure was taken on the accepted build, so the repository still holds no
   current measurement of what the corrected path removes or costs.
 - **Longer-tail Phase 9 coverage is unexercised with the path default-on**: MSAA and SSAO settings,
   window resize, fullscreen changes, shader reload, dimension and world changes, long sessions,
   large caches, multiplayer, and competing-LOD-mod deferral.
-- **Phase 7 portability and final memory policy.** On the primary AMD driver, 0.3.86's indexed
-  `lodterrainpacked` path matches the expanded picture and frame rate. No second driver has run it,
-  and paired route telemetry has not yet separated upload, opaque-GPU and total-frame effects.
-  Both regional representations intentionally remain live for the A/B, so the 86.4% format
-  reduction is not yet a total-process-memory reduction. Expanded batching and the legacy
-  renderer remain complete fallbacks.
+- **Phase 7 portability remains unestablished by scope decision.** On the primary AMD driver,
+  0.3.86's indexed `lodterrainpacked` path matches the picture, and the Phase 9 controlled route
+  found no frame-time regression above repeat variation. No second driver has run it and that check
+  is retired. Version 0.3.105 retains only the selected regional form. The measured roughly 89%
+  reduction applies to duplicate regional live bytes, not total-process memory; the legacy renderer
+  remains the complete fallback.
 - The frame timeline and the join stall line are source- and harness-tested only. Neither
   has been read against a real client.
 - The join anomaly has one sample. Five joins of 2,183-3,291 cached sections reach their

@@ -1,0 +1,7 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+p9fail-draw-03104,north-horizon,256000,280,256000,1,4139,413.8,413.8,275.1,2.42,3.64,0.0,0.0,2432,4262,27.0,0
+p9fail-draw-03104,east-horizon,256000,280,256000,1,4567,456.7,456.8,308.4,2.19,3.24,0.0,0.0,1821,4294,21.0,0
+p9fail-draw-03104,south-horizon,256000,280,256000,1,4718,471.7,473.8,310.1,2.12,3.22,0.0,0.0,2169,4420,21.0,0
+p9fail-draw-03104,west-horizon,256000,280,256000,1,4539,453.8,456.1,290.9,2.20,3.44,0.0,0.0,2350,4430,21.0,0
+p9fail-draw-03104,downward,256000,280,256000,1,3628,362.8,364.5,212.6,2.76,4.70,0.0,0.0,1719,4411,21.0,0
+p9fail-draw-03104,slow-rotation,256000,280,256000,1,4383,438.2,440.9,228.8,2.28,4.37,0.0,0.0,1921,4419,21.0,0

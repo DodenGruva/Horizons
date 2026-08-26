@@ -1930,6 +1930,134 @@ is above zero by construction.
 
 **Found:** 2026-08-24, re-measuring the widening figure after the 0.3.101 texel-mapping fix.
 
+### G99 - Shipping ahead of a validation gate does not complete the gate
+
+**Trigger:** a feature is made the product default on an explicit owner decision before its plan's
+hardening or portability matrix is complete.
+
+**Trap:** later summaries naturally treat "shipped and accepted" as "the plan finished." That
+silently converts unrun checks into implied evidence, or lets a couple of visible evidence gaps
+replace the actual remaining phase. Retiring one of those checks later has the same risk: retirement
+removes work from scope; it does not make the result portable, measured, or passed.
+
+**Do:** mark every affected gate explicitly as PASSED, RETIRED, or OPEN. Preserve the evidence
+boundary for retired checks, and keep the phase open until its remaining work is completed or the
+owner explicitly retires the phase itself.
+
+**Found:** 2026-08-25, session 54, when the accepted 0.4.0 default obscured the still-open Phase 9
+hardening boundary.
+
+### G100 - A lower development version cannot outrank a preserved higher test zip
+
+**Trigger:** returning a development line from a premature minor promotion to the next patch on
+the earlier minor line while copy-only rollback artifacts remain in the normal Mods folder.
+
+**Trap:** Vintage Story selects the highest version. Copying 0.3.104 beside the preserved 0.4.0
+looks like a successful install but an ordinary launch still loads 0.4.0, so any observation would
+be attributed to the wrong binary. The repository rule correctly forbids silently deleting or
+moving the rollback zip; version demotion and ordinary Mods-folder selection are therefore
+incompatible without a separate explicit owner decision.
+
+**Do:** run the lower version through the repository's isolated add-mod-path runner, which selects
+the current build independently. If ordinary play must select it, ask the owner explicitly what to
+do with the higher rollback artifact; never hide that operation inside packaging.
+
+**Found:** 2026-08-25, session 55, after packaging and copy-installing 0.3.104 beside 0.4.0.
+
+### G101 - A dependent feature can invalidate a format-only comparison
+
+**Trigger:** comparing packed and expanded geometry while leaving clustered drawing enabled.
+
+**Trap:** clusters consume packed records. Turning packing off therefore makes clusters idle too,
+so the pair changes both geometry decoding and command granularity. The results may look stable and
+still be incapable of answering the format-cost question.
+
+**Do:** pin dependent stages to the same effective state in both halves. The valid Phase 9 ABBA
+matrix held clusters off and changed only packing; record effective-path telemetry beside requested
+switches.
+
+**Found:** 2026-08-25, session 56.
+
+### G102 - A completed benchmark can still have silently empty telemetry
+
+**Trigger:** a log sentence evolves while the benchmark parser still matches its older shape.
+
+**Trap:** route timing and CSV publication can succeed even when GPU timer and arena arrays are
+empty. Treating completion as parser validation loses the exact evidence the run was meant to
+collect.
+
+**Do:** assert expected sample cardinality before interpreting a run, and preserve the raw log so a
+parser correction can recover it. The Phase 9 runner now understands split-near/split-far timers,
+upload tails, and per-format live/committed arena bytes.
+
+**Found:** 2026-08-25, session 56.
+
+### G103 - An aggregate bound over descendants is redundant where a per-item bound already exists
+
+**Trigger:** adding a bound that unions over children when each child already carries its own.
+
+**Trap:** at a leaf the aggregate IS the item's own bound, and usually a looser version of it - the
+subtree box unions the passes the per-section box splits. A looser box can only reject a subset of
+what the tighter test already rejects, so the new work is redundant exactly where it fires most
+often. Session 57 measured three of five views rejecting only single-mesh nodes, which removed
+draws the per-section test was already removing.
+
+**Do:** establish that the new bound is tighter than the existing one somewhere that matters before
+funding it, and measure the cost of the thing being optimised first. The quadtree walk this was
+aimed at costs 44.3 us of a roughly 2000 us frame, so 2% was the whole ceiling.
+
+**Found:** 2026-08-26, session 57.
+
+### G104 - Assuming unknown space is open makes it a source, not just a hole
+
+**Trigger:** any flood, light or spread where absent data is resolved toward "open" for safety.
+
+**Trap:** open air is also an emitter. In session 57 the cave rule seeded daylight from the edge of
+its working window and from absent neighbours, both of which are the conservative choice - and both
+became false illuminants that rescued caves the rule existed to remove. A window margin equal to
+the light's own reach put its wall exactly in range, and a mesh job with no diagonal neighbours had
+four section-sized blocks of imaginary sky against its corners. Together they were the difference
+between removing 15.5% of the geometry and 32.7%.
+
+**Do:** keep an assumed-open boundary further away than the effect can travel, and supply real data
+for every direction the effect can arrive from - including diagonals, which the mesher never needed
+and the flood does.
+
+**Found:** 2026-08-26, session 57.
+
+### G105 - A harness built beside the feature it measures can agree with it and still be wrong
+
+**Trigger:** validating an optimisation against an offline model rather than against the game.
+
+**Trap:** session 57's cave harness and the shipping code agreed with each other across every
+sample, level and configuration, and both disagreed with the game by SIGN: the harness measured a
+third of the geometry removed, the game measured 2.9% added. Two rounds were spent trusting the
+harness over the owner's report.
+
+**Do:** make the harness call the shipping function rather than a model of it (`cavefield
+--shipping`), and treat any harness that has never been reconciled against an in-game number as an
+unvalidated instrument. When a person's observation contradicts a measurement, instrument the
+place they are standing.
+
+**Found:** 2026-08-26, session 57.
+
+### G106 - A direction-sampled visibility test must be shown to converge before it is quoted
+
+**Trigger:** deciding what is visible by testing a finite set of ray directions.
+
+**Trap:** too few directions miss real sight lines and over-remove; denser lattice directions that
+step more than one cell per move let sight slip through one-block walls and under-remove. Session
+57 measured 51.1%, 42.4% and 38.9% over 26, 98 and 290 directions - the two errors bracket the
+answer rather than converging on it, and any single figure from that curve is an artefact of its
+sampling.
+
+**Do:** use traversal that visits every cell a line passes through, and demonstrate the answer
+stops moving as the direction count rises before quoting it. Diffuse propagation is the safe
+fallback: a straight path is one of the paths a spread takes, so a budgeted flood can never remove
+something a straight ray of the same length could have reached.
+
+**Found:** 2026-08-26, session 57.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

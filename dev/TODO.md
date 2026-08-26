@@ -2,47 +2,92 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## TOP PRIORITY - 0.4.0 is accepted; the next work is measurement and portability
+## TOP PRIORITY - cave culling adds geometry instead of removing it
 
-**The GPU terrain renderer is the default and has been played and accepted.** Phase 8's correctness
-defect was found and fixed in 0.3.101 (G96/G97), the cleanup ran through 0.3.103, and the owner
-accepted 0.4.0 in ordinary play: the picture is correct and performance is much improved on his
-machine. That is qualitative acceptance on one system, not a measurement.
+**`.vhcaves` is defective and off by default. Do not default it on.** The rule that stops the
+mesher building cave systems daylight never reaches is source-complete, harness-measured, and does
+the opposite of its job in game.
 
-Do not reopen the flicker: the margin ladder, the sky-silhouette theory and the texture-barrier idea
-are all explained as consequences of the texel-mapping defect rather than causes of it. The
-narrative is in `dev/history/DONE.md` and Sessions 50-53.
+The owner's log (0.3.112), same view, waiting for each rebuild to settle:
 
-**The path now helps every player on supported hardware, so what is left is proving it elsewhere
-and knowing what it actually buys.** Two things are owed before any optimisation is worth starting,
-and both are cheap next to the work below them.
+```
+off   1895.7 MiB   88,607,168 opaque vertices   1730 meshes
+on    1949.0 MiB   91,146,636 opaque vertices   1730 meshes    (+2.5M, +2.9%)
+off   1895.7 MiB   88,606,900 opaque vertices   1730 meshes
+```
 
-### 1. Re-measure the split's suppression and FPS
+Reproducible, reverses cleanly, identical mesh count. The offline harness disagrees in SIGN at
+every level tested against the same cache: L0 -32.7%, L1 -24.5%, L2 -21.1%, L3 -10.7%.
 
-Every recorded figure for the split predates the 0.3.101 fix, which strictly reduces hiding. Do not
-quote 80.5%/77.1% or the 340-to-460 FPS ridge result as current; re-measure before either appears
-in a gate. Report a range and its exact conditions rather than a single value: the 2026-08-24
-`HzbField` runs showed a seed-sampled figure of this kind moving about seven points on camera
-placement alone (G98).
+**Already ruled out, do not re-check:** mesh errors (none logged), GPU arena failures (zero),
+wrong materials on filled rock (0 of 12,631 audited spans took a thin, water or foreign material),
+walls grown where two sections disagree at a shared boundary (0.4%), and vertex accounting drift
+(the second `off` reading returns within 268 vertices of the first).
 
-### 2. Close the portability gates the default now depends on
+**The next step is built and shipped and has not been run.** Launch with
+`VINTAGEHORIZONS_CAVE_AUDIT=1`, run `.vhcaves on`, let the rebuild finish, then `.vhcaves`. Every
+rebuilt section is meshed twice - with and without culling - and both vertex totals are reported.
+That splits the question:
 
-Ordinary play on the primary driver is accepted, which raises the stakes on the two gates that were
-never closed:
+- audit says geometry removed, live total still rises -> the fault is downstream of the mesher, in
+  how rebuilt meshes are stored, published or accounted.
+- audit says geometry added -> the mesher genuinely emits more from a filled section than from the
+  original, and the two counts are side by side to find out why.
 
-- **A second GPU driver has never run this path.** It is now the default, so an unsupported or
-  misbehaving driver affects a real player rather than an experiment. The capability probe and the
-  same-frame fallbacks are the protection, and they have only ever been exercised on one machine.
-  This is the single most valuable remaining check.
-- **The paired packed route is untimed.** Run `-GpuIndirect 1 -GpuPacked 0|1` over the same route
-  and compare GPU opaque time, total frame time, upload time and reported regional bytes. Until
-  that runs, the 12-byte format's memory and bandwidth benefit is not separated from its decode
-  cost, and the temporary expanded regional mirror cannot be dropped - which is the memory win the
-  format was chosen for.
+**One unexplained lead.** A colour audit comparing the two meshes vertex by vertex found **17.47%
+of vertices present at the same position in both are emitted with a different colour**. Faces at
+identical coordinates should not change colour when unrelated geometry is removed. That points at
+the greedy merge grouping faces differently after a fill, which is also a mechanism that could
+raise the quad count. Reproduce with:
 
-Longer-tail Phase 9 coverage - MSAA and SSAO settings, window resize, fullscreen changes, shader
-reload, dimension and world changes, long sessions, large caches, multiplayer and competing-LOD-mod
-deferral - is listed under Phase 9 in the renderer plan and is unexercised with the path default-on.
+```
+dotnet run --project tests/VintageHorizons.Checks/VintageHorizons.Checks.csproj -c Release --   cavefield --samples 20 --radius 2 --shipping
+```
+
+**Also unexplained, reported twice by the owner:** distant caves render white with `.vhcaves on`.
+Before/after screenshots are at `~/Pictures/Vintagestory/2026-08-26_09-33-04.png` and `-31.png`.
+Not reproduced offline. May be the same phenomenon as the colour audit above.
+
+**Owed regardless of the defect:** `LodCaveCull` has never been timed. It runs per mesh build on a
+worker thread over a 192x192-column voxel window with pooled per-thread buffers. The data is stored
+as runs, so an interval-based implementation should be far cheaper - that is an estimate, not a
+measurement, and it should be measured before the cost is argued either way.
+
+## Cave culling: what the rule is and what it is worth
+
+Recorded so the design does not have to be rediscovered if the defect above is fixed.
+
+`LodCaveCull` fills cavities daylight cannot reach, inside `LodMesher.BuildMesh`, before any
+geometry is emitted. Two parts:
+
+- **Daylight, 32-block reach.** Full strength falls straight down an open column; a sideways step
+  costs a column's width. Connectivity alone is far too generous because this game's caves are
+  interconnected and most touch the sky somewhere.
+- **Two ways in.** A dead end touches daylight in one patch; a passage that goes somewhere touches
+  it in two, one per mouth, however long or winding, so a tunnel through a mountain is never
+  plugged at any length. Patches are grouped among the frontier cells themselves; grouping through
+  open air would call both mouths one way in.
+
+It declines below four columns of spread, so coarse levels are untouched.
+
+Measured offline against the owner's cache, 120-200 level-0 sections:
+
+| rule | geometry removed | mean box height |
+|---|---:|---:|
+| connected at any distance | 21.1% | 156 |
+| daylight 32 blocks | 34.1% | 138 |
+| **daylight 32 + two ways in (shipped)** | **30.1%** | **142** |
+| everything below ground (ceiling, not shippable) | 55.0% | 145 |
+
+**55% of all cached geometry is below the surface.** Two ways in costs about 4 points and makes the
+light budget nearly irrelevant - 32 and 128 blocks differ by 0.2 points - so the cheap small budget
+is correct.
+
+**Do not re-propose these.** Depth cutoffs: rejected by the owner because they assume terrain shape
+a third-party generator can break. Straight-line sight: the better visibility model and worth more,
+but its measurement brackets rather than converges (51.1/42.4/38.9% over 26/98/290 directions, see
+G106), and needs real ray traversal plus a convergence demonstration before any number from it can
+be quoted.
 
 ## Renderer optimisation candidates, ranked and not yet funded
 
@@ -56,14 +101,14 @@ verified against source that no retired command is needed by anything below. The
 item 1, which should get a temporary live toggle of its own - new instrumentation for new work,
 retired once the bounds are accepted.
 
-**1. Aggregate vertical bounds for quadtree subtrees.** Phase 3b gave individual sections real mesh
-heights, but `LodTraversalPolicy.NodeInView` still bounds whole SUBTREES from bedrock to sky, and
-the plan already records the quadtree walk as the largest unattributed per-frame cost. A subtree
-needs an aggregate over its descendants rather than one mesh's extent, so it is real work - but
-rejecting a coarse node rejects everything beneath it, and looking up or down currently keeps
-subtrees a real box would refuse. This improves the established renderer whether or not the fast
-path is ever adopted, which is the same argument that made Phase 3b worth doing early. Highest
-recommended priority of this list.
+**1. Aggregate vertical bounds for quadtree subtrees - DONE and ANSWERED, not pending.** Built in
+0.3.107 and measured in game. It works and it is marginal, for a structural reason worth keeping:
+at a leaf the aggregate box CONTAINS the per-section box shipped in 0.3.58, so it can only reject a
+subset of what that test already rejects, and three of five measured views rejected only
+single-mesh nodes. The walk it speeds up costs 44.3 us of a roughly 2000 us frame, so 2% was the
+entire ceiling and nobody checked that before the work started (G103). Kept because it is free.
+Narrative in `dev/history/DONE.md`; the one live obligation is a controlled
+`VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` A/B in one settled view, which has never been run.
 
 **2. Try 16 MiB arena pages.** Page size, not region shape, was the proven lever for batch counts:
 8 MiB gave 3.7-4.6x and 32 MiB gave 10.6-11.5x, but 32 MiB pages are only about 49% live against
@@ -139,7 +184,7 @@ batching-plus-culling against the established path with occlusion queries - not 
 against itself. Nothing has run that, which is why the switches are saved rather than
 defaulted on.
 
-## Phase 7: portability and final memory policy remain
+## Phase 7: packed format and regional-memory policy complete
 
 The source path is complete. Greedy opaque rectangles now have an exact three-word record:
 four 7-bit X/Z endpoints, two quarter-block 16-bit heights, three face bits, and the unmodified
@@ -151,8 +196,9 @@ shared index pattern emits the same six triangle indices.
 
 `.vhpacked on|off` provides an immediate, session-only visual comparison. The scriptable gate is
 `VINTAGEHORIZONS_GPU_PACKED=0|1` or `bench-windows.ps1 -GpuPacked 0|1`; keep arenas and indirect
-drawing on in both halves. A missing shader, arena, page or draw leaves expanded batching active,
-and a draw failure repairs the same frame through the established renderer.
+drawing on in both halves. Version 0.3.105 retains only the selected regional representation. A
+missing payload, arena, page, shader, upload, or draw falls back to the established per-section
+renderer rather than requiring a second regional copy.
 
 **Source evidence:** the fast tier passes 3,911 assertions. The 782 packed-format assertions cover
 all six faces, L0/L1/L3/L6, the 14-bit height limit, every tint/material alpha band, quarter-block
@@ -172,14 +218,16 @@ exact same FPS with packing off and on. The indexed revision therefore recovered
 loss. Packing is performance-neutral in this scene rather than a standalone FPS optimization, and
 the primary-driver format/draw-topology gate is accepted.
 
-**Still owed before portable/default acceptance:**
+**Final primary-driver memory decision, 2026-08-25:** a controlled ABBA route with clusters pinned
+off measured 2.4392 ms expanded and 2.4367 ms packed, a -0.10% delta below repeat variation. The
+indexed decoder is therefore timing-neutral on this route. The mirror now retains exactly one
+regional form: expanded, whole-packed, or clustered-packed according to the selected path. On the
+same route the product-default cluster copy was about 90.33 MiB live against about 833.7 MiB for all
+three former copies, removing roughly 89% of live regional duplicate bytes. This is not a claim
+about total process memory because legacy meshes remain resident.
 
-- Run paired routes with `-GpuIndirect 1 -GpuPacked 0|1`, comparing GPU opaque time, total frame
-  time, upload time and reported regional bytes. The decode must not erase the traffic reduction.
-- Run a second driver before treating shader-pulling behaviour as portable.
-- After the paired route and portability gate, stop retaining the expanded *regional* copy while
-  packed drawing is the selected product path. Dual representation is intentional for this A/B
-  but is not the final memory state; legacy `MeshRef` geometry remains the complete fallback.
+The owner retired the second-driver requirement on 2026-08-25. This does not establish portability;
+it removes that evidence from the project scope.
 
 ### Phase 8 cluster results: the correctness gate is closed
 
@@ -193,11 +241,11 @@ barrier. The 0.3.100 two-bucket capture was never run: the defect was found by s
 proven on a deterministic fixture instead. `.vhflicker` remains available and is now most useful for
 confirming that the sky guard has gone idle.
 
-Remaining Phase 8 work is measurement and cleanup, not correctness. `.vhsplitbias` is gone as of
-0.3.102 and the sky guard now counts itself; re-measure cluster suppression and FPS on the
-corrected mapping before quoting either, and delete the guard once its counter reads zero, both as
-described under the top priority. Metadata/dispatch cost against work removed, and turning without
-remesh storms, remain the phase's open gates.
+Phase 8's implementation and correctness branch is closed. `.vhsplitbias` is gone and the sky
+guard was measured, found costly, and removed before 0.4.0. The owner retired a corrected-mapping
+suppression/FPS re-measurement on 2026-08-25, so the older figures remain historical and must not be
+quoted as current. Metadata/dispatch cost and turning/streaming behavior now belong to the remaining
+Phase 9 hardening coverage rather than to a reopened Phase 8 experiment.
 
 Do not repeat the stage ladder or split-bias values, re-add a sky guard, or add a texture barrier
 without new evidence. The margin ladder behaved the same at 4/16/64/256 steps because the flip was

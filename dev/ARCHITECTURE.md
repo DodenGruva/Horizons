@@ -159,12 +159,15 @@ Propagation keeps the child's pending flag set while work is queued or executing
 The renderer uses a quadtree over section levels. Distance selects the desired detail level. A parent remains as coverage until the required child slots are ready, preventing holes during level transitions.
 
 Renderer resource publication/removal, frame preparation, opaque/water drawing, clear and
-disposal cross one path coordinator. Until a later phase explicitly transfers visible
-authority, that coordinator accepts only `legacy` as its visible path. A development shadow
-may mirror world/section/resource generations and immutable geometry counts, but it owns no
-GL resources and receives no draw calls. Shadow failure disables mirroring and cannot alter
-legacy publication or drawing. Direct OpenGL probes share exact capture, ordered restoration
-and verification of every binding they touch.
+disposal cross one path coordinator. The default visible path mirrors CPU-approved opaque terrain
+into regional GPU arenas and submits it through indirect multi-draw; the established per-section
+renderer remains the complete fail-open fallback. Arena setup selects exactly one regional geometry
+representation for the session: expanded when packing is disabled, whole-packed when packing is
+enabled without clusters, or clustered-packed for the product default. Unselected arenas receive
+no allocations or uploads. Missing selected data or any allocation, upload, shader, or draw failure
+leaves that section/frame to the established renderer, so correctness does not depend on retaining
+intermediate regional copies. Direct OpenGL probes share exact capture, ordered restoration and
+verification of every binding they touch.
 
 Opaque and translucent terrain use separate mesh buffers and passes. Seasonal/climate tint data is refreshed from live game color maps and applied in the shader. The camera uses relative section transforms so large world coordinates do not enter mesh vertex data. Cosmetic terrain noise combines section-local vertices with a stable section world origin; it must not sample camera-relative geometry coordinates.
 

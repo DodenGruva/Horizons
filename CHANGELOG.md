@@ -8,6 +8,71 @@ first.
 
 ## [Unreleased]
 
+## [0.3.113] - 2026-08-26
+
+**Quadtree subtrees are culled by the real height of the terrain under them.** Whole branches of
+the detail tree were tested against a box running from bedrock to sky, so looking up or down
+traversed subtrees a real box would refuse. Each node now carries the combined vertical extent of
+the meshes resident beneath it. Measured in game this rejects 2 to 20 extra nodes per frame against
+the 33-74 the walk already rejected, which is real but small: at a leaf the aggregate is a looser
+version of the per-section bound shipped in 0.3.58 and removes a draw that was not happening, and
+the walk it speeds up costs 44.3 us of a roughly 2000 us frame. Kept because it is free.
+`VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` restores the old box; `.vhsubtree` reports what it
+rejected and `.vhsubtree heights` reports how tall resident terrain actually claims to be.
+
+**Cave systems daylight never reaches can be left unbuilt, behind `.vhcaves`, off by default and
+currently defective.** The mesher builds a floor, a ceiling and walls for every buried cavern in
+range; measured against a real cache, 55% of all cached geometry sits below the surface and about
+30% of it is removable without touching anything a player could see. The rule keeps whatever
+daylight reaches within 32 blocks of spreading, and never fills a pocket with more than one way in,
+so a tunnel through a mountain still goes through at any length. **Do not switch this on:** in game
+it currently increases live geometry by about 2.9% rather than reducing it, for reasons that are
+not yet understood. An audit that builds each section both ways is available with
+`VINTAGEHORIZONS_CAVE_AUDIT=1`.
+
+
+## [0.3.105] - 2026-08-25
+
+**Phase 9 closes the packed-memory decision.** A controlled expanded/packed/packed/expanded route
+on the primary AMD system measured 2.4392 ms expanded and 2.4367 ms packed. The -0.10% packed delta
+is below repeat variation, so this establishes timing parity rather than a speed improvement while
+retaining the 86.4% geometry-format reduction. All 24 measured viewpoints settled without timeout.
+
+The regional GPU mirror now retains exactly the representation selected at setup: expanded,
+whole-packed, or clustered-packed. The product-default cluster path no longer also allocates and
+uploads the expanded and whole-packed regional copies. On the measured route this reduces live
+regional duplicate geometry from about 833.7 MiB to about 90.33 MiB. It is not an equivalent total
+game-memory reduction: the established per-section meshes remain resident as the complete fallback.
+
+The Windows runner now parses the current split-near/split-far GPU timing sentence and records
+upload tail latency plus live and committed bytes for each regional arena. The warning-free Release
+build and 5,104 fast assertions pass. The verified 0.3.105 package has SHA-256
+`13975952ED56D178B0AE61571B9164682F9F36746199954A8F9D1EC1FEFAE9AE` and was copied beside the
+preserved rollback builds. No terrain cache, assist protocol, blob format, or database schema
+meaning changed.
+
+## [0.3.104] - 2026-08-25
+
+**Phase 9 hardening begins, and the development line returns to 0.3.x.** The owner withdrew the
+0.4.0 milestone promotion after confirming that the GPU renderer had become the default before the
+plan's Phase 9 hardening gate was complete. This build follows the last 0.3.x artifact, 0.3.103,
+with the next patch identity; it does not reuse a changed binary behind an old version.
+
+Normal rendering is unchanged. Guarded test runs can now set
+`VINTAGEHORIZONS_GPU_INJECT_FAILURE=arena|shader|depth-copy|draw` to force one named GPU boundary
+to fail once. Arena and shader failures keep cached terrain on the established renderer, a depth
+failure draws the complete indirect candidate set without HZB suppression, and a draw failure
+permanently disables both indirect drawers so the established renderer owns the frame and later
+frames. Unknown values do nothing and warn once.
+
+The complete fast tier passes 5,083 assertions. No terrain cache, assist protocol, blob format or
+database schema meaning changed.
+
+All four guarded failures also completed the frozen six-viewpoint game route with zero settle
+timeouts on the primary AMD system. Arena, shader and draw demonstrated established-renderer
+fallback; depth-copy disabled HZB while packed indirect multi-draw continued unculled. These were
+automated isolated runs, not a human visual or cross-driver test.
+
 ## [0.4.0] - 2026-08-25
 
 **The GPU-driven terrain renderer is the default path, and it has been played and accepted.**

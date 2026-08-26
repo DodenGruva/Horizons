@@ -12,8 +12,9 @@ quad representation, direct mesher output, bounded regional arena, vertex-pullin
 multi-draw backend, controls and deterministic checks are source-complete on 2026-08-24.
 0.3.86's indexed path is human-accepted on the primary AMD driver: it looks identical and
 holds the exact same FPS as expanded batching in the same scene, recovering all of 0.3.85's
-draw-arrays regression. It remains behind `.vhpacked` pending paired-route and second-driver
-evidence. The GL 3.3 renderer and expanded indirect path remain complete fallbacks. Phase 8
+draw-arrays regression. A controlled 0.3.104 ABBA route later measured packed/expanded timing
+parity, and 0.3.105 retains only the selected regional representation. The GL 3.3 renderer remains
+the complete fallback. Phase 8
 cluster subdivision is source- and harness-complete in 0.3.87 behind `.vhclusters`: workers
 produce a separate 4x4 stream of exact contiguous packed ranges, the GPU mirror retains
 conservative per-cluster bounds, and the indirect builder emits one cullable command per
@@ -22,7 +23,7 @@ same-frame fallbacks. The first owner scene measured 360 to 390 FPS with cluster
 0.21 ms saved, but clusters also exposed more of the shared depth-cull flicker described above.
 Visual stability and paired GPU metadata/dispatch/saving gates are open.
 
-The live comparison uses `.vhphase8` as its sole player-facing authority. Version 0.3.90 makes it a
+The historical live comparison used `.vhphase8` as its sole player-facing authority. Version 0.3.90 made it a
 chronological `off`, `batch`, `cull`, `late`, `packed`, `clusters` preset ladder; every preset
 assigns all seven dependent switches and reports the exact stage or `MIXED`. The individual
 commands remain diagnostics, not setup instructions. The ladder replaces both a 0.3.88 mixed-state
@@ -1130,9 +1131,12 @@ pattern with four virtual corners per quad. `.vhpacked`, `VINTAGEHORIZONS_GPU_PA
 `bench-windows.ps1 -GpuPacked 0|1` select comparisons. The fast tier passes 3,911 assertions,
 including 782 packed-format cases. The owner reports that 0.3.86 is visually identical and holds
 the exact same FPS with packing off and on in the same scene. The topology recovered the complete
-0.3.85 loss; packing is neutral rather than a standalone FPS win there. Paired-route timing,
-actual live-byte reduction after the temporary regional mirror is removed, and a second driver
-remain open.
+0.3.85 loss; packing is neutral rather than a standalone FPS win there. The controlled Phase 9
+ABBA route confirmed parity at 2.4367 ms packed versus 2.4392 ms expanded, with the -0.10% delta
+below repeat variation. Version 0.3.105 removes dual publication and retains only the selected
+expanded, whole-packed, or clustered-packed regional form. The owner
+retired the second-driver requirement on 2026-08-25; portability beyond the primary AMD driver is
+therefore unestablished rather than an open gate.
 
 **Purpose:** Reduce geometry memory, upload bandwidth, and vertex/index processing.
 
@@ -1153,8 +1157,7 @@ Gate:
 - Human visual parity passes the full matrix.
 - Live opaque geometry bytes and upload bytes fall materially; target at least 50% unless a
   smaller reduction produces a better measured total frame time.
-- Shader decode cost does not erase the memory/vertex benefit on the primary or second
-  tested driver.
+- Shader decode cost does not erase the memory/vertex benefit on the primary tested driver.
 
 ### Phase 8 - optional GPU LOD selection and clusters
 
@@ -1185,10 +1188,11 @@ The margin search did not change the artifact and is closed. Version 0.3.97's li
 also closed by the ridge result: actual far-cluster commands and index workload are removed at a
 high rate and FPS increases materially. **The visual-stability gate is now also closed.** Version
 0.3.101 corrected the HZB texel mapping described above and the owner confirms the precise-angle
-flicker is gone. Phase 8's remaining work is measurement and cleanup: re-measure suppression and
-FPS on the corrected mapping before quoting either, retire the 0.3.99 sky guard and `.vhsplitbias`
-once a capture shows the guard idle, and settle metadata/dispatch cost against work removed plus
-turning behaviour. Do not reopen the depth margin, the sky silhouette, or a texture barrier.
+flicker is gone. The sky guard and `.vhsplitbias` were subsequently removed. On 2026-08-25 the
+owner retired the corrected-mapping suppression/FPS re-measurement; the older numbers remain
+historical and cannot be presented as current. Metadata/dispatch cost and turning/streaming
+behavior transfer to Phase 9 hardening rather than keeping the Phase 8 experiment open. Do not
+reopen the depth margin, the sky silhouette, or a texture barrier.
 
 **Purpose:** Remove only a measured remaining bottleneck.
 
@@ -1217,24 +1221,55 @@ played it and accepted the picture and the performance on the primary AMD driver
 correctness defect was found and fixed in 0.3.101, the staging switches and diagnostics were retired
 through 0.3.103, and `.vhgpu off` remains as one saved in-game route back to the legacy renderer.
 
-**What that decision did NOT close, and what this phase still owns:** a second GPU vendor or driver
-has never run the path; the paired packed route is untimed, so the 12-byte format's memory and
-bandwidth benefit is unseparated from its decode cost and the temporary expanded regional mirror
-cannot yet be dropped; no current suppression or frame-rate figure exists for the corrected mapping;
-and MSAA/SSAO settings, resize, fullscreen changes, shader reload, dimension and world changes, long
-sessions, large caches, multiplayer and competing-LOD-mod deferral are all unexercised with the path
-default-on. Human acceptance is one machine, one world, ordinary play, and qualitative.
+**First hardening slice, 0.3.104:**
+`VINTAGEHORIZONS_GPU_INJECT_FAILURE=arena|shader|depth-copy|draw` injects one named boundary once,
+and `bench-windows.ps1 -GpuFailure` pins and records it for an isolated run. Arena setup refuses the
+fast path before publication; shader injection withholds both fast terrain programs; depth-copy
+injection disables HZB so uploaded CPU-approved commands remain intact; draw injection takes the
+same permanent drawer-failure state as a backend refusal. Pure/static checks and the complete
+5,083-assertion tier pass.
 
-**Purpose:** Decide whether the fast path is ready for ordinary users.
+All four modes then ran through the isolated `bodanboys` six-viewpoint route on the primary AMD
+system. Every run completed with zero settle timeouts. Arena logged unchanged visible legacy at the
+forced setup refusal and later recovered on its allowed retry; shader stayed on the established
+renderer; depth-copy disabled HZB while later frames still submitted 1,700-2,059 packed cluster
+commands; draw permanently disabled both indirect drawers and later reported zero cluster
+multi-draws while expanded/established rendering continued. This closes the injected-failure item
+with game-backed automated evidence, not human-watched or cross-driver evidence.
+
+**Owner scope decision, 2026-08-25:** the corrected-mapping suppression/FPS re-measurement and a
+second GPU vendor or driver are retired without being completed. No current effect-size figure or
+cross-driver evidence will be required to close this plan; the repository must continue to state
+that those claims are unestablished.
+
+**Second hardening slice, 0.3.105:** a controlled expanded/packed/packed/expanded route pinned
+clusters off so only format selection changed. Expanded averaged 2.4392 ms and packed 2.4367 ms;
+the -0.10% packed delta is below repeat variation, establishing parity rather than a speedup. The
+selected 12-byte format keeps its 86.4% representation reduction without measurable frame-time
+regression. The product-default clustered copy measured about 90.33 MiB live against about 833.7
+MiB for all three former regional copies. The mirror now retains exactly the selected expanded,
+whole-packed, or clustered-packed form and uses the ordinary legacy mesh as its complete fallback.
+The roughly 89% reduction applies only to duplicate regional live bytes, not total game RSS.
+
+**What the default decision still did NOT close, and what this phase owns:** MSAA/SSAO settings,
+resize, fullscreen changes, shader reload, dimension and world changes, long sessions, large caches,
+multiplayer, competing-LOD-mod deferral and representative forced-legacy coverage
+also remain open with the path default-on. Human acceptance is one machine, one world, ordinary play,
+and qualitative.
+
+**Purpose:** Originally, decide whether the fast path was ready for ordinary users. Since the owner
+made that decision ahead of the gate, finish the hardening and fallback coverage for the path that
+is now the default.
 
 Work:
 
-- Run repeated alternating comparisons on at least two GPU vendors or drivers where
-  practical.
+- The paired packed/expanded comparison and selected-only regional memory policy are complete in
+  0.3.105 on the primary driver.
 - Cover MSAA on/off, SSAO settings, window resize, fullscreen changes, shader reload,
   dimension/world changes, long sessions, large caches, multiplayer, and competing-LOD-mod
   deferral.
-- Exercise allocation pressure and injected shader/buffer/depth-copy failures.
+- Exercise allocation pressure. The named arena, shader, depth-copy and draw injections are
+  complete in 0.3.104 on the primary system.
 - Verify that the fallback path remains current rather than becoming an untested museum
   path.
 - Decide `auto` policy and whether any control persists in configuration.
@@ -1244,10 +1279,12 @@ Work:
 Gate:
 
 - Human acceptance of visual behavior and motion.
-- Controlled performance win above the measured noise floor in target scenarios, with no
-  material open-view or frame-time-tail regression.
+- The packed-memory decision has a controlled primary-driver comparison showing no regression
+  above measured run-to-run noise; overall 0.4.0 performance remains qualitatively accepted rather
+  than newly quantified.
 - No unresolved correctness defect can expose a hole or corrupt renderer/cache state.
-- Unsupported and injected-failure cases demonstrably return to legacy rendering.
+- Unsupported and injected-failure cases demonstrably retain complete rendering: legacy for
+  arena/shader/draw refusal, and unculled indirect drawing for a depth-copy refusal.
 - Full checks, packaging rules, and documentation ritual pass.
 
 ## 17. Verification strategy
@@ -1448,17 +1485,18 @@ The vision is complete when all of the following are true:
   explicitly rejected with preserved evidence.
 - Per-section temporal queries are absent from the active fast path and remain functional in
   the legacy path.
-- Geometry packing has produced a measured worthwhile reduction or has been explicitly
-  rejected without blocking the regional renderer.
+- Geometry packing has produced a measured worthwhile regional reduction without a frame-time
+  regression above repeat variation.
 - Parent/child coverage, ownership seams, motion, water, shaders, and extreme coordinates
   meet current visual behavior.
 - Visibility remains independent from residency and persistence.
 - Resource publication is generation-safe; retirement never stalls an ordinary frame.
 - Unsupported and failure cases fall back to the complete legacy renderer.
-- Performance gains exceed the recorded noise floor in reproducible target scenarios and do
-  not create material control-scenario or tail-latency regressions.
-- Human visual acceptance, full automated checks, cross-driver coverage, and documentation
-  updates are complete before the fast path becomes the default.
+- Overall performance and visual behavior retain the owner's qualitative 0.4.0 acceptance. The
+  owner retired a corrected-mapping effect-size re-measurement, so no new numeric overall gate is
+  required; the paired packed-memory decision keeps its own controlled primary-driver gate.
+- Human visual acceptance, full automated checks, Phase 9 hardening, and documentation updates are
+  complete. Cross-driver coverage was retired without evidence and remains a declared limitation.
 
 ## 23. First actionable milestone
 

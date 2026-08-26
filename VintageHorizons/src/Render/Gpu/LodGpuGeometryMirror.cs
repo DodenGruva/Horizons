@@ -78,11 +78,21 @@ internal static class LodGpuGeometryFormat
         BinaryPrimitives.ReadInt32LittleEndian(source[(index * IndexStrideBytes)..]);
 }
 
+[Flags]
+internal enum LodGpuGeometryRetention
+{
+    None = 0,
+    Expanded = 1,
+    Packed = 2,
+    ClusteredPacked = 4,
+    All = Expanded | Packed | ClusteredPacked,
+}
+
 /// <summary>
-/// Phase 2 shadow mirror: every live opaque section's geometry, copied into regional
-/// arenas beside the established per-section resources. Nothing draws from it. Its purpose
-/// is to prove that regional allocation, replacement, retirement and content survive real
-/// streaming before a later phase submits from those buffers.
+/// Regional geometry mirror for live opaque sections. Production retains exactly the selected
+/// expanded, packed, or clustered-packed representation; validation fixtures may request all
+/// three. The established per-section resources remain outside this mirror as the complete
+/// fallback when selected publication or drawing is unavailable.
 /// </summary>
 internal sealed class LodGpuGeometryMirror : IDisposable
 {
@@ -130,6 +140,7 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     readonly Dictionary<long, List<long>> regionGroups = new();
     readonly int regionShift;
     readonly bool verify;
+    readonly LodGpuGeometryRetention retention;
     long nextGroupId;
     byte[] scratch = [];
     byte[] readback = [];
@@ -139,6 +150,11 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     public LodGpuArena PackedArena => packed;
     public LodGpuArena ClusteredPackedArena => clusteredPacked;
     public bool Verifying => verify;
+    public bool RetainsExpanded => retention.HasFlag(LodGpuGeometryRetention.Expanded);
+    public bool RetainsPacked => retention.HasFlag(LodGpuGeometryRetention.Packed);
+    public bool RetainsClusteredPacked =>
+        retention.HasFlag(LodGpuGeometryRetention.ClusteredPacked);
+    public LodGpuGeometryRetention Retention => retention;
     public int Count => sections.Count;
     public long MirroredSections { get; private set; }
     public long Replacements { get; private set; }
@@ -171,8 +187,13 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         LodGpuArenaLimits? vertexLimits = null,
         LodGpuArenaLimits? indexLimits = null,
         LodGpuArenaLimits? packedLimits = null,
-        LodGpuArenaLimits? clusteredPackedLimits = null)
+        LodGpuArenaLimits? clusteredPackedLimits = null,
+        LodGpuGeometryRetention retention = LodGpuGeometryRetention.All)
     {
+        if (retention == LodGpuGeometryRetention.None
+            || (retention & ~LodGpuGeometryRetention.All) != 0)
+            throw new ArgumentOutOfRangeException(nameof(retention));
+
         vertices = new LodGpuArena(
             backend,
             LodGpuArenaKind.Vertex,
@@ -191,7 +212,13 @@ internal sealed class LodGpuGeometryMirror : IDisposable
             clusteredPackedLimits ?? LodGpuArenaPolicy.PackedClusterLimits(ceilingBytes));
         this.verify = verify;
         this.regionShift = regionShift;
+        this.retention = retention;
     }
+
+    public static LodGpuGeometryRetention SelectRetention(bool packed, bool clustered) =>
+        !packed ? LodGpuGeometryRetention.Expanded
+        : clustered ? LodGpuGeometryRetention.ClusteredPacked
+        : LodGpuGeometryRetention.Packed;
 
     /// <summary>
     /// Groups sections by level and by a coarse tile of section indices, so one region's
@@ -233,44 +260,121 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         long region = RegionId(key, regionShift);
         long vertexBytes = LodGpuGeometryFormat.VertexBytes(vertexCount);
         long indexBytes = LodGpuGeometryFormat.IndexBytes(indexCount);
-
-        if (!TryAllocatePair(region, vertexBytes, indexBytes,
-                out long group, out LodGpuArenaRange vertexRange, out LodGpuArenaRange indexRange))
-            return Skip(key, hadPrevious, previous);
-
-        // Each half is compared while its own encoding is still in the scratch buffer,
-        // which is the only point where the bytes the GPU holds and the bytes the legacy
-        // upload received are both available.
-        EnsureScratch(Math.Max(vertexBytes, indexBytes));
-        LodGpuGeometryFormat.EncodeVertices(
-            geometry.Xyz, geometry.Rgba, vertexCount, scratch);
-        bool stored = vertices.Upload(vertexRange, scratch.AsSpan(0, (int)vertexBytes))
-            && Matches(vertices, vertexRange, vertexBytes);
-        if (stored)
-        {
-            LodGpuGeometryFormat.EncodeIndices(geometry.Indices, indexCount, scratch);
-            stored = indices.Upload(indexRange, scratch.AsSpan(0, (int)indexBytes))
-                && Matches(indices, indexRange, indexBytes);
-        }
-
-        if (!stored)
-        {
-            vertices.Retire(vertexRange);
-            indices.Retire(indexRange);
-            return Skip(key, hadPrevious, previous);
-        }
-
+        LodGpuArenaRange vertexRange = LodGpuArenaRange.None;
+        LodGpuArenaRange indexRange = LodGpuArenaRange.None;
         LodGpuArenaRange packedRange = LodGpuArenaRange.None;
         int packedCount = 0;
         uint[]? packedWords = geometry.PackedQuads;
-        if (packedWords != null && geometry.PackedQuadCount > 0)
+        bool packedAvailable = packedWords != null && geometry.PackedQuadCount > 0;
+        long packedBytes = packedAvailable
+            ? LodPackedQuadFormat.Bytes(geometry.PackedQuadCount)
+            : 0;
+
+        LodGpuArenaRange clusteredPackedRange = LodGpuArenaRange.None;
+        LodPackedCluster[] packedClusters = Array.Empty<LodPackedCluster>();
+        uint[]? clusteredWords = geometry.ClusteredPackedQuads;
+        LodPackedCluster[]? publishedClusters = geometry.PackedClusters;
+        int clusteredQuadCount = clusteredWords?.Length / LodPackedQuadFormat.WordsPerQuad ?? 0;
+        bool clustersAvailable = clusteredWords != null
+            && publishedClusters is { Length: > 0 }
+            && clusteredWords.Length % LodPackedQuadFormat.WordsPerQuad == 0
+            && ClustersDescribe(publishedClusters, clusteredQuadCount);
+        long clusteredBytes = clustersAvailable
+            ? LodPackedQuadFormat.Bytes(clusteredQuadCount)
+            : 0;
+
+        long group;
+        if (RetainsExpanded)
         {
-            long packedBytes = LodPackedQuadFormat.Bytes(geometry.PackedQuadCount);
+            if (!TryAllocatePair(region, vertexBytes, indexBytes,
+                    out group, out vertexRange, out indexRange))
+                return Skip(key, hadPrevious, previous);
+
+            // Each half is compared while its own encoding is still in scratch, which is
+            // the only point where the GPU bytes and the legacy upload input coexist.
+            EnsureScratch(Math.Max(vertexBytes, indexBytes));
+            LodGpuGeometryFormat.EncodeVertices(
+                geometry.Xyz, geometry.Rgba, vertexCount, scratch);
+            bool expandedStored = vertices.Upload(
+                    vertexRange, scratch.AsSpan(0, (int)vertexBytes))
+                && Matches(vertices, vertexRange, vertexBytes);
+            if (expandedStored)
+            {
+                LodGpuGeometryFormat.EncodeIndices(geometry.Indices, indexCount, scratch);
+                expandedStored = indices.Upload(
+                        indexRange, scratch.AsSpan(0, (int)indexBytes))
+                    && Matches(indices, indexRange, indexBytes);
+            }
+
+            if (!expandedStored)
+            {
+                vertices.Retire(vertexRange);
+                indices.Retire(indexRange);
+                return Skip(key, hadPrevious, previous);
+            }
+        }
+        else if (RetainsClusteredPacked)
+        {
+            if (!clustersAvailable
+                || !TryAllocateSingle(region, clusteredPacked, clusteredBytes,
+                    out group, out clusteredPackedRange))
+            {
+                ClusteredPackedSkippedSections++;
+                return Skip(key, hadPrevious, previous);
+            }
+
+            EnsureScratch(clusteredBytes);
+            LodPackedQuadFormat.EncodeBytes(clusteredWords!, clusteredQuadCount, scratch);
+            bool clusteredStored = clusteredPacked.Upload(
+                    clusteredPackedRange, scratch.AsSpan(0, (int)clusteredBytes))
+                && Matches(clusteredPacked, clusteredPackedRange, clusteredBytes);
+            if (!clusteredStored)
+            {
+                clusteredPacked.Retire(clusteredPackedRange);
+                ClusteredPackedSkippedSections++;
+                return Skip(key, hadPrevious, previous);
+            }
+
+            packedClusters = (LodPackedCluster[])publishedClusters!.Clone();
+            ClusteredPackedMirroredSections++;
+        }
+        else
+        {
+            if (!packedAvailable
+                || !TryAllocateSingle(region, packed, packedBytes,
+                    out group, out packedRange))
+            {
+                PackedSkippedSections++;
+                return Skip(key, hadPrevious, previous);
+            }
+
+            EnsureScratch(packedBytes);
+            LodPackedQuadFormat.EncodeBytes(
+                packedWords!, geometry.PackedQuadCount, scratch);
+            bool packedStored = packed.Upload(
+                    packedRange, scratch.AsSpan(0, (int)packedBytes))
+                && Matches(packed, packedRange, packedBytes);
+            if (!packedStored)
+            {
+                packed.Retire(packedRange);
+                PackedSkippedSections++;
+                return Skip(key, hadPrevious, previous);
+            }
+
+            packedCount = geometry.PackedQuadCount;
+            PackedMirroredSections++;
+        }
+
+        // The all-representations mode remains available to pure validation fixtures. In
+        // production exactly one format is retained, so these optional companions allocate
+        // only when an expanded validation mirror selected the page group above.
+        if (RetainsPacked && !packedRange.IsLive && packedAvailable)
+        {
             if (packed.TryAllocate(group, packedBytes, out packedRange))
             {
                 EnsureScratch(packedBytes);
                 LodPackedQuadFormat.EncodeBytes(
-                    packedWords, geometry.PackedQuadCount, scratch);
+                    packedWords!, geometry.PackedQuadCount, scratch);
                 bool packedStored = packed.Upload(
                         packedRange, scratch.AsSpan(0, (int)packedBytes))
                     && Matches(packed, packedRange, packedBytes);
@@ -292,26 +396,18 @@ internal sealed class LodGpuGeometryMirror : IDisposable
             }
         }
 
-        LodGpuArenaRange clusteredPackedRange = LodGpuArenaRange.None;
-        LodPackedCluster[] packedClusters = Array.Empty<LodPackedCluster>();
-        uint[]? clusteredWords = geometry.ClusteredPackedQuads;
-        LodPackedCluster[]? publishedClusters = geometry.PackedClusters;
-        int clusteredQuadCount = clusteredWords?.Length / LodPackedQuadFormat.WordsPerQuad ?? 0;
-        if (clusteredWords != null && publishedClusters is { Length: > 0 }
-            && clusteredWords.Length % LodPackedQuadFormat.WordsPerQuad == 0
-            && ClustersDescribe(publishedClusters, clusteredQuadCount))
+        if (RetainsClusteredPacked && !clusteredPackedRange.IsLive && clustersAvailable)
         {
-            long clusteredBytes = LodPackedQuadFormat.Bytes(clusteredQuadCount);
             if (clusteredPacked.TryAllocate(group, clusteredBytes, out clusteredPackedRange))
             {
                 EnsureScratch(clusteredBytes);
-                LodPackedQuadFormat.EncodeBytes(clusteredWords, clusteredQuadCount, scratch);
+                LodPackedQuadFormat.EncodeBytes(clusteredWords!, clusteredQuadCount, scratch);
                 bool clusteredStored = clusteredPacked.Upload(
                         clusteredPackedRange, scratch.AsSpan(0, (int)clusteredBytes))
                     && Matches(clusteredPacked, clusteredPackedRange, clusteredBytes);
                 if (clusteredStored)
                 {
-                    packedClusters = (LodPackedCluster[])publishedClusters.Clone();
+                    packedClusters = (LodPackedCluster[])publishedClusters!.Clone();
                     ClusteredPackedMirroredSections++;
                 }
                 else
@@ -326,7 +422,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
                 ClusteredPackedSkippedSections++;
             }
         }
-        else if (clusteredWords != null || publishedClusters != null)
+        else if (RetainsClusteredPacked && !clusteredPackedRange.IsLive
+            && (clusteredWords != null || publishedClusters != null))
         {
             ClusteredPackedSkippedSections++;
         }
@@ -339,8 +436,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
 
         if (hadPrevious)
         {
-            vertices.Retire(previous.Vertices);
-            indices.Retire(previous.Indices);
+            if (previous.Vertices.IsLive) vertices.Retire(previous.Vertices);
+            if (previous.Indices.IsLive) indices.Retire(previous.Indices);
             if (previous.PackedQuads.IsLive) packed.Retire(previous.PackedQuads);
             if (previous.ClusteredPackedQuads.IsLive)
                 clusteredPacked.Retire(previous.ClusteredPackedQuads);
@@ -353,8 +450,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     public void Remove(long sectionKey)
     {
         if (!sections.Remove(sectionKey, out MirroredSection section)) return;
-        vertices.Retire(section.Vertices);
-        indices.Retire(section.Indices);
+        if (section.Vertices.IsLive) vertices.Retire(section.Vertices);
+        if (section.Indices.IsLive) indices.Retire(section.Indices);
         if (section.PackedQuads.IsLive) packed.Retire(section.PackedQuads);
         if (section.ClusteredPackedQuads.IsLive)
             clusteredPacked.Retire(section.ClusteredPackedQuads);
@@ -433,6 +530,38 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         return false;
     }
 
+    bool TryAllocateSingle(
+        long region,
+        LodGpuArena arena,
+        long bytes,
+        out long group,
+        out LodGpuArenaRange range)
+    {
+        if (!regionGroups.TryGetValue(region, out List<long>? candidates))
+        {
+            candidates = new List<long>();
+            regionGroups[region] = candidates;
+        }
+
+        foreach (long candidate in candidates)
+        {
+            if (!arena.TryAllocate(candidate, bytes, out range)) continue;
+            group = candidate;
+            return true;
+        }
+
+        long fresh = ++nextGroupId;
+        if (arena.TryAllocate(fresh, bytes, out range))
+        {
+            candidates.Add(fresh);
+            group = fresh;
+            return true;
+        }
+
+        group = 0;
+        return false;
+    }
+
     bool TryAllocateIn(
         long group,
         long vertexBytes,
@@ -457,8 +586,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
         // The previous spans describe geometry this section no longer has. Retiring them
         // keeps the mirror a subset of the truth instead of a stale copy of it.
         sections.Remove(key);
-        vertices.Retire(previous.Vertices);
-        indices.Retire(previous.Indices);
+        if (previous.Vertices.IsLive) vertices.Retire(previous.Vertices);
+        if (previous.Indices.IsLive) indices.Retire(previous.Indices);
         if (previous.PackedQuads.IsLive) packed.Retire(previous.PackedQuads);
         if (previous.ClusteredPackedQuads.IsLive)
             clusteredPacked.Retire(previous.ClusteredPackedQuads);
@@ -508,7 +637,8 @@ internal sealed class LodGpuGeometryMirror : IDisposable
     }
 
     public string Describe() =>
-        $"sections {sections.Count} live, {MirroredSections} mirrored, {Replacements} replaced, "
+        $"retaining {retention}; sections {sections.Count} live, {MirroredSections} mirrored, "
+        + $"{Replacements} replaced, "
         + $"{SkippedSections} skipped | vertices {Describe(vertices)} | indices {Describe(indices)}"
         + $" | packed {Describe(packed)}, {PackedMirroredSections} mirrored, "
         + $"{PackedSkippedSections} skipped"

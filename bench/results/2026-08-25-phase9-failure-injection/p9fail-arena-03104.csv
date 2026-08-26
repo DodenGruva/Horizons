@@ -1,0 +1,7 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+p9fail-arena-03104,north-horizon,256000,280,256000,1,3981,398.1,406.2,243.5,2.51,4.11,0.0,0.0,2428,4424,33.0,0
+p9fail-arena-03104,east-horizon,256000,280,256000,1,4424,442.3,452.3,280.0,2.26,3.57,0.0,0.0,1871,4434,21.0,0
+p9fail-arena-03104,south-horizon,256000,280,256000,1,4435,443.5,452.4,280.9,2.25,3.56,0.0,0.0,2373,4821,21.0,0
+p9fail-arena-03104,west-horizon,256000,280,256000,1,4273,427.2,437.7,253.8,2.34,3.94,0.0,0.0,1851,4812,21.0,0
+p9fail-arena-03104,downward,256000,280,256000,1,3410,341.0,343.0,236.2,2.93,4.23,0.0,0.0,2037,4817,21.0,0
+p9fail-arena-03104,slow-rotation,256000,280,256000,1,4244,424.4,430.0,277.9,2.36,3.60,0.0,0.0,2263,4819,21.0,0

@@ -119,6 +119,12 @@ internal sealed class LodGpuIndirectDrawer : IDisposable
     public bool Ready => !Failed;
 
     /// <summary>
+    /// Phase 9 test hook. It takes the exact permanent-fallback route a backend refusal takes,
+    /// without issuing an invalid GL operation merely to make a driver complain.
+    /// </summary>
+    internal void InjectFailure(string reason) => Fail(reason);
+
+    /// <summary>
     /// Issues the built command list. Returns false when nothing was drawn, in which case
     /// the caller has already submitted, or will submit, that terrain some other way.
     /// </summary>

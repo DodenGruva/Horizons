@@ -13,7 +13,34 @@ public static class GpuRendererChecks
         GlStateOwnership(c);
         DelayedTimerRing(c);
         BenchmarkWiring(c);
+        FailureInjectionPolicy(c);
         DiscardedTimingNeverReachesTheTotal(c);
+    }
+
+    static void FailureInjectionPolicy(Check c)
+    {
+        c.Eq(LodGpuFailureStage.None, LodGpuFailureInjection.Parse(null).Stage,
+            "no Phase 9 failure injection is the ordinary default");
+        c.Eq(LodGpuFailureStage.ArenaSetup, LodGpuFailureInjection.Parse(" ARENA ").Stage,
+            "arena injection is trimmed and case-insensitive");
+        c.Eq(LodGpuFailureStage.FastShaders, LodGpuFailureInjection.Parse("shader").Stage,
+            "the fast-shader failure has one explicit name");
+        c.Eq(LodGpuFailureStage.DepthCopy, LodGpuFailureInjection.Parse("depth-copy").Stage,
+            "the private depth-copy failure has one explicit name");
+        c.Eq(LodGpuFailureStage.IndirectDraw, LodGpuFailureInjection.Parse("draw").Stage,
+            "the indirect draw failure has one explicit name");
+        c.Eq(LodGpuFailureStage.Invalid, LodGpuFailureInjection.Parse("surprise").Stage,
+            "an unknown injection fails closed instead of selecting a nearby stage");
+
+        LodGpuFailureInjection injection = LodGpuFailureInjection.Parse("draw");
+        c.True(injection.Armed, "a valid requested injection starts armed");
+        c.False(injection.Take(LodGpuFailureStage.DepthCopy),
+            "asking the wrong boundary cannot consume the injection");
+        c.True(injection.Take(LodGpuFailureStage.IndirectDraw),
+            "the named boundary consumes the injection once");
+        c.False(injection.Armed, "a consumed injection is visibly disarmed");
+        c.False(injection.Take(LodGpuFailureStage.IndirectDraw),
+            "the artificial failure cannot repeat every frame");
     }
 
     static void DepthCopyPolicy(Check c)
@@ -66,9 +93,19 @@ public static class GpuRendererChecks
             && runner.Contains("[switch]$SeedOnly", StringComparison.Ordinal)
             && runner.Contains("VINTAGEHORIZONS_GPU_RENDERER = $GpuRenderer", StringComparison.Ordinal)
             && runner.Contains("VINTAGEHORIZONS_GPU_ARENA = $GpuArena", StringComparison.Ordinal)
+            && runner.Contains("[string]$GpuFailure", StringComparison.Ordinal)
+            && runner.Contains("VINTAGEHORIZONS_GPU_INJECT_FAILURE = $GpuFailure",
+                StringComparison.Ordinal)
+            && runner.Contains("gpuFailure = if ($GpuFailure)", StringComparison.Ordinal)
+            && runner.Contains("splitNearP95Microseconds", StringComparison.Ordinal)
+            && runner.Contains("splitFarP95Microseconds", StringComparison.Ordinal)
+            && runner.Contains("uploadP95Microseconds", StringComparison.Ordinal)
+            && runner.Contains("vertexLiveMiB", StringComparison.Ordinal)
+            && runner.Contains("packedLiveMiB", StringComparison.Ordinal)
+            && runner.Contains("clusterLiveMiB", StringComparison.Ordinal)
             && runner.Contains("gpuRenderer = if ($GpuRenderer)", StringComparison.Ordinal)
             && runner.Contains("gpuArena = if ($GpuArena)", StringComparison.Ordinal),
-            "the Windows runner pins and records delayed GPU timing and renderer controls");
+            "the Windows runner pins renderer controls and records split GPU timing, upload cost, and arena memory");
     }
 
     static void CapabilityPolicy(Check c)

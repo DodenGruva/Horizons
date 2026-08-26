@@ -126,6 +126,7 @@ public class LodTerrainRenderer : IRenderer
     readonly LodGpuTelemetry gpuTelemetry;
     readonly Func<long> currentWorldEpoch;
     readonly string? gpuRendererPreference;
+    readonly LodGpuFailureInjection gpuFailureInjection;
     readonly LodGpuShadowRenderPath gpuShadow;
     readonly LodRenderPathCoordinator renderPaths;
     bool renderPathConfigured;
@@ -344,6 +345,55 @@ public class LodTerrainRenderer : IRenderer
     public bool SectionHeightCulling { get; set; } = true;
 
     /// <summary>
+    /// Cull whole quadtree SUBTREES with the aggregate extent of the meshes resident under
+    /// them rather than a bedrock-to-sky box. The per-section bound above only tightens the
+    /// leaf a section draws with; a coarse node still had to be traversed with a box
+    /// spanning the world, and rejecting a coarse node rejects everything beneath it.
+    /// Same one-sided gate, same fallback rule: a subtree that cannot supply an aggregate
+    /// keeps the full-height box. `VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` restores it
+    /// everywhere for a controlled comparison.
+    /// </summary>
+    public bool SubtreeHeightCulling { get; set; } = true;
+
+    /// <summary>
+    /// Do not build cave systems daylight cannot reach. Measured offline at about 30% of
+    /// every vertex this mod produces, and unlike the culling switches above it removes the
+    /// geometry rather than deciding whether to draw it - so it also takes memory, mesh
+    /// time and upload bandwidth with it.
+    ///
+    /// Default OFF. It changes what is drawn, its failure mode is terrain that is not there,
+    /// and nobody has seen it yet. `.vhcaves on` turns it on; changing it re-meshes the
+    /// world so the switch can be judged in one place without relogging.
+    /// </summary>
+    public bool CaveCulling { get; set; } =
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CAVE_CULLING") == "1";
+
+    int caveCullReach = LodCaveCull.DefaultReach;
+
+    /// <summary>How far daylight spreads before a cavity counts as unreachable, in blocks.</summary>
+    public int CaveCullReach
+    {
+        get => caveCullReach;
+        set => caveCullReach = Math.Clamp(value, 1, 200);
+    }
+
+    /// <summary>
+    /// Rebuild every resident mesh. Cave culling decides what geometry EXISTS rather than
+    /// what is drawn, so flipping it changes nothing until the meshes are made again - and
+    /// a switch whose effect only arrives on the next relog cannot be A/B'd by a person.
+    /// </summary>
+    public int RemeshAll()
+    {
+        int queued = 0;
+        foreach (long key in sectionMeshes.Keys.Concat(waterMeshes.Keys).Distinct().ToArray())
+        {
+            world.RenderDirty.Add(key);
+            queued++;
+        }
+        return queued;
+    }
+
+    /// <summary>
     /// Submit opaque cached sections nearest-first so mountain depth can reject farther
     /// hidden fragments before their shader runs. Water keeps the traversal order because
     /// alpha blending has different ordering rules. A same-view human A/B improved 149 to
@@ -528,6 +578,9 @@ public class LodTerrainRenderer : IRenderer
         SeamRepairsQueued = 0;
         VerticalCulledSections = 0;
         VerticalCulledMax = 0;
+        SubtreeCulledNodes = 0;
+        SubtreeCulledMeshes = 0;
+        SubtreeCulledMax = 0;
         // Through the shared reset rather than by repeating it. The depth report prints CPU
         // time, GPU time, hidden share and the picture's own frame counts on adjacent lines,
         // and if the periodic reset cleared some of those and not others, the reader would be
@@ -552,6 +605,7 @@ public class LodTerrainRenderer : IRenderer
         public long Bytes => OpaqueVertices * 16L + OpaqueIndices * sizeof(int)
             + WaterVertices * 16L + WaterIndices * sizeof(int);
     }
+    readonly LodSubtreeHeights subtreeHeights = new();
     readonly LodMeshBounds meshBounds = new();
     readonly LodFarPlaneState farPlaneState = new();
     readonly HashSet<long> meshJobInFlight = new();
@@ -952,6 +1006,23 @@ public class LodTerrainRenderer : IRenderer
             Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_STATS") == "1";
         gpuRendererPreference =
             Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_RENDERER");
+        gpuFailureInjection = LodGpuFailureInjection.Parse(
+            Environment.GetEnvironmentVariable(LodGpuFailureInjection.EnvironmentVariable));
+        if (gpuFailureInjection.Stage == LodGpuFailureStage.Invalid)
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] Ignoring unknown {0} value '{1}'. Expected arena, shader, "
+                + "depth-copy, draw, or off.",
+                LodGpuFailureInjection.EnvironmentVariable,
+                gpuFailureInjection.Requested);
+        }
+        else if (gpuFailureInjection.Armed)
+        {
+            capi.Logger.Warning(
+                "[VintageHorizons] Phase 9 GPU failure injection armed for {0}; this is a "
+                + "test-only session and rendering must fail back safely.",
+                gpuFailureInjection.Stage);
+        }
         gpuTelemetry = new LodGpuTelemetry(
             gpuTimingRequested,
             LodRenderPathPolicy.RequestsRuntimeValidation(gpuRendererPreference),
@@ -1084,6 +1155,15 @@ public class LodTerrainRenderer : IRenderer
                 + "cached terrain keeps drawing through the established path");
 
         packedShaderOk = packedProg.Compile();
+        if (!ShaderLoadIsProvisional
+            && gpuFailureInjection.Take(LodGpuFailureStage.FastShaders))
+        {
+            indirectShaderOk = false;
+            packedShaderOk = false;
+            capi.Logger.Warning(
+                "[VintageHorizons] Phase 9 injected the fast terrain shader failure; cached "
+                + "terrain stays on the established renderer until a later successful reload.");
+        }
         if (!packedShaderOk && !ShaderLoadIsProvisional)
             capi.Logger.Warning(
                 "[VintageHorizons] the packed lodterrain variant failed to compile; "
@@ -1193,6 +1273,15 @@ public class LodTerrainRenderer : IRenderer
             {
                 long ck = LodWorld.ChildKey(key, qx, qz);
                 if (!world.HasDataSet.Contains(ck)) continue;
+                // Full height here, deliberately, while the walk below uses the aggregate.
+                // This gate does not decide what is drawn; it decides whether the parent
+                // may STOP drawing its own coarse mesh over this quadrant. Those are not
+                // the same question, and the aggregate cannot answer the second one: it
+                // covers the meshes resident under the child, not the parent's coarser
+                // rendition of the same ground, which has its own vertical extent. A child
+                // holding nothing but a deep cave mesh would be rejected vertically, the
+                // parent would descend believing the quadrant covered, and the surface the
+                // parent was drawing there would become a hole.
                 if (!LodTraversalPolicy.NodeInView(frustum, ck,
                     camPos.X, camPos.Y, camPos.Z, worldHeight)) continue;
 
@@ -1244,10 +1333,24 @@ public class LodTerrainRenderer : IRenderer
     {
         // A rejected parent contains every descendant, so the conservative p-vertex box
         // test makes it safe to skip all draw selection, mesh demand, and child traversal.
+        LodHeightSpan subtree = SubtreeSpan(key);
         if (!LodTraversalPolicy.NodeInView(frustum, key,
-            camPos.X, camPos.Y, camPos.Z, worldHeight))
+            camPos.X, camPos.Y, camPos.Z, worldHeight, subtree))
         {
             traversalCulledThisFrame++;
+
+            // Only on the reject path, and only for nodes the aggregate is what rejected:
+            // how many of them the old full-height box would have traversed, and how many
+            // resident meshes went with them. The node count alone cannot separate
+            // rejecting one leaf from rejecting a whole L6 quadrant, and that difference
+            // is the entire question this work is funded on.
+            if (subtree.HasGeometry
+                && LodTraversalPolicy.NodeInView(frustum, key,
+                    camPos.X, camPos.Y, camPos.Z, worldHeight))
+            {
+                subtreeCulledThisFrame++;
+                subtreeCulledMeshesThisFrame += subtreeHeights.Of(key).Meshes;
+            }
             return false;
         }
 
@@ -1539,7 +1642,13 @@ public class LodTerrainRenderer : IRenderer
                 continue;
             }
 
-            var neighborSections = new LodSection?[4];
+            // Eight, not four. The mesher's side-face culling only ever asks about the four
+            // edges, but cave culling floods light through a window around the section, and
+            // an absent DIAGONAL leaves a section-sized block of assumed-open air touching
+            // the corner. Light pours in from it and rescues caves that are genuinely dark -
+            // measured at roughly half the saving. The corners are read for light only and
+            // are never asked whether a side is covered.
+            var neighborSections = new LodSection?[8];
             long estimatedBytes = SectionSnapshot.EstimateRetainedBytes(section);
 
             // A neighbour that is absent from RAM is NOT automatically the edge of
@@ -1569,6 +1678,18 @@ public class LodTerrainRenderer : IRenderer
                 }
             }
 
+            // The four corners, for light only.
+            for (int d = 4; d < 8; d++)
+            {
+                int cornerX = (d == 4 || d == 6) ? -1 : 1;
+                int cornerZ = d < 6 ? -1 : 1;
+                long ck = LodWorld.NeighborKey(best, cornerX, cornerZ);
+                if (!world.Sections.TryGetValue(ck, out LodSection? corner)) continue;
+                neighborSections[d] = corner;
+                estimatedBytes = SectionSnapshot.SaturatingAdd(
+                    estimatedBytes, SectionSnapshot.EstimateRetainedBytes(corner));
+            }
+
             // TryTake transferred the exact dirty obligation to us. If this frame has
             // spent its snapshot time/byte allowance, restore that obligation before
             // stopping. The first eligible snapshot always progresses even if oversized.
@@ -1578,8 +1699,8 @@ public class LodTerrainRenderer : IRenderer
                 break;
             }
 
-            var neighbors = new SectionSnapshot?[4];
-            for (int d = 0; d < 4; d++)
+            var neighbors = new SectionSnapshot?[neighborSections.Length];
+            for (int d = 0; d < neighborSections.Length; d++)
             {
                 if (neighborSections[d] != null) neighbors[d] = SectionSnapshot.Of(neighborSections[d]!);
             }
@@ -1594,6 +1715,7 @@ public class LodTerrainRenderer : IRenderer
                 EstimatedRetainedBytes = estimatedBytes,
                 ReadyAtMilliseconds = Environment.TickCount64,
                 AssumedCoveredSides = assumedCovered,
+                CaveCullReach = CaveCulling ? caveCullReach : 0,
             });
         }
 
@@ -1754,6 +1876,9 @@ public class LodTerrainRenderer : IRenderer
         if (stats.OpaqueIndices == 0 && stats.WaterIndices == 0) return;
 
         liveMeshStats[key] = stats;
+        // Both passes in one span: the traversal box precedes the split into opaque and
+        // water draws, so it has to hold whichever of them the walk goes on to select.
+        subtreeHeights.SetMesh(key, stats.Heights.Either);
         NoteSectionHeights(stats.Heights);
         LiveOpaqueVertices += stats.OpaqueVertices;
         LiveOpaqueIndices += stats.OpaqueIndices;
@@ -1764,6 +1889,7 @@ public class LodTerrainRenderer : IRenderer
 
     void RemoveLiveMeshStats(long key)
     {
+        subtreeHeights.RemoveMesh(key);
         if (!liveMeshStats.Remove(key, out LodLiveMeshStats stats)) return;
         LiveOpaqueVertices -= stats.OpaqueVertices;
         LiveOpaqueIndices -= stats.OpaqueIndices;
@@ -2776,6 +2902,7 @@ public class LodTerrainRenderer : IRenderer
         gpuTelemetry.BeginFrame();
         ConfigureRenderPaths();
         ApplyGpuShadowRequest();
+        ApplyGpuDrawFailureInjection();
         float viewDistance = ApprovedViewDistance();
 
         // Fixed before anything reads it, and before the occlusion queries are resolved:
@@ -2889,6 +3016,8 @@ public class LodTerrainRenderer : IRenderer
         hzbCollecting = DepthPyramidEnabled;
 
         traversalCulledThisFrame = 0;
+        subtreeCulledThisFrame = 0;
+        subtreeCulledMeshesThisFrame = 0;
         culledThisFrame = 0;
         verticalCulledThisFrame = 0;
         LastTemporalOcclusionDrawsSkipped = 0;
@@ -2901,6 +3030,11 @@ public class LodTerrainRenderer : IRenderer
         WalkCost.Add(phaseStart);
         LastDrawCount = drawList.Count;
         LastTraversalCulledCount = traversalCulledThisFrame;
+        LastSubtreeCulledCount = subtreeCulledThisFrame;
+        SubtreeCulledNodes += subtreeCulledThisFrame;
+        SubtreeCulledMeshes += subtreeCulledMeshesThisFrame;
+        if (subtreeCulledThisFrame > SubtreeCulledMax)
+            SubtreeCulledMax = subtreeCulledThisFrame;
         if (drawList.Count == 0)
         {
             LastCulledCount = 0;
@@ -3061,9 +3195,8 @@ public class LodTerrainRenderer : IRenderer
     }
 
     /// <summary>
-    /// Phase 2 regional arenas. They exist only beneath an already validated shadow, hold a
-    /// copy of opaque geometry that nothing draws, and are bounded by their own ceiling so
-    /// dual residency cannot double an unbounded cache.
+    /// Regional arenas for the validated GPU path. They retain only its selected geometry
+    /// representation and stay bounded by a draw-distance-derived ceiling.
     /// </summary>
     void AttachShadowArenas()
     {
@@ -3072,7 +3205,7 @@ public class LodTerrainRenderer : IRenderer
         if (mode is LodGpuArenaMode.Off or LodGpuArenaMode.Invalid)
         {
             capi.Logger.Notification(
-                "[VintageHorizons] GPU arena shadow off; the renderer shadow stays metadata-only.");
+                "[VintageHorizons] GPU regional arenas off; cached terrain stays on the established renderer.");
             return;
         }
 
@@ -3095,10 +3228,17 @@ public class LodTerrainRenderer : IRenderer
             sizedFor, Environment.GetEnvironmentVariable("VINTAGEHORIZONS_GPU_ARENA_MB"));
         try
         {
+            if (gpuFailureInjection.Take(LodGpuFailureStage.ArenaSetup))
+                throw new InvalidOperationException(
+                    "Phase 9 injected a regional arena setup failure");
+
             var backend = new LodGpuOpenGlArenaBackend(
                 message => capi.Logger.Warning("{0}", message));
+            LodGpuGeometryRetention retention = LodGpuGeometryMirror.SelectRetention(
+                PackedDrawEnabled, ClusterDrawEnabled);
             gpuShadow.AttachMirror(new LodGpuGeometryMirror(
-                backend, ceiling, verify: mode == LodGpuArenaMode.Verify));
+                backend, ceiling, verify: mode == LodGpuArenaMode.Verify,
+                retention: retention));
             shadowBuilder = new LodGpuIndirectBuilder();
             splitFarBuilder = new LodGpuIndirectBuilder();
             packedBuilder = new LodGpuIndirectBuilder(packed: true);
@@ -3121,12 +3261,13 @@ public class LodTerrainRenderer : IRenderer
             long packedCeiling = LodGpuArenaPolicy.PackedLimits(ceiling).CeilingBytes;
             long clusterCeiling = LodGpuArenaPolicy.PackedClusterLimits(ceiling).CeilingBytes;
             capi.Logger.Notification(
-                "[VintageHorizons] GPU arena shadow on: {0} MiB expanded ceiling plus {1} MiB "
-                + "packed-validation and {2} MiB cluster-validation ceilings, {3} MiB vertex "
-                + "pages, {4} page sets, content verification {5}. Sized for a {6} draw "
-                + "distance ({7} sections); each ceiling "
+                "[VintageHorizons] GPU arenas on: retaining {0} geometry only; ceilings are "
+                + "{1} MiB expanded, {2} MiB packed and {3} MiB clustered, with {4} MiB "
+                + "vertex pages and {5} page sets; content verification {6}. Sized for a "
+                + "{7} draw distance ({8} sections); each ceiling "
                 + "is a cap, not a reservation, so pages are only "
                 + "committed as sections arrive.",
+                retention,
                 ceiling / (1024 * 1024),
                 packedCeiling / (1024 * 1024),
                 clusterCeiling / (1024 * 1024),
@@ -3145,6 +3286,16 @@ public class LodTerrainRenderer : IRenderer
                 "[VintageHorizons] GPU arena shadow could not start; visible legacy rendering "
                 + "is unchanged: {0}", e.Message);
         }
+    }
+
+    void ApplyGpuDrawFailureInjection()
+    {
+        if (indirectDrawer == null && packedDrawer == null) return;
+        if (!gpuFailureInjection.Take(LodGpuFailureStage.IndirectDraw)) return;
+
+        const string reason = "Phase 9 injected an indirect draw failure";
+        indirectDrawer?.InjectFailure(reason);
+        packedDrawer?.InjectFailure(reason);
     }
 
     /// <summary>Arena occupancy for the periodic report, or null when no arena is attached.</summary>
@@ -3233,7 +3384,7 @@ public class LodTerrainRenderer : IRenderer
     }
 
     /// <summary>
-    /// The arenas only ever see geometry as it is published, so a shadow switched on
+    /// The arenas only ever see geometry as it is published, so the GPU path switched on
     /// mid-session would otherwise measure whatever happens to be remeshed afterwards.
     /// Marking the live sections dirty replays them through the ordinary publication path,
     /// at the ordinary budget, until the mirror matches what is actually on screen.
@@ -3247,7 +3398,7 @@ public class LodTerrainRenderer : IRenderer
             queued++;
         }
         capi.Logger.Notification(
-            "[VintageHorizons] GPU measurement shadow on; {0} live sections queued for "
+            "[VintageHorizons] GPU regional path on; {0} live sections queued for "
             + "re-mesh so the arenas match what is drawn. Give it a moment before reading "
             + "the numbers.", queued);
     }
@@ -3733,15 +3884,20 @@ public class LodTerrainRenderer : IRenderer
             return mirror == null
                 ? "off"
                 : $"off: expanded batching uses {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB; "
-                    + $"packed geometry ready {mirror.PackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
+                    + "unselected packed copies are not retained";
         if (!IndirectDrawEnabled)
             return "on, but idle: turn batched terrain drawing on with .vhindirect on";
         if (!packedShaderOk) return "unavailable: the packed shader variant did not compile";
         if (mirror == null || packedDrawer == null)
             return "unavailable: the regional arenas are not attached. Turn them on with .vhgpu on";
-        if (packedDrawer.Failed) return "failed; expanded batching remains active: " + packedDrawer.FailureReason;
-        return $"on: 12-byte quads, {mirror.PackedLiveBytes / (1024.0 * 1024.0):0.0} MiB "
-            + $"versus {mirror.LiveBytes / (1024.0 * 1024.0):0.0} MiB expanded. "
+        if (packedDrawer.Failed)
+            return "failed; established per-section rendering remains active: "
+                + packedDrawer.FailureReason;
+        if (!mirror.RetainsPacked)
+            return "on through clustered packed geometry; whole-section packed and expanded "
+                + "regional copies are not retained";
+        return $"on: 12-byte quads, {mirror.PackedLiveBytes / (1024.0 * 1024.0):0.0} MiB; "
+            + "the expanded regional copy is not retained. "
             + $"Last frame {LastIndirectBatches} multi-draws covered {LastIndirectCommands} sections, "
             + $"{LastIndirectLeftovers} used the established fallback";
     }
@@ -3752,8 +3908,7 @@ public class LodTerrainRenderer : IRenderer
         if (!ClusterDrawEnabled)
             return mirror == null
                 ? "off"
-                : $"off: clustered packed geometry ready "
-                    + $"{mirror.ClusteredPackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
+                : "off: unselected clustered geometry is not retained";
         if (!PackedDrawEnabled || !IndirectDrawEnabled)
             return "on, but idle: turn on .vhindirect and .vhpacked first";
         if (mirror == null || clusterBuilder == null)
@@ -3761,7 +3916,8 @@ public class LodTerrainRenderer : IRenderer
         return $"on: each section is up to {LodPackedClusterBuilder.CellCount} exact draw clusters. "
             + $"Last frame {LastIndirectCommands} cluster commands in {LastIndirectBatches} "
             + $"multi-draws, {LastIndirectLeftovers} whole sections used the established fallback. "
-            + $"Cluster geometry uses {mirror.ClusteredPackedLiveBytes / (1024.0 * 1024.0):0.0} MiB";
+            + $"Cluster geometry uses {mirror.ClusteredPackedLiveBytes / (1024.0 * 1024.0):0.0} MiB; "
+            + "other regional geometry copies are not retained";
     }
 
     /// <summary>
@@ -4375,6 +4531,8 @@ public class LodTerrainRenderer : IRenderer
 
     int culledThisFrame;
     int traversalCulledThisFrame;
+    int subtreeCulledThisFrame;
+    int subtreeCulledMeshesThisFrame;
     int verticalCulledThisFrame;
 
     /// <summary>
@@ -4386,6 +4544,15 @@ public class LodTerrainRenderer : IRenderer
     public long VerticalCulledSections { get; private set; }
     public int VerticalCulledMax { get; private set; }
     public int LastVerticalCulledCount { get; private set; }
+
+    /// <summary>Quadtree nodes rejected this interval that a full-height box would have traversed.</summary>
+    public long SubtreeCulledNodes { get; private set; }
+
+    /// <summary>Resident meshes those rejected subtrees held, which is what the rejection saved.</summary>
+    public long SubtreeCulledMeshes { get; private set; }
+    public int SubtreeCulledMax { get; private set; }
+    public int LastSubtreeCulledCount { get; private set; }
+    public int SubtreeBoundsNodes => subtreeHeights.TrackedNodes;
 
     public LodSectionHeightStats SectionHeights => sectionHeightStats;
     readonly LodSectionHeightStats sectionHeightStats = new();
@@ -4416,6 +4583,9 @@ public class LodTerrainRenderer : IRenderer
         bool timing = false;
         try
         {
+            if (gpuFailureInjection.Take(LodGpuFailureStage.DepthCopy))
+                throw new InvalidOperationException("Phase 9 injected a depth-copy failure");
+
             depthPyramid ??= new LodGpuDepthPyramid(capi, () => hzbShaderOk ? hzbProg : null);
 
             // Probed per frame rather than cached: the engine is free to change which
@@ -4906,6 +5076,125 @@ public class LodTerrainRenderer : IRenderer
     /// No angle brackets anywhere in here: this reaches the chat window, which parses its
     /// text as VTML, and a leading one silently swallows the whole reply (G67).
     /// </summary>
+    /// <summary>
+    /// What the aggregate subtree bound has actually rejected, on demand.
+    ///
+    /// The periodic report carries the same figures, but it fires once thirty seconds
+    /// after a world loads unless continuous telemetry is switched on - which is before
+    /// anybody has pointed the camera anywhere on purpose, and while terrain is still
+    /// streaming. The number this work is judged on comes from looking up, looking down,
+    /// or flying, so it has to be readable at the moment somebody is doing that.
+    /// </summary>
+    public string ReportSubtreeCulling()
+    {
+        if (!SubtreeHeightCulling)
+        {
+            return "subtree height culling off. Turn it on with .vhsubtree on, look up or "
+                + "down or fly for a few seconds, then run .vhsubtree again";
+        }
+
+        var report = new System.Text.StringBuilder();
+        report.Append($"subtree cull: {SubtreeCulledNodes} quadtree nodes rejected since the "
+            + $"last reset that a full-height box would have traversed, holding "
+            + $"{SubtreeCulledMeshes} resident meshes; worst single frame {SubtreeCulledMax} "
+            + $"nodes, last frame {LastSubtreeCulledCount}");
+
+        report.AppendLine();
+        report.Append($"coverage: {SubtreeBoundsNodes} nodes carry an aggregate over "
+            + $"{MeshCount} resident meshes | this frame the walk rejected "
+            + $"{LastTraversalCulledCount} subtrees in total, drew {LastDrawCount}");
+
+        report.AppendLine();
+        report.Append(SubtreeCulledNodes == 0
+            ? "nothing has been rejected vertically yet. That is a real answer, not a "
+                + "failure: it would mean the bounds are correct and never tight enough to "
+                + "reject. Run .vhsubtree reset, then look straight up or straight down for "
+                + "a few seconds and read it again"
+            : "run .vhsubtree reset before a specific view to measure that view alone");
+        return report.ToString();
+    }
+
+    /// <summary>
+    /// The floor and ceiling of every mesh RESIDENT RIGHT NOW, on demand.
+    ///
+    /// The periodic `section heights:` line measures a different population: the meshes
+    /// PUBLISHED during an interval. Those are two different questions, and only one of
+    /// them can be asked after a world settles - once terrain stops arriving nothing is
+    /// published, so the periodic line reports an empty interval exactly when the answer
+    /// matters. Worse, the only interval it has ever reported is the first thirty seconds
+    /// after joining, which is the noisiest possible sample: a section meshed before its
+    /// neighbour arrives walls its open side down to bedrock, and that wall is in the
+    /// bounds until the seam repair rebuilds it.
+    ///
+    /// So this walks the live set instead. The floor bands are the point of it: a mean
+    /// cannot tell "the terrain here really does run deep" apart from "most floors are
+    /// honest and a few are pinned to bedrock", and those want opposite responses. The
+    /// count of meshes still carrying a guessed edge is beside them, because that is the
+    /// population the phantom walls can come from - if the floors are low while that count
+    /// is near zero, missing neighbours are not the cause and the next look goes elsewhere.
+    /// </summary>
+    public string ReportLiveSectionHeights()
+    {
+        if (liveMeshStats.Count == 0) return "no meshes are resident yet";
+
+        var stats = new LodSectionHeightStats();
+        Span<int> floorBands = stackalloc int[5];
+        int unknown = 0;
+        float lowestFloor = float.PositiveInfinity;
+
+        foreach (LodLiveMeshStats mesh in liveMeshStats.Values)
+        {
+            LodHeightSpan span = mesh.Heights.Either;
+            if (!span.HasGeometry) { unknown++; continue; }
+            stats.Add(span);
+            if (span.MinY < lowestFloor) lowestFloor = span.MinY;
+            floorBands[
+                span.MinY <= 8f ? 0
+                : span.MinY <= 32f ? 1
+                : span.MinY <= 64f ? 2
+                : span.MinY <= 128f ? 3
+                : 4]++;
+        }
+
+        if (stats.Samples == 0)
+            return $"{liveMeshStats.Count} meshes are resident and none of them reported bounds";
+
+        var report = new System.Text.StringBuilder();
+        report.Append("live section heights: ").Append(stats.Describe(worldHeight));
+        if (unknown > 0) report.Append($" | {unknown} resident meshes reported no bounds");
+
+        report.AppendLine();
+        report.Append($"floors of the {stats.Samples} resident meshes: ");
+        report.Append($"y0-8: {floorBands[0] * 100.0 / stats.Samples:0}%, ");
+        report.Append($"y8-32: {floorBands[1] * 100.0 / stats.Samples:0}%, ");
+        report.Append($"y32-64: {floorBands[2] * 100.0 / stats.Samples:0}%, ");
+        report.Append($"y64-128: {floorBands[3] * 100.0 / stats.Samples:0}%, ");
+        report.Append($"y128+: {floorBands[4] * 100.0 / stats.Samples:0}% ");
+        report.Append($"(lowest y={lowestFloor:0})");
+
+        report.AppendLine();
+        report.Append($"edges: {meshedWithoutNeighbor.Count} resident meshes still carry a side "
+            + $"guessed at because the neighbour was not in memory; {SeamRepairsQueued} seam "
+            + "repairs have been queued since joining");
+
+        report.AppendLine();
+        report.Append(floorBands[0] * 2 > stats.Samples
+            ? "most floors sit at bedrock. If this reading was taken after terrain settled, "
+                + "the walls are being left behind rather than repaired, and every box-shaped "
+                + "test is being told the terrain is far deeper than it is"
+            : "most floors sit above bedrock, so the bounds describe terrain rather than the "
+                + "whole world column");
+        return report.ToString();
+    }
+
+    /// <summary>Zero the subtree-cull counters so one view can be measured on its own.</summary>
+    public void ResetSubtreeCullingInterval()
+    {
+        SubtreeCulledNodes = 0;
+        SubtreeCulledMeshes = 0;
+        SubtreeCulledMax = 0;
+    }
+
     public string ReportDepthPyramid()
     {
         if (!hzbShaderOk) return "the hzbreduce shader is not available, so no pyramid exists";
@@ -5033,6 +5322,14 @@ public class LodTerrainRenderer : IRenderer
             : LodHeightSpan.Empty;
 
     /// <summary>
+    /// The box a quadtree node may be traversed with, or the empty span when it must keep
+    /// the full-height one. Unknown aggregates and the switch being off both arrive here as
+    /// empty, so there is one place where a subtree can lose its real bounds.
+    /// </summary>
+    LodHeightSpan SubtreeSpan(long key) =>
+        SubtreeHeightCulling ? subtreeHeights.Of(key).CullingSpan : LodHeightSpan.Empty;
+
+    /// <summary>
     /// Whether the neighbouring section holds (or covers) data. Checked at the drawn
     /// section's own level: a coarse section's neighbour is coarse too, and its
     /// presence in HasDataSet means something in that subtree was captured.
@@ -5052,6 +5349,7 @@ public class LodTerrainRenderer : IRenderer
         sectionMeshes.Clear();
         waterMeshes.Clear();
         liveMeshStats.Clear();
+        subtreeHeights.Clear();
         LiveOpaqueVertices = LiveOpaqueIndices = 0;
         LiveWaterVertices = LiveWaterIndices = 0;
         LiveGpuMeshBytes = 0;

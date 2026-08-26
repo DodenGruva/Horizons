@@ -1,0 +1,7 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+p9format-expanded-03104-a,north-horizon,256000,280,256000,1,3936,393.5,394.8,258.1,2.54,3.87,0.0,0.0,2397,4223,36.0,0
+p9format-expanded-03104-a,east-horizon,256000,280,256000,1,4417,441.7,443.7,282.4,2.26,3.54,0.0,0.0,1790,4271,21.0,0
+p9format-expanded-03104-a,south-horizon,256000,280,256000,1,4455,445.4,448.9,279.7,2.25,3.58,0.0,0.0,2171,4422,21.0,0
+p9format-expanded-03104-a,west-horizon,256000,280,256000,1,4296,429.6,431.3,275.6,2.33,3.63,0.0,0.0,2311,4429,21.0,0
+p9format-expanded-03104-a,downward,256000,280,256000,1,3416,341.5,342.9,231.1,2.93,4.33,0.0,0.0,1792,4372,21.0,0
+p9format-expanded-03104-a,slow-rotation,256000,280,256000,1,4230,422.9,424.0,275.2,2.36,3.63,0.0,0.0,1965,4374,21.0,0

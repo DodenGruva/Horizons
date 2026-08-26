@@ -7,16 +7,24 @@ namespace VintageHorizons;
 /// </summary>
 internal static class LodTraversalPolicy
 {
+    /// <param name="subtree">
+    /// Aggregate vertical extent of the meshes resident under this node, when it is known.
+    /// Unknown - the default - keeps the bedrock-to-sky box, so anything that cannot supply
+    /// an aggregate can only ever traverse too much. See <see cref="LodSubtreeHeights"/>.
+    /// </param>
     public static bool NodeInView(LodFrustum frustum, long key,
-        double cameraX, double cameraY, double cameraZ, int worldHeight)
+        double cameraX, double cameraY, double cameraZ, int worldHeight,
+        LodHeightSpan subtree = default)
     {
         int footprint = LodWorld.KeyFootprintBlocks(key);
         double minX = LodWorld.KeySx(key) * (double)footprint - cameraX;
         double minZ = LodWorld.KeySz(key) * (double)footprint - cameraZ;
+        double minY = subtree.HasGeometry ? subtree.MinY - cameraY : -cameraY;
+        double maxY = subtree.HasGeometry ? subtree.MaxY - cameraY : worldHeight - cameraY;
 
         return frustum.BoxInView(
-            minX, -cameraY, minZ,
-            minX + footprint, worldHeight - cameraY, minZ + footprint);
+            minX, minY, minZ,
+            minX + footprint, maxY, minZ + footprint);
     }
 
     /// <summary>

@@ -16,6 +16,7 @@ public static class GpuArenaChecks
         RegionAssignment(c);
         MirrorContent(c);
         PackedMirrorContent(c);
+        SelectedFormatRetention(c);
         MirrorReplacement(c);
         MirrorCeiling(c);
         MirrorStress(c);
@@ -373,6 +374,47 @@ public static class GpuArenaChecks
         backend.SignalAll();
         mirror.Reclaim();
         c.Eq(0L, mirror.PackedLiveBytes, "packed bytes converge after reclamation");
+    }
+
+    static void SelectedFormatRetention(Check c)
+    {
+        c.Eq(LodGpuGeometryRetention.Expanded,
+            LodGpuGeometryMirror.SelectRetention(packed: false, clustered: true),
+            "packing off selects only expanded regional geometry");
+        c.Eq(LodGpuGeometryRetention.Packed,
+            LodGpuGeometryMirror.SelectRetention(packed: true, clustered: false),
+            "packing without clusters selects only whole-section packed geometry");
+        c.Eq(LodGpuGeometryRetention.ClusteredPacked,
+            LodGpuGeometryMirror.SelectRetention(packed: true, clustered: true),
+            "the default packed cluster path selects only clustered geometry");
+
+        var backend = new FakeArenaBackend();
+        using var mirror = new LodGpuGeometryMirror(
+            backend, 64L * 1024 * 1024,
+            retention: LodGpuGeometryRetention.Packed);
+        long key = LodWorld.SectionKey(1, -3, 8);
+        MeshResult mesh = LodMesher.BuildMesh(Fixtures.Job(
+            Fixtures.SolidSection(yTop: 48, yBottom: 4), key));
+        var publication = new LodRenderPublication(
+            Identity(key), null, null,
+            mesh.VertexCount, mesh.IndexCount, 0, 0, 0,
+            new LodRenderGeometry(mesh.Xyz, mesh.Rgba, mesh.Indices,
+                mesh.PackedOpaqueQuads, mesh.PackedOpaqueQuadCount));
+
+        c.True(mirror.Mirror(publication), "the selected packed-only representation publishes");
+        mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+        c.False(section.Vertices.IsLive || section.Indices.IsLive,
+            "packed selection allocates no expanded regional spans");
+        c.True(section.PackedQuads.IsLive,
+            "packed selection retains its exact selected span");
+        c.False(section.ClusteredPackedQuads.IsLive,
+            "packed selection allocates no unused cluster span");
+        c.Eq(0L, mirror.LiveBytes, "expanded regional live bytes remain zero");
+        c.True(mirror.PackedLiveBytes > 0, "the selected packed bytes are reported");
+        c.Eq(0L, mirror.ClusteredPackedLiveBytes,
+            "the unselected cluster arena commits nothing");
+        c.True(backend.Pages.Keys.All(page => page.Kind == LodGpuArenaKind.PackedQuad),
+            "the backend created pages only for the selected representation");
     }
 
     static void MirrorCeiling(Check c)

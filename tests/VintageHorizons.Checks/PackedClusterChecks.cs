@@ -13,6 +13,7 @@ public static class PackedClusterChecks
         GridAndExactCoverage(c);
         LocalBoundsAcrossLevels(c);
         ClusterCommands(c);
+        SelectedClusterRetention(c);
         MissingClustersFailOpen(c);
     }
 
@@ -175,6 +176,47 @@ public static class PackedClusterChecks
         whole.Begin();
         c.True(whole.Add(section, Facts(key)),
             "the accepted whole-section packed fallback remains ready");
+    }
+
+    static void SelectedClusterRetention(Check c)
+    {
+        var backend = new FakeBackend();
+        LodGpuArenaLimits small = new(256 * 1024, 8 * 1024 * 1024, 16);
+        using var mirror = new LodGpuGeometryMirror(
+            backend, 8 * 1024 * 1024,
+            vertexLimits: small, indexLimits: small,
+            packedLimits: small, clusteredPackedLimits: small,
+            retention: LodGpuGeometryRetention.ClusteredPacked);
+        long key = LodWorld.SectionKey(2, -5, 6);
+        MeshResult mesh = LodMesher.BuildMesh(Fixtures.Job(
+            Fixtures.SolidSection(yTop: 70, yBottom: 5), key));
+
+        c.True(mirror.Mirror(Publication(key, mesh, includeClusters: true)),
+            "the selected cluster-only representation publishes");
+        mirror.TryGet(key, out LodGpuGeometryMirror.MirroredSection section);
+        c.False(section.Vertices.IsLive || section.Indices.IsLive,
+            "cluster selection retains no expanded regional spans");
+        c.False(section.PackedQuads.IsLive,
+            "cluster selection retains no unused whole-section packed span");
+        c.True(section.ClusteredPackedQuads.IsLive,
+            "cluster selection retains the exact selected stream");
+        c.Eq(0L, mirror.LiveBytes, "expanded regional live bytes remain zero");
+        c.Eq(0L, mirror.PackedLiveBytes, "whole-section packed live bytes remain zero");
+        c.True(mirror.ClusteredPackedLiveBytes > 0,
+            "the selected cluster bytes are reported");
+
+        var clustered = new LodGpuIndirectBuilder(packed: true, clustered: true);
+        clustered.Begin();
+        c.True(clustered.Add(section, Facts(key)),
+            "the selected cluster stream still builds complete commands");
+        clustered.End(mirror);
+        c.True(clustered.CommandCount > 0,
+            "the selected cluster-only arena remains drawable");
+
+        var whole = new LodGpuIndirectBuilder(packed: true);
+        whole.Begin();
+        c.False(whole.Add(section, Facts(key)),
+            "an unselected whole-section copy is absent rather than silently retained");
     }
 
     static Dictionary<LodPackedFace, double> Areas(uint[] words)

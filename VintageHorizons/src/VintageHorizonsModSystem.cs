@@ -183,6 +183,8 @@ public class VintageHorizonsModSystem : ModSystem
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_OCCLUSION_CULLING") != "0",
             SectionHeightCulling =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_SECTION_HEIGHT_CULLING") != "0",
+            SubtreeHeightCulling =
+                Environment.GetEnvironmentVariable("VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING") != "0",
             // On unless the environment takes it away. The harness can still pin either side
             // for a controlled A/B, which is what keeps a scripted comparison honest; what
             // changed in 0.3.103 is only which way an unset variable falls.
@@ -1322,6 +1324,21 @@ public class VintageHorizonsModSystem : ModSystem
                 renderer.VerticalCulledSections,
                 renderer.VerticalCulledMax);
 
+            // The same question one level up the quadtree. A section-draw skipped is one
+            // draw; a SUBTREE skipped is a walk that never happened, so this line counts
+            // the meshes inside the rejected subtrees rather than the nodes alone - the
+            // nodes are what stopped being visited, the meshes are what stopped being
+            // considered. Zero here with a healthy count above means the aggregate is
+            // correct and simply never tight enough to reject, which is a real answer.
+            Mod.Logger.Notification(
+                "  subtree cull: {0} nodes rejected this interval that a full-height box "
+                + "would have traversed, holding {1} resident meshes, worst frame {2} | "
+                + "{3} nodes carry an aggregate",
+                renderer.SubtreeCulledNodes,
+                renderer.SubtreeCulledMeshes,
+                renderer.SubtreeCulledMax,
+                renderer.SubtreeBoundsNodes);
+
             // Whether depth verdicts actually stopped anything being drawn. In the log and
             // not only in chat, because chat cannot be copied out of the game and this is
             // the line that says whether a playtest was testing the thing it was meant to.
@@ -2040,6 +2057,126 @@ public class VintageHorizonsModSystem : ModSystem
                     + "frame, and nothing reads the result yet. Turn it on, play, and read the "
                     + "hzb line in the log: the question is what it costs, not what it hides. "
                     + "GPU timing " + renderer.DescribeGpuTiming() + ".");
+            });
+
+        capi.ChatCommands.Create("vhcaves")
+            .WithDescription("Stop building cave systems daylight cannot reach. Off by default. Changing it rebuilds distant terrain, which takes a few seconds.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                if (args.Parsers[0].IsMissing)
+                {
+                    // The live totals, because "the caves look the same" and "the rule did
+                    // nothing" are different claims and only a number separates them. Read
+                    // it once with the switch on and once with it off, after each rebuild
+                    // has settled: if the geometry does not move, the rule is not running,
+                    // and if it moves by a third then it is running and a third is simply
+                    // not as much as it looks like it should be.
+                    string live = $"cave culling {(renderer.CaveCulling ? "on" : "off")}, "
+                        + $"daylight reach {renderer.CaveCullReach} blocks | live geometry "
+                        + $"{renderer.LiveGpuMeshBytes / (1024.0 * 1024.0):0.0} MiB, "
+                        + $"{renderer.LiveOpaqueVertices:n0} opaque vertices over "
+                        + $"{renderer.MeshCount} meshes";
+                    if (LodMesher.AuditSections > 0)
+                    {
+                        long with = LodMesher.AuditVerticesWithCulling;
+                        long without = LodMesher.AuditVerticesWithout;
+                        live += $" | AUDIT over {LodMesher.AuditSections} rebuilt sections: "
+                            + $"{without:n0} vertices without culling, {with:n0} with "
+                            + $"({(without > 0 ? (without - with) * 100.0 / without : 0):0.0}% removed)";
+                    }
+                    LogReportLines("caves", live);
+                    return TextCommandResult.Success("[VintageHorizons] " + live
+                        + ". Flip it, wait for the rebuild, and run this again - the geometry"
+                        + " total is the answer, not the picture.");
+                }
+
+                string word = ((string)args[0]).ToLowerInvariant();
+
+                if (word != "on" && word != "off")
+                    return TextCommandResult.Error("[VintageHorizons] use: .vhcaves on | off");
+
+                bool wanted = word == "on";
+                if (wanted == renderer.CaveCulling)
+                {
+                    return TextCommandResult.Success(
+                        $"[VintageHorizons] cave culling is already {word}.");
+                }
+
+                renderer.CaveCulling = wanted;
+
+                // The switch decides what geometry EXISTS, not what is drawn, so nothing
+                // changes until the meshes are built again. Doing that here is what makes
+                // the comparison something a person can actually make: flip, wait, look.
+                int queued = renderer.RemeshAll();
+
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] cave culling {word}. Rebuilding {queued} distant "
+                    + "sections - give it a few seconds. On, cave systems that daylight never "
+                    + "reaches are not built at all; anything with two ways in is kept, so a "
+                    + "tunnel through a mountain still goes through. What to watch for is "
+                    + "terrain that is missing or a cave mouth that has closed up - if you "
+                    + "see either, run .vhcaves off and say where you were looking.");
+            });
+
+        // The live toggle the aggregate bound was funded with. Unlike the retired staging
+        // switches this selects nothing half-built: both sides are shipping renderers, and
+        // the whole point of the item is a comparison somebody has to be able to make from
+        // inside the view that shows it.
+        capi.ChatCommands.Create("vhsubtree")
+            .WithDescription("Cull whole quadtree branches by how tall the terrain under them really is. Default on. `.vhsubtree` reports what it rejected; `heights` reports how tall resident terrain claims to be; `reset` zeroes the count so one view can be measured on its own.")
+            .WithArgs(capi.ChatCommands.Parsers.OptionalWord("on"))
+            .HandleWith(args =>
+            {
+                if (renderer == null)
+                    return TextCommandResult.Success("[VintageHorizons] no renderer: another LOD mod is drawing.");
+
+                if (args.Parsers[0].IsMissing)
+                {
+                    // Into the log as well as the screen, for the same reason .vhhzb does
+                    // it: chat cannot be copied out of the game, and these are lines of
+                    // digits that would otherwise have to be retyped or photographed.
+                    string report = renderer.ReportSubtreeCulling();
+                    LogReportLines("subtree", report);
+                    return TextCommandResult.Success("[VintageHorizons] " + report);
+                }
+
+                string word = ((string)args[0]).ToLowerInvariant();
+
+                // The measurement that decides whether tightening these boxes further is
+                // worth anything. Read it once after a world has settled, not on the way in.
+                if (word == "heights")
+                {
+                    string heights = renderer.ReportLiveSectionHeights();
+                    LogReportLines("subtree heights", heights);
+                    return TextCommandResult.Success("[VintageHorizons] " + heights);
+                }
+
+                if (word == "reset")
+                {
+                    renderer.ResetSubtreeCullingInterval();
+                    return TextCommandResult.Success(
+                        "[VintageHorizons] subtree cull counters zeroed. Hold a view for a few "
+                        + "seconds, then run .vhsubtree to see what that view alone rejected.");
+                }
+
+                if (word != "on" && word != "off")
+                    return TextCommandResult.Error(
+                        "[VintageHorizons] use: .vhsubtree on | off | reset | heights");
+
+                renderer.SubtreeHeightCulling = word == "on";
+                renderer.ResetSubtreeCullingInterval();
+
+                return TextCommandResult.Success(
+                    $"[VintageHorizons] subtree height culling {(word == "on" ? "on" : "off")} "
+                    + "(default on, not saved). On, a branch of the quadtree is tested against how "
+                    + "tall the terrain under it actually is; off, against a box running from "
+                    + "bedrock to sky, which is what every branch used before this. The failure "
+                    + "to watch for is terrain missing when you look up, look down, or fly high - "
+                    + "if you see that, run .vhsubtree off and say whether it comes back.");
             });
 
         capi.ChatCommands.Create("vhfront")

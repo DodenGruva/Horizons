@@ -43,6 +43,8 @@ public static class Program
         ("fixture", "blob format", StoreChecks.Run),
         ("fixture", "frustum", FrustumChecks.Run),
         ("fixture", "visibility traversal", TraversalChecks.Run),
+        ("pure", "subtree height aggregate", SubtreeHeightChecks.Run),
+        ("pure", "cave culling", CaveCullChecks.Run),
         ("fixture", "block policy", PolicyChecks.Run),
         ("pure", "top soil colour", TopSoilColorChecks.Run),
         ("pure", "remote keys", RemoteKeyChecks.Run),
@@ -73,6 +75,13 @@ public static class Program
         if (string.Equals(only, "hzbfield", StringComparison.OrdinalIgnoreCase))
         {
             return HzbField.Run(args);
+        }
+
+        // Also not a suite, for the same reason again: it reports how much of the cached
+        // terrain is sealed inside rock, over a real cache, and asserts nothing.
+        if (string.Equals(only, "cavefield", StringComparison.OrdinalIgnoreCase))
+        {
+            return CaveField.Run(args);
         }
 
         Console.WriteLine();

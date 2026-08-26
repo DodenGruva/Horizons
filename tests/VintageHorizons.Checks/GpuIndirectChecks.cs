@@ -19,12 +19,30 @@ public static class GpuIndirectChecks
         PagePairing(c);
         DrawerIssuesEveryBatch(c);
         DrawerStopsAfterAFailure(c);
+        InjectedDrawerFailureIsPermanent(c);
         CullBoxesFollowCommandOrder(c);
         CullRunsBetweenUploadAndDraw(c);
         ADeclinedCullStillDrawsEverything(c);
         LiveCullTelemetry(c);
         DepthSplitBoundary(c);
         TwoSameFrameBucketsStayIndependent(c);
+    }
+
+    static void InjectedDrawerFailureIsPermanent(Check c)
+    {
+        var backend = new FakeDrawBackend();
+        var warnings = new List<string>();
+        using var drawer = new LodGpuIndirectDrawer(backend, warnings.Add);
+
+        drawer.InjectFailure("test-only Phase 9 fault");
+        c.True(drawer.Failed && !drawer.Ready,
+            "an injected draw refusal takes the same permanent fallback as a driver refusal");
+        c.Eq("test-only Phase 9 fault", drawer.FailureReason,
+            "the fallback report retains the injected boundary");
+        c.Eq(1, warnings.Count, "the injected failure is reported once");
+
+        drawer.InjectFailure("duplicate");
+        c.Eq(1, warnings.Count, "repeating the injection cannot spam the session log");
     }
 
     static void DepthSplitBoundary(Check c)

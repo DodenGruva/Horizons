@@ -1,0 +1,7 @@
+label,waypoint,x,y,z,laps,frames,fps_avg,fps_median,fps_1pct_low,frame_ms_avg,frame_ms_1pct_low,spread_pct,spread_1pct_pct,managed_mb,rss_mb,settled_after_s,settle_timeouts
+p9fail-shader-03104,north-horizon,256000,280,256000,1,4145,414.5,416.5,273.0,2.41,3.66,0.0,0.0,1870,4275,36.0,0
+p9fail-shader-03104,east-horizon,256000,280,256000,1,4569,456.8,457.4,302.0,2.19,3.31,0.0,0.0,2264,4416,21.0,0
+p9fail-shader-03104,south-horizon,256000,280,256000,1,4723,472.2,477.9,296.0,2.12,3.38,0.0,0.0,2453,4426,21.0,0
+p9fail-shader-03104,west-horizon,256000,280,256000,1,4528,452.7,455.6,296.5,2.21,3.37,0.0,0.0,1893,4380,21.0,0
+p9fail-shader-03104,downward,256000,280,256000,1,3671,367.0,368.3,251.6,2.72,3.98,0.0,0.0,2127,4382,21.0,0
+p9fail-shader-03104,slow-rotation,256000,280,256000,1,4401,440.0,441.6,287.6,2.27,3.48,0.0,0.0,2306,4387,21.0,0

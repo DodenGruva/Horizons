@@ -2,6 +2,92 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-26 - Aggregate subtree bounds shipped and answered in 0.3.107
+
+- `LodSubtreeHeights` gives every quadtree node the combined vertical extent of the meshes resident
+  beneath it, maintained by a bottom-up recompute of the changed node's ancestor chain on each mesh
+  publish and removal - at most seven nodes of four child lookups. Recomputing rather than
+  accumulating is what makes removal exact, since a union has no inverse. The aggregate covers
+  RESIDENT meshes, which is safe because only a node with a mesh is drawn and mesh demand comes
+  from the radial planner rather than this walk (G8).
+- Measured in game over five views: 2 to 20 nodes rejected per frame against the 33-74 the walk
+  already rejected horizontally, worst single frame 131.
+- **Closed as answered rather than pending.** At a leaf the aggregate box contains the per-section
+  box shipped in 0.3.58, so it can only reject a subset of what that test already rejects; three of
+  five views rejected only single-mesh nodes, and the one that rejected real branches was pointed
+  at sky and drew 2 sections. The quadtree walk it speeds up costs 44.3 us of a roughly 2000 us
+  frame. Kept because it is free and keeps those leaves out of the draw list. See G103.
+- Deliberately NOT used in `AllVisibleChildrenCovered`, which decides whether a parent may stop
+  drawing its coarse mesh over a quadrant rather than what is drawn. A child holding only a deep
+  cave mesh would be rejected vertically, the parent would descend believing the quadrant covered,
+  and the surface would become a hole. Pinned by
+  `StaticAssetChecks.SubtreeBoundsStayOutOfTheCoverageGate`.
+- `.vhsubtree` reports what the aggregate rejected and resets its counters for a single view;
+  `.vhsubtree heights` reports the floor and ceiling of every RESIDENT mesh, which the periodic
+  `section heights:` line cannot do because it measures meshes published in an interval and a
+  settled world publishes none.
+
+## 2026-08-26 - The tall-culling-box cause is not phantom seam walls
+
+- Settled reading over 1,713 resident meshes: mean 188.9 blocks tall, 49.2% of the 384-block world,
+  mean floor y=19.7, and 81% of floors below y=32. Floors rise from y=5.7 during fill-in, so seam
+  repairs do work.
+- **Disproved:** that walls left by sections meshed before their neighbours arrived were dragging
+  the boxes to bedrock. Only 10.6% of resident meshes still carry a guessed edge against 37% with
+  floors at bedrock, so missing neighbours cannot account for most of it. The cause is buried cave
+  geometry, which is what sent the session to `LodCaveCull`.
+- The earlier y=5.7 figure was a warm-up measurement: the periodic line's only ever-reported
+  interval was the first thirty seconds after joining.
+
+## 2026-08-25 - Packed timing and selected-only regional retention complete in 0.3.105
+
+- Ran a controlled expanded/packed/packed/expanded matrix with clusters pinned off so packing was
+  the only changed renderer stage. All 24 viewpoints settled without timeout. Expanded averaged
+  2.4392 ms and packed 2.4367 ms; the -0.10% delta is below repeat variation, establishing parity
+  rather than a speed claim.
+- Updated the Windows runner for current split-near/split-far GPU telemetry, upload tails, and each
+  regional arena's live/committed bytes. Hash-bound CSV evidence is tracked under
+  `bench/results/2026-08-25-phase9-packed-memory`.
+- On the owner's decision, the regional mirror now retains only the selected expanded,
+  whole-packed, or clustered-packed representation. Missing selected data or any allocation,
+  upload, shader, or draw refusal uses the ordinary per-section legacy mesh rather than requiring
+  another regional copy.
+- The route's product-default clustered copy was about 90.33 MiB live against about 833.7 MiB for
+  all three old regional copies, removing roughly 89% of duplicate regional live bytes. This is not
+  total-process memory savings because the legacy mesh fallback remains resident.
+- Warning-free Release build and 5,104 assertions pass. The verified 0.3.105 package has SHA-256
+  `13975952ED56D178B0AE61571B9164682F9F36746199954A8F9D1EC1FEFAE9AE` and was copied beside the
+  preserved rollback builds. No wire, blob, or schema meaning changed. Phase 9 settings/lifecycle
+  and forced-legacy coverage remain.
+
+## 2026-08-25 - Phase 9 failure-injection surface built in 0.3.104
+
+- Returned the development identity from the premature 0.4.0 promotion to 0.3.104, the next patch
+  after the last 0.3.x artifact. No changed binary reused 0.3.103.
+- Added one-shot arena, fast-shader, depth-copy, and indirect-draw failure injections plus an
+  isolated-runner parameter that records the chosen boundary in `scenario.json`.
+- The injections enter existing fail-open routes rather than issuing deliberately invalid GL:
+  arena/shader/draw select established rendering, while depth-copy failure leaves the complete
+  indirect candidate set unculled.
+- Warning-free Release build and 5,083 fast assertions pass. The verified 0.3.104 zip was copied
+  into the Mods folder without removing 0.3.103 or 0.4.0. Because 0.4.0 sorts higher, an ordinary
+  launch will still select it.
+- All four injections passed the frozen six-viewpoint `bodanboys` route with zero settle timeouts.
+  Arena refused setup with legacy unchanged and then recovered on retry; shader stayed established;
+  depth-copy disabled HZB while packed multi-draw continued; draw disabled both indirect drawers
+  for the session while expanded/established rendering completed the route. This is automated
+  game-backed evidence on the primary AMD system, not human-watched or cross-driver evidence.
+
+## 2026-08-25 - Two GPU evidence tasks retired by owner decision
+
+- Retired, without completing, the corrected-mapping suppression/FPS re-measurement. The older
+  ridge figures remain historical and cannot be quoted as the current 0.4.0 effect size.
+- Retired, without completing, the second-GPU/driver run. Acceptance remains specific to the
+  primary AMD driver and no portability claim follows from the scope decision.
+- Neither retirement closes Phase 9. The paired packed route, final regional-memory policy,
+  settings/lifecycle coverage, injected failure fallback, and representative forced-legacy run
+  remain the plan's hardening work.
+
 ## 2026-08-25 - GPU terrain renderer accepted in play and promoted to 0.4.0
 
 - The owner played 0.3.103, the first build drawing cached terrain through the GPU path by default

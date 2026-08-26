@@ -104,6 +104,14 @@ public class MeshJob
     /// the missing neighbour lands, which is what restores the real wall.
     /// </summary>
     public byte AssumedCoveredSides;
+
+    /// <summary>
+    /// Daylight reach for cave culling, in world blocks; zero leaves every cavity alone.
+    /// Carried on the job rather than read from a static so that a switch flipped mid-flight
+    /// cannot change the rule half way through a batch of meshes and leave the world built
+    /// two different ways. See <see cref="LodCaveCull"/>.
+    /// </summary>
+    public int CaveCullReach;
 }
 
 public class MeshResult

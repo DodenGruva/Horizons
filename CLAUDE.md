@@ -51,6 +51,10 @@ AI authority:
 - Make requested edits inside the workspace and run proportionate local checks.
 - Make reversible implementation judgments within an approved plan, then flag material choices clearly.
 - Maintain documentation when the human requests a documentation update or session finalization.
+- **Do not proactively update documentation.** Source completion, packaging, release preparation,
+  or the end of a work session does not authorize edits to README, status, plans, TODO/history,
+  changelog, architecture, gotchas, or session records. Wait for the human to explicitly request a
+  documentation update or session finalization; the request defines when to run the ritual below.
 
 Ask first:
 

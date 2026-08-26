@@ -223,10 +223,9 @@ internal sealed class LodLegacyRenderPath : ILodRenderPath
 }
 
 /// <summary>
-/// The shadow mirror. It always owns identities and immutable counts, and never a MeshRef.
-/// From Phase 2 it may additionally own regional arena buffers, which are filled and
-/// retired but never drawn: its draw methods exist to satisfy the common lifecycle and the
-/// coordinator has no route to them.
+/// GPU-side publication path. It owns identities and immutable counts but never a MeshRef.
+/// Its regional arena buffers supply the indirect drawers; its own draw methods remain no-ops
+/// because frame submission is coordinated by <see cref="LodTerrainRenderer"/>.
 /// </summary>
 internal sealed class LodGpuShadowRenderPath : ILodRenderPath
 {

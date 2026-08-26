@@ -8,7 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>VintageHorizons</AssemblyName>
     <RootNamespace>VintageHorizons</RootNamespace>
-    <Version>0.4.0</Version>
+    <Version>0.3.113</Version>
   </PropertyGroup>
 
   <!-- No debug info in Release: the zip never ships the .pdb, and generating one
