@@ -31,21 +31,6 @@ mistake it for a funded optimisation.
   measured-branch decision the plan already gates correctly, and nothing measured so far justifies
   any of them.
 
-## Replace the vanilla horizon fog wall with an original implementation
-
-All owner visual testing of Vintage Horizons so far used a third-party mod that suppressed
-Vintage Story's fog wall at the end of its render distance and the associated smoothing circle.
-The present visual acceptance evidence therefore does **not** cover Vintage Horizons running with
-those vanilla horizon effects active.
-
-**Owed:** implement our own suppression of the vanilla distance fog wall and smoothing circle so
-they do not conceal or conflict with the extended terrain horizon. This must be a clean, original
-implementation based on our own investigation of Vintage Story's behavior and supported interfaces.
-Do **not** inspect, copy, translate, adapt, or otherwise use code from the third-party mod. Preserve
-ordinary atmospheric effects that are not part of the render-distance wall unless the owner later
-chooses a broader fog policy, and restore vanilla behavior cleanly whenever Vintage Horizons is
-disabled, deferred, or unloaded.
-
 ## Cached terrain lighting: the sky band is the only untested part left
 
 The four terrain lighting corrections are **done and human-tested** - shipped in 0.3.51, and

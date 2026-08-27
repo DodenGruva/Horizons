@@ -8,6 +8,28 @@ first.
 
 ## [Unreleased]
 
+## [0.3.125] - 2026-08-27
+
+**Vintage Horizons now removes Vintage Story's vanilla render-distance fog wall and radial
+smoothing circle with its own implementation.** The owner played the resulting build and reported
+that it looked great. The implementation was derived only from installed official Vintage Story
+1.22.7 behavior; no third-party fog-removal code was inspected or used.
+
+The engine's default clear-air fog contribution is removed after ambient blending without zeroing
+weather, underwater, lava, flat-fog, fog-sphere, cloud, or server modifiers. The eight shader
+programs that apply the radial `viewDistance` fade receive a farther visual fade distance without
+changing the saved view-distance setting, terrain streaming/culling, or `viewDistanceLod0`.
+Low-frequency ambient-update, shader-use, and liquid-depth setter hooks avoid the hot general
+uniform-upload path and fail open when inactive, incompatible, deferred, or disposed.
+
+Warning-free Release and Debug builds, 5,425 fast assertions, and 1,580 documentation checks pass,
+including 37 focused horizon-effect assertions. The verified 14-entry package contains no PDB, preserves the shader
+asset tree, and was copy-installed with matching SHA-256
+`C84DBA0CDB035B7B7B8ADA68D9A16CE4FBFC4832E1AADCAC76679CF5A625E3B1`. Ordinary clear-horizon
+appearance is human-accepted; weather, underwater, lava, local-fog, shader-reload, deferral, and
+unload preservation are source- and harness-tested but were not separately human-played. Assist
+protocol 1, blob format 4, and database schema 6 are unchanged.
+
 ## [0.3.124] - 2026-08-27
 
 **The remaining renderer optimization ideas have been measured before implementation and rejected

@@ -2245,6 +2245,25 @@ left `dist/`.
 
 **Found:** 2026-08-27, session 61.
 
+### G117 - The vanilla horizon wall and smoothing circle are separate hot-path-sensitive effects
+
+**Trigger:** removing Vintage Story's render-distance fog wall for extended terrain.
+
+**Trap:** the visible wall is not one renderer or one value. Official 1.22.7 combines a default
+clear-air contribution inside the blended ambient fog density with radial `viewDistance` fades in
+eight vertex programs. Zeroing final fog density also erases weather, underwater, lava, flat-fog,
+fog-sphere, cloud, and server modifiers. Raising the client view distance changes streaming and
+culling. Patching every `ShaderProgramBase.Uniform` upload catches the fade but inserts Harmony into
+a high-frequency path, while copying engine shaders creates brittle versioned assets.
+
+**Do:** remove only the propagated default base contribution after `AmbientManager` completes its
+blend. Rewrite `viewDistance` at low-frequency shader activation, plus the liquid-depth program's
+explicit late setter, through an exact allowlist. Leave the saved setting, engine visibility range,
+all fog modifiers, and `viewDistanceLod0` alone. Fail open when targets or values are unavailable,
+make hooks inert before exact-ID unpatching, and verify reload/deferral/disposal lifetimes.
+
+**Found:** 2026-08-27, session 62.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

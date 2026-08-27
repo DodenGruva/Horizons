@@ -3,14 +3,13 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-27
-**Mod version:** `0.3.124`, built, verified, benchmarked, and copy-installed; the development line remains 0.3.x
+**Mod version:** `0.3.125`, built, verified, copy-installed, and human-accepted; the development line remains 0.3.x
 (`0.2.1` is the public released version; 0.4.0 remains a preserved local rollback artifact from the
 GPU-renderer milestone).
-**Active branch:** `codex/global-cave-classifier`, based on
-`efd713bc65918285412720a92d07d2301046f329`; Session 60's accumulated cave work was committed as
-`2a1310f`, and the uncommitted 0.3.123-0.3.124 performance closure follows it.
+**Active branch:** `codex/fog-removal`, based on Session 61 commit `3ea5ba4`; the 0.3.125 horizon
+work follows it and is being committed at Session 62 close.
 **Target:** Vintage Story 1.22.5+, .NET 10
-**Source files:** `73` C# files under `VintageHorizons/src`
+**Source files:** `75` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
@@ -47,14 +46,26 @@ GPU-renderer milestone).
 > is funded. The remaining renderer work is coverage, one honest batching-versus-established-
 > occlusion A/B, and an optional subtree-height A/B.
 
+> **Current horizon-effects state.** Version 0.3.125 independently removes Vintage Story's default
+> clear-air distance veil and its radial render-distance smoothing circle. Only the propagated
+> default base fog contribution is subtracted after ambient blending; weather, underwater, lava,
+> flat-fog, fog-sphere, cloud, and server modifiers remain authoritative. Only the eight official
+> shader programs that explicitly use `viewDistance` receive a farther visual fade distance. The
+> saved view distance, terrain streaming/culling, and `viewDistanceLod0` do not change. Hooks use
+> low-frequency ambient-update, shader-activation, and liquid-depth setter seams, fail open, and
+> become inert before exact-ID unpatching. The owner played 0.3.125 and reported that it looked
+> great, accepting the ordinary clear-horizon appearance. The modifier-preservation, shader-reload,
+> competing-LOD deferral, and unload matrix remains source- and harness-tested rather than separately
+> human-played.
+
 ## 1. Repository state
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied
 source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
-`d86abe02d74f483abd68dc173903182f86ac2fb4`. The current cave branch is
-`codex/global-cave-classifier`, based on `efd713bc...`; the accumulated 0.3.114-0.3.122 cave work is
-committed as `2a1310f`, with the 0.3.123-0.3.124 performance work currently uncommitted.
+`d86abe02d74f483abd68dc173903182f86ac2fb4`. The current branch is `codex/fog-removal`, created
+from `3ea5ba4` after Session 61's 0.3.123-0.3.124 performance closure was committed. Session 62's
+0.3.125 horizon-effects work follows on that branch.
 The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
@@ -368,6 +379,13 @@ effect on the reported tiny or three-to-six-second spikes.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
 geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
+Version 0.3.125 also removes the engine's clear-air horizon veil and explicit radial smoothing
+fade through a narrow compatibility layer. It does not mutate saved view distance or engine
+visibility, and it leaves weather/local fog modifiers and `viewDistanceLod0` intact. The owner has
+accepted the ordinary clear-horizon appearance; the broader atmospheric/lifecycle matrix remains
+source- and harness-tested only. G117 records why final-density zeroing, view-distance mutation,
+shader copying, and general uniform interception are rejected.
+
 Two mechanisms exist. **Since 0.3.17 the default is per-cell ownership**: one marker per
 32x32x32 vanilla chunk decides each fragment, and a cached section whose every cell is owned
 is not submitted at all. The fallback, reachable with `.vhmask off` and now a saved setting,
@@ -1034,6 +1052,11 @@ Session 61 added 0.3.123 and 0.3.124: it corrected frame attribution, closed the
 micro-sawtooth and retired stutter reports, measured all three unfunded renderer candidates, and
 copy-installed the timestamp-instrumented 0.3.124 build.
 
+Session 62 added 0.3.125: it replaced the external horizon-fog dependency with an original
+implementation based only on installed official Vintage Story 1.22.7 behavior. The owner accepted
+the clear-horizon appearance. The completed item moved from TODO to completion history; atmospheric
+modifier and lifecycle preservation remain explicit source/harness coverage limits.
+
 **Session 57 in brief.** Aggregate subtree vertical bounds shipped and were closed as answered
 rather than pending: they work, and at a leaf the aggregate contains the per-section box shipped in
 0.3.58, so it can only reject a subset of what that already rejects. The walk it speeds up is 44.3
@@ -1175,13 +1198,15 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ## 8. Verification evidence
 
-The Session 61 close passes warning-free Release and Debug mod builds, a warning-free Debug
-benchmark build, 5,381 fast assertions, and 1,575 documentation checks. The approved isolated six-view benchmark completed with
-zero settle timeouts, zero renderer fallbacks, and zero timer-ring saturation. The 0.3.124 zip has 14
-entries, contains the licence and no PDB, reports the matching manifest version, and is copy-installed
-with identical SHA-256
-`484F058D54BDD92408C52C9BA4A4EEDE2411653C1587EC80F948DDFAFF592867`. The assistant launched the
-game only through the approved isolated benchmark; smoke and install-matrix tiers were not rerun.
+The Session 62 close passes warning-free Release and Debug mod builds, 5,425 fast assertions, and
+1,580 documentation checks, including 37 focused horizon-effect assertions that install and remove
+the real Harmony hooks in process without launching the game. The 0.3.125 zip has 14 entries, preserves the asset paths,
+contains the licence and no PDB, reports the matching manifest version, and is copy-installed with
+identical SHA-256
+`C84DBA0CDB035B7B7B8ADA68D9A16CE4FBFC4832E1AADCAC76679CF5A625E3B1`. Its packaged DLL matches the
+warning-free Release output. The assistant did not launch the game; the owner played the artifact
+and accepted its ordinary clear-horizon appearance. The weather/underwater/lava/local-fog,
+shader-reload, competing-LOD deferral, and unload matrix was not separately human-played.
 
 ### Source-traced
 

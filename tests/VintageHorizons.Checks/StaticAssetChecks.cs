@@ -23,6 +23,7 @@ public static class StaticAssetChecks
         OcclusionCullingWiring(c);
         PersistenceCadenceWiring(c);
         CaveCullingDefaultsOn(c);
+        HorizonSuppressionWiring(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
         ChatCommandNamesAreUnique(c);
@@ -31,6 +32,32 @@ public static class StaticAssetChecks
         SourceHasNoControlCharacters(c);
         IndirectShaderVariant(c);
         SubtreeBoundsStayOutOfTheCoverageGate(c);
+    }
+
+    static void HorizonSuppressionWiring(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string mod = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "VintageHorizonsModSystem.cs"));
+        string effects = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "VanillaHorizonEffects.cs"));
+
+        int deferral = mod.IndexOf("if (deferringTo != null)", StringComparison.Ordinal);
+        int install = mod.IndexOf("new VanillaHorizonEffects", StringComparison.Ordinal);
+        c.True(deferral >= 0 && install > deferral,
+            "horizon suppression installs only after the competing-LOD deferral return");
+        c.True(mod.Contains("horizonEffects?.Dispose()", StringComparison.Ordinal),
+            "mod disposal disables and removes horizon suppression");
+        c.True(effects.Contains("nameof(AmbientManager.UpdateAmbient)", StringComparison.Ordinal),
+            "base fog is removed once after the engine's ambient blend");
+        c.True(effects.Contains("nameof(ShaderProgramBase.Use)", StringComparison.Ordinal),
+            "distance fade is changed once when a vanilla shader becomes active");
+        c.False(effects.Contains("nameof(ShaderProgramBase.Uniform)", StringComparison.Ordinal),
+            "the per-uniform hot path is not patched");
+        c.True(effects.Contains("HarmonyPatchType.All, HarmonyId", StringComparison.Ordinal),
+            "unload removes only Vintage Horizons' own hooks");
+        c.False(effects.Contains("viewDistanceLod0", StringComparison.Ordinal),
+            "vanilla terrain's independent LOD transition distance is untouched");
     }
 
     static void CaveCullingDefaultsOn(Check c)

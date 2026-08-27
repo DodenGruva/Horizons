@@ -2,6 +2,28 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-27 - Vanilla horizon fog wall and smoothing circle removed in 0.3.125
+
+- Investigation used only Vintage Horizons and installed official Vintage Story 1.22.7 assemblies
+  and shaders; no third-party fog-removal code was inspected or used.
+- The visible vanilla horizon wall proved to be two independent effects: the ambient manager's
+  default clear-air fog-density contribution and radial `viewDistance` fading in eight shader
+  programs. There is no separate wall renderer.
+- Version 0.3.125 removes only the propagated default clear-air contribution after ambient blending,
+  preserving weather and local modifiers. It gives only the eight explicit fade programs a farther
+  visual distance without changing the saved view-distance setting, engine culling/streaming, or
+  `viewDistanceLod0`.
+- Hooks sit on low-frequency ambient update, shader activation, and the liquid-depth late setter.
+  The general uniform-upload hot path is not patched. Missing targets, invalid values, deferral,
+  disposal, and install failure all preserve vanilla behavior.
+- The owner played the build and reported that it looked great, accepting the ordinary clear-horizon
+  appearance. Weather, underwater, lava, local fog, shader reload, deferral, and unload preservation
+  are source- and harness-tested only, not separately human-played.
+- Warning-free Release and Debug builds, 5,425 fast assertions, and 1,580 documentation checks pass,
+  including 37 focused hook and policy assertions. The verified 14-entry package was copy-installed with matching SHA-256
+  `C84DBA0CDB035B7B7B8ADA68D9A16CE4FBFC4832E1AADCAC76679CF5A625E3B1`. Assist protocol 1, blob
+  format 4, and database schema 6 are unchanged.
+
 ## 2026-08-27 - Stutter debt and unfunded renderer candidates closed in 0.3.123-0.3.124
 
 - The owner's tiny sawtooth frame-time pattern reproduced with every mod disabled. Vintage

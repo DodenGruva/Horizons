@@ -3,6 +3,7 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Config;
 using Vintagestory.API.MathTools;
 using VintageHorizons.Net;
+using VintageHorizons.Render;
 
 namespace VintageHorizons;
 
@@ -78,6 +79,7 @@ public class VintageHorizonsModSystem : ModSystem
     ICoreClientAPI capi = null!;
     LodPipeline pipeline = null!;
     LodTerrainRenderer renderer = null!;
+    VanillaHorizonEffects? horizonEffects;
 
     /// <summary>Block -> live tint slot; shared by capture, cache loads and the renderer.</summary>
     readonly LodTintRegistry tints = new();
@@ -191,6 +193,16 @@ public class VintageHorizonsModSystem : ModSystem
             DepthPyramidEnabled =
                 Environment.GetEnvironmentVariable("VINTAGEHORIZONS_DEPTH_PYRAMID") != "0",
         };
+
+        // Install only after the competing-LOD return above. The adapter changes no
+        // ambient modifier or client setting: it rewrites the two engine render values while this
+        // active renderer exists, then unpatches cleanly on unload.
+        horizonEffects = new VanillaHorizonEffects(capi, () => renderer.EffectiveFarDistance);
+        if (!horizonEffects.Install(Mod.Logger))
+        {
+            horizonEffects.Dispose();
+            horizonEffects = null;
+        }
 
         // The saved setting applies unless the environment variable has taken a side, which
         // is how the benchmark harness pins one path for a controlled comparison. The
@@ -2405,6 +2417,7 @@ public class VintageHorizonsModSystem : ModSystem
         });
 
         // Stops the storage writer before the connection it writes through.
+        Quietly(() => horizonEffects?.Dispose());
         Quietly(() => pipeline?.Dispose());
         Quietly(() => renderer?.Dispose());
         Quietly(() => configDialog?.Dispose());
