@@ -45,6 +45,7 @@ public static class Program
         ("fixture", "visibility traversal", TraversalChecks.Run),
         ("pure", "subtree height aggregate", SubtreeHeightChecks.Run),
         ("pure", "cave culling", CaveCullChecks.Run),
+        ("pure", "cave span graph", CaveSpanChecks.Run),
         ("fixture", "block policy", PolicyChecks.Run),
         ("pure", "top soil colour", TopSoilColorChecks.Run),
         ("pure", "remote keys", RemoteKeyChecks.Run),

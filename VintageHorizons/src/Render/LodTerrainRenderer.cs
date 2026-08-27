@@ -356,17 +356,18 @@ public class LodTerrainRenderer : IRenderer
     public bool SubtreeHeightCulling { get; set; } = true;
 
     /// <summary>
-    /// Do not build cave systems daylight cannot reach. Measured offline at about 30% of
-    /// every vertex this mod produces, and unlike the culling switches above it removes the
+    /// Do not build underground geometry the surface-light envelope cannot reach. Measured
+    /// offline at about 61% of estimated subterranean geometry, and unlike the culling
+    /// switches above it removes the
     /// geometry rather than deciding whether to draw it - so it also takes memory, mesh
     /// time and upload bandwidth with it.
     ///
-    /// Default OFF. It changes what is drawn, its failure mode is terrain that is not there,
-    /// and nobody has seen it yet. `.vhcaves on` turns it on; changing it re-meshes the
-    /// world so the switch can be judged in one place without relogging.
+    /// Default ON after the surface-only rule and its tunnel guards were accepted in game.
+    /// `.vhcavecull off` remains the immediate fallback; changing it re-meshes the world so the
+    /// switch can be judged in one place without relogging. The environment can pin it off.
     /// </summary>
     public bool CaveCulling { get; set; } =
-        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CAVE_CULLING") == "1";
+        Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CAVE_CULLING") != "0";
 
     int caveCullReach = LodCaveCull.DefaultReach;
 

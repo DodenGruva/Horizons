@@ -2,29 +2,50 @@
 
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
-**Status date:** 2026-08-26
-**Mod version:** `0.3.113`; the development line remains 0.3.x (`0.2.1` is the public released
-version; 0.4.0 remains the human-accepted build and is preserved as a local rollback artifact).
-**Active branch:** `cave-culling`, branched from `render-overhaul` on 2026-08-26.
+**Status date:** 2026-08-27
+**Mod version:** `0.3.122`, built, verified, and copy-installed; the development line remains 0.3.x
+(`0.2.1` is the public released version; 0.4.0 remains a preserved local rollback artifact from the
+GPU-renderer milestone).
+**Active branch:** `codex/global-cave-classifier`, based on
+`efd713bc65918285412720a92d07d2301046f329`; the owner authorized committing the accumulated
+0.3.114-0.3.122 cave work at Session 60 close.
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `73` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
 **Blob format:** `4`
 **Database schema:** `6`
 
-> **Current open defect, ahead of everything else.** `.vhcaves` cave culling increases live
-> geometry by about 2.9% in game instead of reducing it, while the offline harness measures a
-> third removed at every level against the same cache. It is off by default and must stay off.
-> The diagnostic that splits the question is shipped in 0.3.113 and has not been run. Full detail
-> and what has already been ruled out are in `dev/TODO.md` under TOP PRIORITY.
+> **Current cave-culling state.** The feature is human-accepted and **on by default**. Its product
+> rule is surface visibility, not underground network connectivity: keep the actual terrain's
+> 64-block daylight envelope, then keep exact unobstructed straight lines from exterior air plus a
+> fixed four-block, solid-stopped clearance halo through all 26 directions. It derives exterior
+> from each cached column's top surface and makes no sea-level assumption. `.vhcavecull` reports or
+> toggles it, an off toggle immediately remeshes resident distant terrain, and
+> `VINTAGEHORIZONS_CAVE_CULLING=0` remains the scripted/startup fallback.
+>
+> The owner reported one same scene looked visually identical and rose from about 350 FPS to about
+> 400 FPS with culling enabled, then tested a deliberately straight east-west mountain tunnel. The
+> first sight pass plugged its middle because both mouths lay beyond the local 3x3 window; complete-
+> window fail-open sight fixed it (G114). The four-block halo then fixed rebuilt blocks around an
+> uneven floor for a measured 0.15% of baseline geometry (G115). These are one-machine qualitative
+> visual/performance observations, not a controlled benchmark.
+>
+> On a paired 40-section real-cache sample the final reach-64 rule changed 1,554,740 estimated
+> vertices to 1,136,824, removing 26.88%. Reach 96 retained 20,276 more baseline vertices (1.30%)
+> and reach 128 retained 73,996 more (4.76%); the owner chose 64. The background global classifier,
+> persistent masks, route classifier, fluid graph, and invalidation protocol were **not built** and
+> are no longer open work. The plan is retained as a superseded measurement record in
+> [dev/plans/PLAN_GLOBAL_CAVE_CLASSIFIER.md](dev/plans/PLAN_GLOBAL_CAVE_CLASSIFIER.md).
 
 ## 1. Repository state
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied
 source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
-`d86abe02d74f483abd68dc173903182f86ac2fb4`; the active branch is `render-overhaul`,
-tracking `origin/render-overhaul`. The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
+`d86abe02d74f483abd68dc173903182f86ac2fb4`. The current cave branch is
+`codex/global-cave-classifier`, based on `efd713bc...` and carrying the accumulated 0.3.114-0.3.122
+cave source, tests, measurements, and documentation until the owner-authorized Session 60 commit.
+The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
 **Phase 4 complete**, **Phase 5 complete on both halves** (0.3.69-0.3.83), **Phase 6 complete and
@@ -991,18 +1012,23 @@ assertions pass; the verified 0.3.105 zip is copied into the Mods folder.
 
 Session 57 added 0.3.106 through 0.3.113, all verified and copy-installed. 0.3.106 was superseded
 before it was ever run - a hazard was found in review after packaging - and 0.3.107 through 0.3.112
-were human-played. 0.3.113 carries the cave-culling audit and has not been run. The preserved 0.4.0
-zip has a higher version and therefore wins normal mod selection; use the isolated runner for any
-0.3.x unless the owner explicitly directs a change to the rollback set.
+were human-played. Sessions 58 and 59 added 0.3.114 through 0.3.116, including the corrected
+post-cull coverage and retention telemetry. Session 60 added 0.3.117 through 0.3.122: the owner
+human-tested the surface-only progression through 0.3.121 and accepted reach 64, straight tunnel
+preservation, the four-block all-direction clearance, and default-on behavior. Version 0.3.122
+changes only the player command name to `.vhcavecull`; it is built, verified, and copy-installed at
+session close and was not launched by the assistant. The preserved 0.4.0 zip remains a rollback
+artifact.
 
 **Session 57 in brief.** Aggregate subtree vertical bounds shipped and were closed as answered
 rather than pending: they work, and at a leaf the aggregate contains the per-section box shipped in
 0.3.58, so it can only reject a subset of what that already rejects. The walk it speeds up is 44.3
 us of a roughly 2000 us frame. Following its measurements disproved the phantom-seam-wall theory
 for tall culling boxes and established the real cause: the mesher builds every buried cave in
-range, and 55% of all cached geometry sits below the surface. `LodCaveCull` was built to remove the
-part daylight never reaches - measured offline at about 30% of all geometry - and is currently
-defective in game (see the banner above). None of this session's work has frame-rate evidence.
+range, and 55% of all cached geometry sits below the surface. `LodCaveCull` was first built there;
+its original sign defect was fixed in Session 58 and the accepted surface-only rule is summarized
+in the banner above. The approximately 350-to-400 FPS report belongs to Session 60's later accepted
+build, not to Session 57.
 
 0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
 that can see the reported micro-hitches at all, and `SlowFrames` against
@@ -1128,6 +1154,12 @@ is still one sample.
 Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ## 8. Verification evidence
+
+The Session 60 close passes warning-free Release builds of both the mod and benchmark project,
+5,368 fast assertions, and 1,570 documentation checks. The 0.3.122 zip has 14 entries, contains the
+licence and no PDB, reports the matching manifest version, and is copy-installed with identical
+SHA-256 `F971FC4643016AC2EB5A07C8702453C2E31C01257425BB826E51B805F05D9800`. The assistant did not
+launch the game; smoke and install-matrix tiers were not rerun because both start Vintage Story.
 
 ### Source-traced
 

@@ -101,6 +101,34 @@ public static class LodMesher
     public static long AuditVerticesWithout;
     public static long AuditSections;
 
+    // Worker cost of the cave classification itself, separated from ordinary face
+    // collection/merging. The refined passage graph does more reasoning to emit less
+    // geometry; this makes that CPU side of the trade visible in the same command that
+    // reports the geometry saving.
+    static long caveCullCalls;
+    static long caveCullElapsedTicks;
+    static long caveCullMaxTicks;
+
+    public static string DescribeCaveCullTiming()
+    {
+        long calls = Interlocked.Read(ref caveCullCalls);
+        long total = Interlocked.Read(ref caveCullElapsedTicks);
+        long maximum = Interlocked.Read(ref caveCullMaxTicks);
+        double toMilliseconds = 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+        return calls == 0
+            ? "cull worker timing: no completed sections"
+            : $"cull worker timing: {calls:n0} sections, "
+                + $"{total * toMilliseconds / calls:0.000} ms mean, "
+                + $"{maximum * toMilliseconds:0.000} ms max";
+    }
+
+    public static void ResetCaveCullTiming()
+    {
+        Interlocked.Exchange(ref caveCullCalls, 0);
+        Interlocked.Exchange(ref caveCullElapsedTicks, 0);
+        Interlocked.Exchange(ref caveCullMaxTicks, 0);
+    }
+
     static readonly bool AuditEnabled =
         Environment.GetEnvironmentVariable("VINTAGEHORIZONS_CAVE_AUDIT") == "1";
 
@@ -129,8 +157,26 @@ public static class LodMesher
         // rock, so their floors, ceilings and walls are never built at all. Returns the same
         // instance when there is nothing to fill, which is the common case for a column of
         // open hillside.
-        SectionSnapshot self = LodCaveCull.FillUnseen(
+        long caveStarted = job.CaveCullReach > 0
+            ? System.Diagnostics.Stopwatch.GetTimestamp()
+            : 0;
+        LodCaveCull.Prepared cave = LodCaveCull.Prepare(
             job.Self, job.Neighbors, level, job.CaveCullReach);
+        if (caveStarted != 0)
+        {
+            long elapsed = System.Diagnostics.Stopwatch.GetTimestamp() - caveStarted;
+            Interlocked.Increment(ref caveCullCalls);
+            Interlocked.Add(ref caveCullElapsedTicks, elapsed);
+            long previous = Interlocked.Read(ref caveCullMaxTicks);
+            while (elapsed > previous)
+            {
+                long observed = Interlocked.CompareExchange(
+                    ref caveCullMaxTicks, elapsed, previous);
+                if (observed == previous) break;
+                previous = observed;
+            }
+        }
+        SectionSnapshot self = cave.Self;
 
         var opaque = opaqueBuffers ??= new Buffers(pack: true);
         var water = waterBuffers ??= new Buffers(pack: false);
@@ -195,10 +241,14 @@ public static class LodMesher
                     }
 
                     bool solidCoverOnly = !isTranslucent;
-                    CollectSide(vf, job, W, cx, cz, cx - 1, cz, yTop, yBottom, pid, isTranslucent, solidCoverOnly);
-                    CollectSide(vf, job, E, cx, cz, cx + 1, cz, yTop, yBottom, pid, isTranslucent, solidCoverOnly);
-                    CollectSide(vf, job, N, cx, cz, cx, cz - 1, yTop, yBottom, pid, isTranslucent, solidCoverOnly);
-                    CollectSide(vf, job, S, cx, cz, cx, cz + 1, yTop, yBottom, pid, isTranslucent, solidCoverOnly);
+                    CollectSide(vf, job, self, cave, W, cx, cz, cx - 1, cz,
+                        yTop, yBottom, pid, isTranslucent, solidCoverOnly);
+                    CollectSide(vf, job, self, cave, E, cx, cz, cx + 1, cz,
+                        yTop, yBottom, pid, isTranslucent, solidCoverOnly);
+                    CollectSide(vf, job, self, cave, N, cx, cz, cx, cz - 1,
+                        yTop, yBottom, pid, isTranslucent, solidCoverOnly);
+                    CollectSide(vf, job, self, cave, S, cx, cz, cx, cz + 1,
+                        yTop, yBottom, pid, isTranslucent, solidCoverOnly);
                 }
             }
         }
@@ -468,13 +518,18 @@ public static class LodMesher
     static bool IsThinRun(SectionSnapshot s, ulong run) =>
         (s.PaletteFlags[LodSection.RunPaletteId(run)] & LodPaletteEntry.FlagThin) != 0;
 
-    static (SectionSnapshot? snap, int col) NeighborColumn(MeshJob job, int cx, int cz)
+    static (SectionSnapshot? snap, int col) NeighborColumn(
+        MeshJob job, SectionSnapshot self, int cx, int cz)
     {
         int gs = LodSection.GridSize;
 
         if (cx >= 0 && cx < gs && cz >= 0 && cz < gs)
         {
-            return (job.Self, LodSection.ColumnIndex(cx, cz));
+            // The current column came from the post-cull snapshot, so its in-section
+            // neighbour must come from that same snapshot. Reading job.Self here compares
+            // invented rock with the old cave air and emits two walls across every internal
+            // cave-cell boundary.
+            return (self, LodSection.ColumnIndex(cx, cz));
         }
 
         SectionSnapshot? nb;
@@ -488,10 +543,11 @@ public static class LodMesher
     }
 
     /// <summary>Collect exposed wall segments for [yBottom, yTop) minus the neighbor's covered intervals.</summary>
-    static void CollectSide(List<VFace> vf, MeshJob job, int dir, int cx, int cz, int ncx, int ncz,
+    static void CollectSide(List<VFace> vf, MeshJob job, SectionSnapshot self,
+        LodCaveCull.Prepared cave, int dir, int cx, int cz, int ncx, int ncz,
         int yTop, int yBottom, int pid, bool isTranslucent, bool solidCoverOnly)
     {
-        var (nb, ncol) = NeighborColumn(job, ncx, ncz);
+        var (nb, ncol) = NeighborColumn(job, self, ncx, ncz);
 
         // The neighbour section is absent from RAM but the cache holds data for it, so
         // this is not the edge of explored space and there is nothing here to wall off.
@@ -510,6 +566,20 @@ public static class LodMesher
         // For W/E walls the strip axis is Z (fixed = cx); for N/S it's X (fixed = cz).
         short fix = (short)(dir is W or E ? cx : cz);
         short along = (short)(dir is W or E ? cz : cx);
+
+        // Cave filling is local to the mesh job: the neighbour snapshot still contains
+        // its original cave. The shared 3x3 classification already knows which air in the
+        // immediately adjacent boundary column is effectively rock, so fold that coverage
+        // into this side without rebuilding four complete neighbour sections. This also
+        // makes the two sides of a cross-section cave agree without another flood pass.
+        bool external = ncx < 0 || ncx >= LodSection.GridSize
+            || ncz < 0 || ncz >= LodSection.GridSize;
+        if (external && cave.HasBoundaryCoverage && neighborRuns.Length > 0)
+        {
+            CollectSideWithCaveCoverage(vf, cave, neighborRuns, nb!, dir, fix, along,
+                ncx, ncz, yTop, yBottom, pid, isTranslucent, solidCoverOnly);
+            return;
+        }
 
         int cur = yTop;
 
@@ -536,6 +606,65 @@ public static class LodMesher
         if (cur > yBottom)
         {
             vf.Add(new VFace((byte)dir, fix, along, (short)cur, (short)yBottom, (short)pid, isTranslucent));
+        }
+    }
+
+    /// <summary>
+    /// Subtract the effective post-cull coverage of one external neighbour column. The
+    /// original runs retain water/thin semantics; dark air selected by the cave pass adds
+    /// opaque coverage only within the vertical extent that neighbour could rebuild.
+    /// </summary>
+    static void CollectSideWithCaveCoverage(List<VFace> vf, LodCaveCull.Prepared cave,
+        Span<ulong> neighborRuns, SectionSnapshot neighbor, int dir, short fix, short along,
+        int ncx, int ncz, int yTop, int yBottom, int pid, bool isTranslucent,
+        bool solidCoverOnly)
+    {
+        int columnTop = LodSection.RunYTop(neighborRuns[0]);
+        int columnBottom = LodSection.RunYBottom(neighborRuns[^1]);
+        int runAt = 0;
+        int openTop = -1;
+
+        for (int y = yTop - 1; y >= yBottom; y--)
+        {
+            while (runAt < neighborRuns.Length
+                && LodSection.RunYBottom(neighborRuns[runAt]) > y)
+            {
+                runAt++;
+            }
+
+            bool covered = false;
+            if (runAt < neighborRuns.Length)
+            {
+                ulong run = neighborRuns[runAt];
+                if (LodSection.RunYTop(run) > y && LodSection.RunYBottom(run) <= y
+                    && !IsThinRun(neighbor, run)
+                    && (!solidCoverOnly || !IsTranslucentRun(neighbor, run)))
+                {
+                    covered = true;
+                }
+            }
+
+            if (!covered && y >= columnBottom && y < columnTop && cave.Fills(ncx, ncz, y))
+            {
+                covered = true;
+            }
+
+            if (!covered)
+            {
+                if (openTop < 0) openTop = y + 1;
+            }
+            else if (openTop >= 0)
+            {
+                vf.Add(new VFace((byte)dir, fix, along,
+                    (short)openTop, (short)(y + 1), (short)pid, isTranslucent));
+                openTop = -1;
+            }
+        }
+
+        if (openTop >= 0)
+        {
+            vf.Add(new VFace((byte)dir, fix, along,
+                (short)openTop, (short)yBottom, (short)pid, isTranslucent));
         }
     }
 

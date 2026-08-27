@@ -68,13 +68,13 @@ public static class CaveField
     static bool SubsurfaceMode;
 
     /// <summary>
-    /// Measure the mod's own <see cref="LodCaveCull"/> rather than this tool's model of it.
-    /// The tool floods a full neighbourhood with every section present; a mesh job gets four
-    /// edge neighbours and no corners, so the shipping rule cannot do as well - and the
-    /// difference between "what the idea is worth" and "what the code achieves" is exactly
-    /// the thing a harness like this exists to keep separate.
+    /// Measure the complete shipping integration: an original snapshot is handed to
+    /// <see cref="LodMesher.BuildMesh"/> with cave culling enabled on the job. Pre-filling
+    /// the snapshot here would test the culler and mesher separately and can conceal a
+    /// disagreement between the post-cull geometry and the coverage view used for its sides.
     /// </summary>
     static bool Shipping;
+    static bool ShippingSurfaceSight = true;
 
     /// <summary>Detail level to sample. Coarse levels mesh differently and must be checked too.</summary>
     static int SampleLevel;
@@ -139,6 +139,14 @@ public static class CaveField
     static bool Straight;
 
     /// <summary>
+    /// Surface-only visibility measurement: retain the conservative daylight flood and
+    /// additionally retain unlimited straight sight from air above the top solid in each
+    /// column. Unlike the historical <see cref="Straight"/> experiment, directions never
+    /// share propagation state and every multi-cell step checks its intervening voxels.
+    /// </summary>
+    static bool SurfaceSight;
+
+    /// <summary>
     /// Largest component of a sampled sight direction. 1 gives the 26 lattice neighbours;
     /// 2 adds the shallower angles between them, 98 in all.
     ///
@@ -164,9 +172,17 @@ public static class CaveField
         public int Light;
         public bool TwoWaysIn;
         public bool Straight;
+        public bool SurfaceSight;
         public int Rays = 1;
         public bool Verify;
         public bool Shipping;
+        public bool NoShippingSurfaceSight;
+        public bool Global;
+        public int Tiles;
+        public CaveFrontier Frontier = CaveFrontier.Open;
+        public bool Sweep;
+        public int Labels = 4;
+        public bool SurfaceOnly;
         public int Level;
         public bool Help;
     }
@@ -200,14 +216,18 @@ public static class CaveField
 
     static int Measure(SqliteConnection conn, string cacheName, Options o)
     {
+        if (o.Global) return MeasureGlobal(conn, cacheName, o);
+
         Radius = Math.Max(1, o.Radius);
         SubsurfaceMode = o.Subsurface;
         Shipping = o.Shipping;
+        ShippingSurfaceSight = !o.NoShippingSurfaceSight;
         SampleLevel = Math.Clamp(o.Level, 0, LodWorld.MaxLevel);
         LightBudget = Math.Max(0, o.Light);
         TwoWaysIn = o.TwoWaysIn;
         Straight = o.Straight;
-        RayDetail = Math.Clamp(o.Rays, 1, 3);
+        SurfaceSight = o.SurfaceSight;
+        RayDetail = Math.Clamp(o.Rays, 1, 4);
         var sections = new CacheSections(conn);
         long[] candidates = KeysAtLevel(conn, SampleLevel);
 
@@ -221,7 +241,14 @@ public static class CaveField
                 ? $"  daylight reach {LightBudget} blocks, neighbourhood {Sections}x{Sections} "
                     + $"sections ({Span} blocks across)"
                 : $"  flood neighbourhood {Sections}x{Sections} sections ({Span} blocks across)");
-        if (Straight)
+        if (SurfaceSight)
+        {
+            Console.WriteLine($"  surface flood plus exact-voxel straight sight, "
+                + $"{DirectionCount()} directions");
+        }
+        if (Shipping && !ShippingSurfaceSight)
+            Console.WriteLine("  SHIPPING BASELINE: surface-sight preservation disabled");
+        else if (Straight)
         {
             Console.WriteLine($"  sight travels in straight lines only, {DirectionCount()} directions");
         }
@@ -316,10 +343,10 @@ public static class CaveField
             foreach (string line in recolourExamples) Console.WriteLine(line);
             Console.WriteLine();
             Console.WriteLine("  SEAM COST");
-            Console.WriteLine($"    self filled only:        {seamBefore,12:n0} vertices");
-            Console.WriteLine($"    neighbours filled too:   {seamAfter,12:n0} vertices");
-            Console.WriteLine($"    a further {Share(seamBefore - seamAfter, seamBefore):0.0}% "
-                + "is wall grown along section boundaries because the two sides disagree");
+            Console.WriteLine($"    live integrated path:    {seamBefore,12:n0} vertices");
+            Console.WriteLine($"    prefilled reference:     {seamAfter,12:n0} vertices");
+            Console.WriteLine($"    live/reference delta:    "
+                + $"{Share(seamBefore - seamAfter, seamBefore):0.0}%");
             Console.WriteLine();
             Console.WriteLine("  FILL AUDIT");
             Console.WriteLine($"    {fillSpans:n0} filled spans, {fillBlocks:n0} blocks, largest {biggestFill}");
@@ -334,6 +361,435 @@ public static class CaveField
         Console.WriteLine($"  therefore reports MORE sealed geometry, not less.");
         Console.WriteLine();
         return 0;
+    }
+
+    // =================================================================================
+    // The ceiling measurement: what a GLOBAL classifier would remove, over the whole
+    // cache, compared with what the shipping local rule removes on the same terrain.
+    //
+    // This exists to decide whether the runtime classifier is worth building at all. It
+    // is deliberately not shippable - it reads every cached section at once and has no
+    // budget, no invalidation and no idea what a mesh thread is.
+    // =================================================================================
+
+    sealed class GlobalTally
+    {
+        public readonly long[] Cells = new long[16];
+        public readonly long[] Faces = new long[16];
+        public readonly long[] BeyondLocalCells = new long[16];
+        public readonly long[] BeyondLocalFaces = new long[16];
+        // Cells the LOCAL rule filled, keyed by what the global prototype said about the
+        // span they sit in. This is what turns the sanity line from a number into an
+        // explanation: it names which global verdict is doing the disagreeing.
+        public readonly long[] LocalByVerdict = new long[16];
+        public long AirCells, AirFaces, WaterCells, WaterFaces;
+        public long LocalCells, LocalFaces, LocalOnKeptCells;
+        public int Sections;
+
+        public void Absorb(GlobalTally other)
+        {
+            for (int i = 0; i < Cells.Length; i++)
+            {
+                Cells[i] += other.Cells[i];
+                Faces[i] += other.Faces[i];
+                BeyondLocalCells[i] += other.BeyondLocalCells[i];
+                BeyondLocalFaces[i] += other.BeyondLocalFaces[i];
+                LocalByVerdict[i] += other.LocalByVerdict[i];
+            }
+            AirCells += other.AirCells;
+            AirFaces += other.AirFaces;
+            WaterCells += other.WaterCells;
+            WaterFaces += other.WaterFaces;
+            LocalCells += other.LocalCells;
+            LocalFaces += other.LocalFaces;
+            LocalOnKeptCells += other.LocalOnKeptCells;
+            Sections += other.Sections;
+        }
+    }
+
+    static bool Removable(CaveSpanVerdict v) =>
+        v is CaveSpanVerdict.RemovableSealed or CaveSpanVerdict.RemovableOverflow
+            or CaveSpanVerdict.RemovableBranch or CaveSpanVerdict.WaterRemovable
+            or CaveSpanVerdict.RemovableRouteTightened;
+
+    /// <summary>
+    /// How much of each air span the shipping local rule actually filled, indexed by span.
+    ///
+    /// This is the expensive half of the comparison - it runs `LodCaveCull` over every
+    /// cached section - and it does not depend on the global rule's settings at all. A
+    /// parameter sweep therefore pays for it once and re-tallies against it.
+    /// </summary>
+    static int[] MeasureLocalFill(
+        Dictionary<(int Sx, int Sz), SectionSnapshot> sections,
+        CaveSpanGraph graph, int level, int reach, out int sectionsDone)
+    {
+        var occupied = new int[graph.AirSpanCount];
+        int done = 0;
+
+        Parallel.ForEach(sections.Keys, at =>
+        {
+            SectionSnapshot self = sections[at];
+
+            SectionSnapshot? Neighbour(int dx, int dz) =>
+                sections.TryGetValue((at.Sx + dx, at.Sz + dz), out SectionSnapshot? s) ? s : null;
+
+            var edges = new SectionSnapshot?[8];
+            edges[0] = Neighbour(-1, 0);
+            edges[1] = Neighbour(1, 0);
+            edges[2] = Neighbour(0, -1);
+            edges[3] = Neighbour(0, 1);
+            edges[4] = Neighbour(-1, -1);
+            edges[5] = Neighbour(1, -1);
+            edges[6] = Neighbour(-1, 1);
+            edges[7] = Neighbour(1, 1);
+
+            SectionSnapshot filled = LodCaveCull.FillUnseen(self, edges, level, reach);
+            Interlocked.Increment(ref done);
+
+            for (int cz = 0; cz < Grid; cz++)
+            {
+                for (int cx = 0; cx < Grid; cx++)
+                {
+                    int col = LodSection.ColumnIndex(cx, cz);
+                    if (!self.Captured[col]) continue;
+                    Span<ulong> after = filled.ColumnRuns(col);
+
+                    (int start, int end) = graph.AirSpanRange(at.Sx * Grid + cx, at.Sz * Grid + cz);
+                    for (int s = start; s < end; s++)
+                    {
+                        int bottom = graph.AirSpanBottom(s);
+                        int top = graph.AirSpanTop(s);
+                        int filledCells = 0;
+                        foreach (ulong run in after)
+                        {
+                            filledCells += Math.Max(0,
+                                Math.Min(top, LodSection.RunYTop(run))
+                                - Math.Max(bottom, LodSection.RunYBottom(run)));
+                        }
+                        // Each span belongs to exactly one section, so no two workers ever
+                        // write the same entry.
+                        occupied[s] = filledCells;
+                    }
+                }
+            }
+        });
+
+        sectionsDone = done;
+        return occupied;
+    }
+
+    /// <summary>
+    /// One setting's answer, from span data alone. Cheap enough to run a dozen times.
+    /// </summary>
+    static GlobalTally TallySpans(CaveSpanGraph graph, int[] localOccupied, int sections)
+    {
+        var t = new GlobalTally { Sections = sections };
+
+        for (int s = 0; s < graph.AirSpanCount; s++)
+        {
+            long cells = graph.AirSpanCells(s);
+            if (cells <= 0) continue;
+            long faces = graph.AirSpanFaces(s);
+            long occupied = localOccupied[s];
+            int v = (int)graph.AirSpanVerdict(s);
+
+            t.AirCells += cells;
+            t.AirFaces += faces;
+            t.Cells[v] += cells;
+            t.Faces[v] += faces;
+            t.LocalCells += occupied;
+            t.LocalFaces += faces * occupied / cells;
+            t.LocalByVerdict[v] += occupied;
+
+            if (Removable(graph.AirSpanVerdict(s)))
+            {
+                long beyond = cells - occupied;
+                t.BeyondLocalCells[v] += beyond;
+                t.BeyondLocalFaces[v] += faces * beyond / cells;
+            }
+            else t.LocalOnKeptCells += occupied;
+        }
+
+        for (int s = 0; s < graph.WaterSpanCount; s++)
+        {
+            long cells = graph.WaterSpanCells(s);
+            if (cells <= 0) continue;
+            long faces = graph.WaterSpanFaces(s);
+            int v = (int)graph.WaterSpanVerdict(s);
+
+            t.WaterCells += cells;
+            t.WaterFaces += faces;
+            t.Cells[v] += cells;
+            t.Faces[v] += faces;
+            // The local rule cannot touch fluid at all: capture stores it as an occupied
+            // run, so the air flood never sees it as a cavity (G110).
+            if (graph.WaterSpanVerdict(s) == CaveSpanVerdict.WaterRemovable)
+            {
+                t.BeyondLocalCells[v] += cells;
+                t.BeyondLocalFaces[v] += faces;
+            }
+        }
+
+        return t;
+    }
+
+    static int MeasureGlobal(SqliteConnection conn, string cacheName, Options o)
+    {
+        int level = Math.Clamp(o.Level, 0, LodWorld.MaxLevel);
+        int reach = o.Light > 0 ? o.Light : LodCaveCull.DefaultReach;
+        int localReach = LodCaveCull.DefaultReach;
+        long[] keys = KeysAtLevel(conn, level);
+
+        Console.WriteLine();
+        Console.WriteLine("  VintageHorizons GLOBAL cave-classification ceiling");
+        Console.WriteLine("  cache: " + cacheName);
+        Console.WriteLine($"  {keys.Length:n0} level-{level} sections in cache");
+        if (keys.Length == 0) { Console.WriteLine("  nothing to classify"); return 0; }
+
+        var chosen = keys.ToList();
+        if (o.Tiles > 0)
+        {
+            int minSx = keys.Min(LodWorld.KeySx), maxSx = keys.Max(LodWorld.KeySx);
+            int minSz = keys.Min(LodWorld.KeySz), maxSz = keys.Max(LodWorld.KeySz);
+            int midX = (minSx + maxSx) / 2, midZ = (minSz + maxSz) / 2;
+            int half = o.Tiles / 2;
+            chosen = keys.Where(k =>
+                Math.Abs(LodWorld.KeySx(k) - midX) <= half
+                && Math.Abs(LodWorld.KeySz(k) - midZ) <= half).ToList();
+            Console.WriteLine($"  restricted to the {o.Tiles}x{o.Tiles} sections around "
+                + $"{midX},{midZ}: {chosen.Count:n0} present");
+        }
+        Console.WriteLine($"  daylight reach {reach} blocks, column step "
+            + $"{LodWorld.ColumnStepBlocks(level)} blocks");
+        Console.WriteLine(o.Frontier == CaveFrontier.Open
+            ? "  frontier OPEN: a component touching unknown space is kept whole"
+            : "  frontier PORTAL: unknown contact is a pseudo-portal - it lights and it "
+                + "terminates routes");
+        Console.WriteLine();
+
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        var sections = new Dictionary<(int Sx, int Sz), SectionSnapshot>(chosen.Count);
+        var loader = new CacheSections(conn);
+        foreach (long key in chosen)
+        {
+            LodSection? s = loader.Get(key);
+            if (s == null) continue;
+            sections[(LodWorld.KeySx(key), LodWorld.KeySz(key))] = SectionSnapshot.Of(s);
+            loader.Forget(key);
+        }
+        Console.WriteLine($"  decoded {sections.Count:n0} sections in {watch.Elapsed.TotalSeconds:0.0}s");
+
+        watch.Restart();
+        CaveSpanGraph graph = o.SurfaceOnly
+            ? CaveSpanGraph.BuildSurfaceOnly(sections, level, reach, o.Frontier)
+            : CaveSpanGraph.Build(sections, level, reach, o.Frontier, null, o.Labels);
+        Console.WriteLine($"  span graph: {graph.AirSpanCount:n0} air spans, "
+            + $"{graph.WaterSpanCount:n0} water spans, {graph.AirEdgeCount:n0} edges, "
+            + $"over {graph.ColumnCount:n0} column slots, in {watch.Elapsed.TotalSeconds:0.0}s");
+        Console.WriteLine($"  {graph.CapturedColumns:n0} captured columns, of which "
+            + $"{graph.FrontierColumns:n0} ({Share(graph.FrontierColumns, graph.CapturedColumns):0.0}%) "
+            + "sit beside something uncaptured");
+        Console.WriteLine($"  {graph.AirComponents:n0} air components, "
+            + $"{graph.UnknownAirComponents:n0} of them undecidable "
+            + $"({Share(graph.UnknownAirComponents, graph.AirComponents):0.0}%); "
+            + $"largest holds {graph.LargestComponentSpans:n0} spans");
+
+        watch.Restart();
+        int[] localOccupied = MeasureLocalFill(sections, graph, level, localReach, out int done);
+        Console.WriteLine($"  local shipping rule (fixed reach {localReach}) run over "
+            + $"{done:n0} sections in {watch.Elapsed.TotalSeconds:0.0}s");
+
+        if (o.SurfaceOnly || !o.Sweep)
+        {
+            if (o.SurfaceOnly)
+            {
+                Console.WriteLine("  SURFACE ONLY: every span beyond the surface-light flood is "
+                    + "removable; entrance-to-entrance routes carry no protection");
+            }
+            ReportGlobal(TallySpans(graph, localOccupied, done), level, o.Frontier);
+            return 0;
+        }
+
+        Console.WriteLine($"  {graph.TerminalPairs:n0} mouth pairs carry a passage; "
+            + $"each span is judged against its {graph.TerminalLabels} nearest mouths");
+        Sweep(graph, localOccupied, done, reach);
+        return 0;
+    }
+
+    /// <summary>
+    /// The saving-versus-safety curve for route tightening, as one table.
+    ///
+    /// Every row is the same cache and the same local-rule comparison; only the route rule
+    /// moves. That is the point: the owner is choosing a parameter, and a parameter is only
+    /// legible next to its neighbours.
+    /// </summary>
+    static void Sweep(CaveSpanGraph graph, int[] localOccupied, int sections, int reach)
+    {
+        var settings = new List<CaveRouteRule> { CaveRouteRule.Bridge };
+        foreach (int slack in new[] { 0, reach / 2, reach, reach * 2, reach * 4 })
+        {
+            settings.Add(new CaveRouteRule(slack, 0));
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("  ROUTE TIGHTENING SWEEP  (all figures are geometry, the face estimate)");
+        Console.WriteLine();
+        Console.WriteLine("    route rule          removable   route kept   additional   both     disagree");
+        Console.WriteLine("                          total      remaining   over local   together  cells");
+        Console.WriteLine("    ------------------  ---------   ----------   ----------   -------- --------");
+
+        foreach (CaveRouteRule rule in settings)
+        {
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            graph.ApplyRouteRule(rule);
+            GlobalTally t = TallySpans(graph, localOccupied, sections);
+            watch.Stop();
+
+            long totalFaces = t.AirFaces + t.WaterFaces;
+            long removable = 0, beyond = 0, routeKept = 0;
+            for (int v = 0; v < t.Faces.Length; v++)
+            {
+                if (Removable((CaveSpanVerdict)v)) { removable += t.Faces[v]; beyond += t.BeyondLocalFaces[v]; }
+            }
+            routeKept = t.Faces[(int)CaveSpanVerdict.KeptRoute]
+                + t.Faces[(int)CaveSpanVerdict.KeptRouteUnknown];
+
+            Console.WriteLine($"    {rule,-18}  {Share(removable, totalFaces),8:0.0}%   "
+                + $"{Share(routeKept, totalFaces),9:0.0}%   "
+                + $"{Share(beyond, totalFaces),9:0.0}%   "
+                + $"{Share(t.LocalFaces + beyond, totalFaces),7:0.0}%  "
+                + $"{t.LocalOnKeptCells,8:n0}   ({watch.Elapsed.TotalSeconds:0.0}s)");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine("    'route kept remaining' is what the bridge rule still holds after the");
+        Console.WriteLine("    tightening; 'disagree' is cells the local rule fills that this setting");
+        Console.WriteLine("    keeps. Read the removable column as a curve and stop where it flattens.");
+        Console.WriteLine();
+        Console.WriteLine("    Route tightening is the ONE rule here that can remove geometry a player");
+        Console.WriteLine("    could actually see: it decides that a passage is too indirect to look");
+        Console.WriteLine("    through. Small W is aggressive. The sweep is the evidence,");
+        Console.WriteLine("    not an endorsement of any row.");
+        Console.WriteLine();
+    }
+
+    static void ReportGlobal(GlobalTally t, int level, CaveFrontier frontier)
+    {
+        long subterranean = t.AirCells + t.WaterCells;
+        long subterraneanFaces = t.AirFaces + t.WaterFaces;
+
+        long Cells(CaveSpanVerdict v) => t.Cells[(int)v];
+        long Faces(CaveSpanVerdict v) => t.Faces[(int)v];
+        long Beyond(CaveSpanVerdict v) => t.BeyondLocalCells[(int)v];
+        long BeyondFaces(CaveSpanVerdict v) => t.BeyondLocalFaces[(int)v];
+
+        // TWO shares, because they answer different questions and disagree wildly. Cells
+        // say how much space this is; faces say how much GEOMETRY it costs, and geometry
+        // is what the mod builds, uploads and draws. Bulk water is the extreme case: it
+        // is most of the cells underground and almost none of the vertices, because a
+        // flooded volume has a surface and no interior.
+        void Row(string name, long cells, long faces) =>
+            Console.WriteLine($"    {name,-34} {cells,15:n0} {Share(cells, subterranean),7:0.0}%"
+                + $"   ~{faces * 4,15:n0} vtx {Share(faces, subterraneanFaces),7:0.0}%");
+
+        long removableCells = 0, removableFaces = 0, beyondCells = 0, beyondFaces = 0;
+        for (int v = 0; v < t.Faces.Length; v++)
+        {
+            if (!Removable((CaveSpanVerdict)v)) continue;
+            removableCells += t.Cells[v];
+            removableFaces += t.Faces[v];
+            beyondCells += t.BeyondLocalCells[v];
+            beyondFaces += t.BeyondLocalFaces[v];
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"  EVERYTHING THE RULE COULD EVER TOUCH at L{level} ({t.Sections:n0} sections)");
+        Row("cavity air below the surface", t.AirCells, t.AirFaces);
+        Row("stored fluid, ocean included", t.WaterCells, t.WaterFaces);
+        Row("TOTAL", subterranean, subterraneanFaces);
+        Console.WriteLine();
+        Console.WriteLine("  REMOVED BY THE SHIPPING LOCAL RULE (3x3 window, mesh time)");
+        Row("filled", t.LocalCells, t.LocalFaces);
+        Console.WriteLine();
+        Console.WriteLine("  REMOVABLE BY THE GLOBAL SPAN-GRAPH PROTOTYPE");
+        Row("sealed network, no portal", Cells(CaveSpanVerdict.RemovableSealed),
+            Faces(CaveSpanVerdict.RemovableSealed));
+        Row("single-portal overflow", Cells(CaveSpanVerdict.RemovableOverflow),
+            Faces(CaveSpanVerdict.RemovableOverflow));
+        Row("multi-portal branch peel", Cells(CaveSpanVerdict.RemovableBranch),
+            Faces(CaveSpanVerdict.RemovableBranch));
+        if (Cells(CaveSpanVerdict.RemovableRouteTightened) > 0)
+        {
+            Row("route tightened away", Cells(CaveSpanVerdict.RemovableRouteTightened),
+                Faces(CaveSpanVerdict.RemovableRouteTightened));
+        }
+        Row("enclosed water", Cells(CaveSpanVerdict.WaterRemovable),
+            Faces(CaveSpanVerdict.WaterRemovable));
+        Row("TOTAL removable", removableCells, removableFaces);
+        Console.WriteLine();
+        Console.WriteLine("  KEPT BY THE GLOBAL PROTOTYPE");
+        Row("lit by a real portal", Cells(CaveSpanVerdict.KeptLit), Faces(CaveSpanVerdict.KeptLit));
+        Row("route between real portals", Cells(CaveSpanVerdict.KeptRoute), Faces(CaveSpanVerdict.KeptRoute));
+        if (frontier == CaveFrontier.Open)
+        {
+            Row("unknown frontier, whole component",
+                Cells(CaveSpanVerdict.KeptUnknown), Faces(CaveSpanVerdict.KeptUnknown));
+        }
+        else
+        {
+            // Kept only because of the frontier. Split out so the influence of unknown
+            // space stays visible instead of being absorbed into the daylight line.
+            Row("lit via a pseudo-portal", Cells(CaveSpanVerdict.KeptLitUnknown),
+                Faces(CaveSpanVerdict.KeptLitUnknown));
+            Row("route to a pseudo-portal", Cells(CaveSpanVerdict.KeptRouteUnknown),
+                Faces(CaveSpanVerdict.KeptRouteUnknown));
+        }
+        Row("water kept", Cells(CaveSpanVerdict.WaterKept), Faces(CaveSpanVerdict.WaterKept));
+        Console.WriteLine();
+        Console.WriteLine("  THE HEADLINE: what the global rule would add");
+        Row("sealed network", Beyond(CaveSpanVerdict.RemovableSealed),
+            BeyondFaces(CaveSpanVerdict.RemovableSealed));
+        Row("single-portal overflow", Beyond(CaveSpanVerdict.RemovableOverflow),
+            BeyondFaces(CaveSpanVerdict.RemovableOverflow));
+        Row("multi-portal branch peel", Beyond(CaveSpanVerdict.RemovableBranch),
+            BeyondFaces(CaveSpanVerdict.RemovableBranch));
+        Row("enclosed water", Beyond(CaveSpanVerdict.WaterRemovable),
+            BeyondFaces(CaveSpanVerdict.WaterRemovable));
+        Row("ADDITIONAL over the local rule", beyondCells, beyondFaces);
+        Console.WriteLine();
+        Console.WriteLine("                        cells                geometry (face estimate)");
+        Console.WriteLine($"    local rule alone    {Share(t.LocalCells, subterranean),5:0.0}%"
+            + $"                {Share(t.LocalFaces, subterraneanFaces),5:0.0}%");
+        Console.WriteLine($"    global rule alone   {Share(removableCells, subterranean),5:0.0}%"
+            + $"                {Share(removableFaces, subterraneanFaces),5:0.0}%");
+        Console.WriteLine($"    both together       {Share(t.LocalCells + beyondCells, subterranean),5:0.0}%"
+            + $"                {Share(t.LocalFaces + beyondFaces, subterraneanFaces),5:0.0}%");
+        Console.WriteLine();
+        Console.WriteLine("    The geometry column is the one that matters: it is what gets built,");
+        Console.WriteLine("    uploaded and drawn. The cell column is distorted by bulk fluid, which is");
+        Console.WriteLine("    most of the volume underground and almost none of the vertices.");
+        Console.WriteLine();
+        Console.WriteLine($"    SANITY: {t.LocalOnKeptCells:n0} cells the local rule filled sit in spans");
+        Console.WriteLine("    the global rule keeps. The two rules are not nested, and this says which");
+        Console.WriteLine("    global verdict is doing the disagreeing:");
+        foreach (CaveSpanVerdict v in new[]
+                 {
+                     CaveSpanVerdict.KeptLit, CaveSpanVerdict.KeptRoute,
+                     CaveSpanVerdict.KeptLitUnknown, CaveSpanVerdict.KeptRouteUnknown,
+                     CaveSpanVerdict.KeptUnknown, CaveSpanVerdict.WaterKept,
+                 })
+        {
+            long cells = t.LocalByVerdict[(int)v];
+            if (cells == 0) continue;
+            Console.WriteLine($"      {v,-20} {cells,14:n0} cells "
+                + $"{Share(cells, t.LocalOnKeptCells),6:0.0}% of the disagreement");
+        }
+        Console.WriteLine();
+        Console.WriteLine("  These are CELL counts and a face-area estimate, not measured vertices. The");
+        Console.WriteLine("  mesher merges faces greedily, so vertices x 4 is an upper bound. The light");
+        Console.WriteLine("  model does not charge for climbing, so it lights more than the live flood and");
+        Console.WriteLine("  the additional removal above is a floor rather than an optimistic estimate.");
+        Console.WriteLine();
     }
 
     sealed record Sample(
@@ -393,30 +849,40 @@ public static class CaveField
 
             SectionSnapshot filledSelf = LodCaveCull.FillUnseen(
                 SectionSnapshot.Of(centre), edges, LodWorld.KeyLevel(key),
-                LightBudget > 0 ? LightBudget : LodCaveCull.DefaultReach);
+                LightBudget > 0 ? LightBudget : LodCaveCull.DefaultReach,
+                ShippingSurfaceSight);
 
             direct[(0, 0)] = filledSelf;
-            MeshResult shipped = Mesh(key, around, direct);
+            int shippingReach = LightBudget > 0 ? LightBudget : LodCaveCull.DefaultReach;
+            MeshResult? shipped = ShippingSurfaceSight
+                ? Mesh(key, around, null, shippingReach)
+                : null;
 
-            // The same section again, but with its NEIGHBOURS filled by the same rule too.
-            // A section fills its own cavities and then has its side faces culled against a
-            // neighbour that still has the cave in it, so every boundary a cave crosses grows
-            // a wall that neither side can see. This is what that costs.
+            // Independent reference: pre-fill the same section and its edge neighbours,
+            // then mesh with cave culling disabled. The live path should closely match this
+            // without paying four additional flood passes per section, because it obtains
+            // neighbour-edge coverage from the centre pass's shared 3x3 classification.
             var alsoNeighbours = new Dictionary<(int dx, int dz), SectionSnapshot>(direct);
             foreach ((int dx, int dz) in new[] { (-1, 0), (1, 0), (0, -1), (0, 1) })
             {
                 LodSection? nb = around[dz + Radius, dx + Radius];
                 if (nb == null) continue;
-                var nbEdges = new SectionSnapshot?[4];
+                var nbEdges = new SectionSnapshot?[8];
                 nbEdges[0] = Snap(around, dx - 1, dz);
                 nbEdges[1] = Snap(around, dx + 1, dz);
                 nbEdges[2] = Snap(around, dx, dz - 1);
                 nbEdges[3] = Snap(around, dx, dz + 1);
+                nbEdges[4] = Snap(around, dx - 1, dz - 1);
+                nbEdges[5] = Snap(around, dx + 1, dz - 1);
+                nbEdges[6] = Snap(around, dx - 1, dz + 1);
+                nbEdges[7] = Snap(around, dx + 1, dz + 1);
                 alsoNeighbours[(dx, dz)] = LodCaveCull.FillUnseen(
                     SectionSnapshot.Of(nb), nbEdges, LodWorld.KeyLevel(key),
-                    LightBudget > 0 ? LightBudget : LodCaveCull.DefaultReach);
+                    LightBudget > 0 ? LightBudget : LodCaveCull.DefaultReach,
+                    ShippingSurfaceSight);
             }
             MeshResult bothSides = Mesh(key, around, alsoNeighbours);
+            shipped ??= bothSides;
             seamBefore += shipped.VertexCount;
             seamAfter += bothSides.VertexCount;
 
@@ -633,7 +1099,7 @@ public static class CaveField
     }
 
     static MeshResult Mesh(long key, LodSection?[,] around,
-        Dictionary<(int dx, int dz), SectionSnapshot>? filled)
+        Dictionary<(int dx, int dz), SectionSnapshot>? filled, int caveCullReach = 0)
     {
         SectionSnapshot? Snapshot(int dx, int dz)
         {
@@ -642,11 +1108,15 @@ public static class CaveField
             return s == null ? null : SectionSnapshot.Of(s);
         }
 
-        var neighbors = new SectionSnapshot?[4];
+        var neighbors = new SectionSnapshot?[8];
         neighbors[0] = Snapshot(-1, 0);
         neighbors[1] = Snapshot(1, 0);
         neighbors[2] = Snapshot(0, -1);
         neighbors[3] = Snapshot(0, 1);
+        neighbors[4] = Snapshot(-1, -1);
+        neighbors[5] = Snapshot(1, -1);
+        neighbors[6] = Snapshot(-1, 1);
+        neighbors[7] = Snapshot(1, 1);
 
         return LodMesher.BuildMesh(new MeshJob
         {
@@ -656,6 +1126,7 @@ public static class CaveField
             // Every neighbour present in the cache was supplied, so an absent side really is
             // the frontier and nothing is assumed covered.
             AssumedCoveredSides = 0,
+            CaveCullReach = caveCullReach,
         });
     }
 
@@ -722,6 +1193,7 @@ public static class CaveField
     {
         bool[] open = LightBudget <= 0
             ? ReachableAir(solid, worldHeight)
+            : SurfaceSight ? SurfaceVisibleAir(solid, worldHeight)
             : Straight ? SightlineAir(solid, worldHeight) : LitAir(solid, worldHeight);
         return TwoWaysIn ? KeepPassages(solid, open, worldHeight) : open;
     }
@@ -950,6 +1422,115 @@ public static class CaveField
         var seen = new bool[solid.Length];
         for (int i = 0; i < seen.Length; i++) seen[i] = reach[i] > 0;
         return seen;
+    }
+
+    /// <summary>
+    /// Conservative surface visibility: everything reached by the diffuse light budget,
+    /// plus unlimited straight rays beginning in air above each column's highest solid.
+    ///
+    /// Each direction owns an independent visibility array. Sharing one array lets a ray
+    /// propagated by one direction turn when the next sweep consumes it, which is not a
+    /// straight line. Multi-column directions use <see cref="RayInterior"/> so they cannot
+    /// jump a thin wall. The direction sets are nested, therefore increasing --rays can
+    /// only keep geometry; a reported curve must flatten before it is trusted.
+    /// </summary>
+    static bool[] SurfaceVisibleAir(bool[] solid, int worldHeight)
+    {
+        bool[] seen = LitAir(solid, worldHeight);
+        var surfaceSeed = new bool[solid.Length];
+
+        for (int z = 0; z < Span; z++)
+        {
+            for (int x = 0; x < Span; x++)
+            {
+                int top = 0;
+                for (int y = worldHeight - 1; y >= 0; y--)
+                {
+                    if (!solid[Index(x, z, y, worldHeight)]) continue;
+                    top = y + 1;
+                    break;
+                }
+                for (int y = top; y < worldHeight; y++)
+                {
+                    int i = Index(x, z, y, worldHeight);
+                    surfaceSeed[i] = true;
+                    seen[i] = true;
+                }
+            }
+        }
+
+        var visible = new bool[solid.Length];
+        foreach ((int dx, int dz, int dy) in Directions())
+        {
+            Array.Copy(surfaceSeed, visible, surfaceSeed.Length);
+            (int X, int Z, int Y)[] interior = RayInterior(dx, dz, dy);
+            SweepSurfaceRay(solid, visible, seen, worldHeight, dx, dz, dy, interior);
+        }
+        return seen;
+    }
+
+    /// <summary>
+    /// Cells crossed between the centres of (0,0,0) and one lattice-direction step,
+    /// excluding both endpoints. This is a 3D DDA: longer primitive vectors visit every
+    /// intervening voxel instead of teleporting sight across it.
+    /// </summary>
+    internal static (int X, int Z, int Y)[] RayInterior(int dx, int dz, int dy)
+    {
+        var cells = new List<(int X, int Z, int Y)>();
+        int x = 0, z = 0, y = 0;
+        int sx = Math.Sign(dx), sz = Math.Sign(dz), sy = Math.Sign(dy);
+        double tx = dx == 0 ? double.PositiveInfinity : 0.5 / Math.Abs(dx);
+        double tz = dz == 0 ? double.PositiveInfinity : 0.5 / Math.Abs(dz);
+        double ty = dy == 0 ? double.PositiveInfinity : 0.5 / Math.Abs(dy);
+        double dtx = dx == 0 ? double.PositiveInfinity : 1.0 / Math.Abs(dx);
+        double dtz = dz == 0 ? double.PositiveInfinity : 1.0 / Math.Abs(dz);
+        double dty = dy == 0 ? double.PositiveInfinity : 1.0 / Math.Abs(dy);
+
+        while (x != dx || z != dz || y != dy)
+        {
+            double next = Math.Min(tx, Math.Min(tz, ty));
+            const double epsilon = 1e-12;
+            if (tx <= next + epsilon) { x += sx; tx += dtx; }
+            if (tz <= next + epsilon) { z += sz; tz += dtz; }
+            if (ty <= next + epsilon) { y += sy; ty += dty; }
+            if (x != dx || z != dz || y != dy) cells.Add((x, z, y));
+        }
+        return cells.ToArray();
+    }
+
+    static void SweepSurfaceRay(bool[] solid, bool[] visible, bool[] seen, int worldHeight,
+        int dx, int dz, int dy, (int X, int Z, int Y)[] interior)
+    {
+        int xFrom = dx > 0 ? 0 : Span - 1, xTo = dx > 0 ? Span : -1, xStep = dx > 0 ? 1 : -1;
+        int zFrom = dz > 0 ? 0 : Span - 1, zTo = dz > 0 ? Span : -1, zStep = dz > 0 ? 1 : -1;
+        int yFrom = dy > 0 ? 0 : worldHeight - 1, yTo = dy > 0 ? worldHeight : -1, yStep = dy > 0 ? 1 : -1;
+
+        for (int z = zFrom; z != zTo; z += zStep)
+        {
+            for (int x = xFrom; x != xTo; x += xStep)
+            {
+                for (int y = yFrom; y != yTo; y += yStep)
+                {
+                    int i = Index(x, z, y, worldHeight);
+                    if (solid[i] || visible[i]) continue;
+
+                    int px = x - dx, pz = z - dz, py = y - dy;
+                    if (px < 0 || px >= Span || pz < 0 || pz >= Span
+                        || py < 0 || py >= worldHeight
+                        || !visible[Index(px, pz, py, worldHeight)]) continue;
+
+                    bool clear = true;
+                    foreach ((int ox, int oz, int oy) in interior)
+                    {
+                        int ix = px + ox, iz = pz + oz, iy = py + oy;
+                        if (solid[Index(ix, iz, iy, worldHeight)]) { clear = false; break; }
+                    }
+                    if (!clear) continue;
+                    visible[i] = true;
+                    seen[i] = true;
+                }
+            }
+        }
     }
 
     /// <summary>
@@ -1191,6 +1772,13 @@ public static class CaveField
             loaded[key] = section;
             return section;
         }
+
+        /// <summary>
+        /// Drop a decoded section once the caller has taken what it needs. The whole-cache
+        /// pass converts every section to a snapshot as it goes; keeping the LodSection
+        /// beside it would hold thousands of palettes alive for nothing.
+        /// </summary>
+        public void Forget(long key) => loaded.Remove(key);
     }
 
     static long[] KeysAtLevel(SqliteConnection conn, int level)
@@ -1252,9 +1840,28 @@ public static class CaveField
                 case "--light": o.Light = int.Parse(Next(args, ref i)); break;
                 case "--twowaysin": o.TwoWaysIn = true; break;
                 case "--straight": o.Straight = true; break;
+                case "--surface-sight": o.SurfaceSight = true; break;
                 case "--rays": o.Rays = int.Parse(Next(args, ref i)); break;
                 case "--verify": o.Verify = true; break;
                 case "--shipping": o.Shipping = true; break;
+                case "--shipping-no-sight":
+                    o.Shipping = true;
+                    o.NoShippingSurfaceSight = true;
+                    break;
+                case "--global": o.Global = true; break;
+                case "--sweep": o.Global = true; o.Sweep = true; break;
+                case "--surface": o.Global = true; o.SurfaceOnly = true; break;
+                case "--labels": o.Labels = int.Parse(Next(args, ref i)); break;
+                case "--tiles": o.Tiles = int.Parse(Next(args, ref i)); break;
+                case "--frontier":
+                    o.Frontier = Next(args, ref i).ToLowerInvariant() switch
+                    {
+                        "open" => CaveFrontier.Open,
+                        "portal" => CaveFrontier.Portal,
+                        var other => throw new ArgumentException(
+                            $"--frontier takes open or portal, not '{other}'"),
+                    };
+                    break;
                 case "--level": o.Level = int.Parse(Next(args, ref i)); break;
                 case "--help" or "-h": o.Help = true; break;
                 default: throw new ArgumentException($"unknown option {args[i]}");
@@ -1286,11 +1893,34 @@ public static class CaveField
         Console.WriteLine("    --straight        carry sight in straight lines rather than spreading it,");
         Console.WriteLine("                      so a winding tunnel goes dark the moment it bends");
         Console.WriteLine("    --rays <n>        sight direction detail: 1 = 26 directions, 2 = 98");
+        Console.WriteLine("    --surface-sight   union the daylight flood with independent straight rays");
+        Console.WriteLine("                      from above-ground air; every ray checks crossed voxels");
         Console.WriteLine("    --twowaysin       never fill a dark pocket with more than one way in, so a");
         Console.WriteLine("                      passage through a mountain cannot be plugged");
         Console.WriteLine("    --shipping        run the mod's own LodCaveCull instead of this tool's model,");
         Console.WriteLine("                      with the four neighbours a real mesh job actually gets");
+        Console.WriteLine("    --shipping-no-sight paired shipping baseline without the surface-sight pass");
         Console.WriteLine("    --verify          prove the column rebuild is neutral before measuring");
+        Console.WriteLine("    --global          the CEILING measurement: classify the WHOLE cache at once");
+        Console.WriteLine("                      with the global span-graph prototype and report what it");
+        Console.WriteLine("                      would remove beyond the shipping local rule. Ignores");
+        Console.WriteLine("                      --samples; use --tiles to work on a smaller square.");
+        Console.WriteLine("    --tiles <n>       with --global, use only the n x n sections nearest the");
+        Console.WriteLine("                      middle of the cached region (0 = all of it)");
+        Console.WriteLine("    --frontier <how>  what the edge of the cache means. 'open' (default) keeps");
+        Console.WriteLine("                      any component touching unknown space, whole. 'portal'");
+        Console.WriteLine("                      treats a frontier contact as a pseudo-portal: it lights");
+        Console.WriteLine("                      and it terminates routes, exactly as the shipping rule");
+        Console.WriteLine("                      already treats its own window wall, but it does not save");
+        Console.WriteLine("                      a cave beyond the reach of that light.");
+        Console.WriteLine("    --labels <n>      how many nearby mouths each span is judged against when a");
+        Console.WriteLine("                      route rule asks whether it is on a passage (default 4).");
+        Console.WriteLine("                      More can only KEEP more; 2 is the aggressive extreme.");
+        Console.WriteLine("    --sweep           implies --global: instead of one answer, sweep the route-");
+        Console.WriteLine("                      tightening parameters and print the saving-versus-safety");
+        Console.WriteLine("                      curve. Use with --frontier portal.");
+        Console.WriteLine("    --surface         implies --global: keep only the conservative surface-light");
+        Console.WriteLine("                      flood; dark entrance-to-entrance routes are removable.");
         Console.WriteLine();
     }
 }

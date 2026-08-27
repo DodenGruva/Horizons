@@ -83,6 +83,7 @@ Completion evidence:
 | Changing storage or serialization | `dev/WIRE_HISTORY.md`, `dev/ARCHITECTURE.md`, and `dev/GOTCHAS.md` G1, G7 |
 | Adding or changing a network message | `dev/WIRE_HISTORY.md` and `dev/GOTCHAS.md` G6 |
 | Changing traversal, mesh residency, or eviction | `dev/GOTCHAS.md` G5 and G8 |
+| Changing cave culling or any hidden-geometry classification | `dev/plans/PLAN_GLOBAL_CAVE_CLASSIFIER.md`, then `dev/GOTCHAS.md` G106–G115 |
 | Touching shaders | `dev/GOTCHAS.md` G10 |
 | Starting a Vintage Story client/server test | `dev/GOTCHAS.md` G11 and `README.md` testing instructions |
 | Deciding whether an unusual design is intentional | `dev/ARCHITECTURE.md` settled decisions, then `dev/GOTCHAS.md` reversals |

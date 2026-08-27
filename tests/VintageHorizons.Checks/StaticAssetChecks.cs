@@ -22,6 +22,7 @@ public static class StaticAssetChecks
         OwnershipMaskWiring(c);
         OcclusionCullingWiring(c);
         PersistenceCadenceWiring(c);
+        CaveCullingDefaultsOn(c);
         VersionAgreement(c);
         AssistServeLoopDoesNotLogProgress(c);
         ChatCommandNamesAreUnique(c);
@@ -30,6 +31,27 @@ public static class StaticAssetChecks
         SourceHasNoControlCharacters(c);
         IndirectShaderVariant(c);
         SubtreeBoundsStayOutOfTheCoverageGate(c);
+    }
+
+    static void CaveCullingDefaultsOn(Check c)
+    {
+        string root = GameAssemblies.RepoRoot;
+        string renderer = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "LodTerrainRenderer.cs"));
+        string mod = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "VintageHorizonsModSystem.cs"));
+
+        c.True(renderer.Contains(
+                "Environment.GetEnvironmentVariable(\"VINTAGEHORIZONS_CAVE_CULLING\") != \"0\"",
+                StringComparison.Ordinal),
+            "cave culling starts on unless the environment explicitly disables it");
+        c.True(mod.Contains("ChatCommands.Create(\"vhcavecull\")", StringComparison.Ordinal),
+            "the cave-culling command uses the explicit .vhcavecull name");
+        c.False(mod.Contains("ChatCommands.Create(\"vhcaves\")", StringComparison.Ordinal),
+            "the ambiguous old .vhcaves command is retired");
+        c.True(mod.Contains("On by default. Changing it rebuilds distant terrain",
+                StringComparison.Ordinal),
+            "the .vhcavecull help text reports the shipping default");
     }
 
     /// <summary>

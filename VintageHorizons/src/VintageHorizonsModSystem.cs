@@ -2059,8 +2059,8 @@ public class VintageHorizonsModSystem : ModSystem
                     + "GPU timing " + renderer.DescribeGpuTiming() + ".");
             });
 
-        capi.ChatCommands.Create("vhcaves")
-            .WithDescription("Stop building cave systems daylight cannot reach. Off by default. Changing it rebuilds distant terrain, which takes a few seconds.")
+        capi.ChatCommands.Create("vhcavecull")
+            .WithDescription("Stop building cavities outside the surface-light and straight-sight envelope. On by default. Changing it rebuilds distant terrain, which takes a few seconds.")
             .WithArgs(capi.ChatCommands.Parsers.OptionalWord("on"))
             .HandleWith(args =>
             {
@@ -2079,7 +2079,7 @@ public class VintageHorizonsModSystem : ModSystem
                         + $"daylight reach {renderer.CaveCullReach} blocks | live geometry "
                         + $"{renderer.LiveGpuMeshBytes / (1024.0 * 1024.0):0.0} MiB, "
                         + $"{renderer.LiveOpaqueVertices:n0} opaque vertices over "
-                        + $"{renderer.MeshCount} meshes";
+                        + $"{renderer.MeshCount} meshes | {LodMesher.DescribeCaveCullTiming()}";
                     if (LodMesher.AuditSections > 0)
                     {
                         long with = LodMesher.AuditVerticesWithCulling;
@@ -2088,16 +2088,21 @@ public class VintageHorizonsModSystem : ModSystem
                             + $"{without:n0} vertices without culling, {with:n0} with "
                             + $"({(without > 0 ? (without - with) * 100.0 / without : 0):0.0}% removed)";
                     }
-                    LogReportLines("caves", live);
+                    // The reason breakdown goes to the LOG only. It is a block of lines,
+                    // chat cannot be copied out of the game, and its whole purpose is to
+                    // say which safety rule kept the caves that are still standing - which
+                    // is a thing to read afterwards, not a thing to squint at in chat.
+                    LogReportLines("caves", live + "\n" + LodCaveCull.DescribeRetention());
                     return TextCommandResult.Success("[VintageHorizons] " + live
                         + ". Flip it, wait for the rebuild, and run this again - the geometry"
-                        + " total is the answer, not the picture.");
+                        + " total is the answer, not the picture. The per-reason breakdown of"
+                        + " what survived is in the client log under 'caves:'.");
                 }
 
                 string word = ((string)args[0]).ToLowerInvariant();
 
                 if (word != "on" && word != "off")
-                    return TextCommandResult.Error("[VintageHorizons] use: .vhcaves on | off");
+                    return TextCommandResult.Error("[VintageHorizons] use: .vhcavecull on | off");
 
                 bool wanted = word == "on";
                 if (wanted == renderer.CaveCulling)
@@ -2107,6 +2112,8 @@ public class VintageHorizonsModSystem : ModSystem
                 }
 
                 renderer.CaveCulling = wanted;
+                LodMesher.ResetCaveCullTiming();
+                LodCaveCull.ResetRetention();
 
                 // The switch decides what geometry EXISTS, not what is drawn, so nothing
                 // changes until the meshes are built again. Doing that here is what makes
@@ -2115,11 +2122,11 @@ public class VintageHorizonsModSystem : ModSystem
 
                 return TextCommandResult.Success(
                     $"[VintageHorizons] cave culling {word}. Rebuilding {queued} distant "
-                    + "sections - give it a few seconds. On, cave systems that daylight never "
-                    + "reaches are not built at all; anything with two ways in is kept, so a "
-                    + "tunnel through a mountain still goes through. What to watch for is "
+                    + "sections - give it a few seconds. On, cavities outside both the daylight "
+                    + "envelope and a straight surface sightline are not built. Straight mountain "
+                    + "tunnels remain open without preserving hidden networks around bends. What to watch for is "
                     + "terrain that is missing or a cave mouth that has closed up - if you "
-                    + "see either, run .vhcaves off and say where you were looking.");
+                    + "see either, run .vhcavecull off and say where you were looking.");
             });
 
         // The live toggle the aggregate bound was funded with. Unlike the retired staging

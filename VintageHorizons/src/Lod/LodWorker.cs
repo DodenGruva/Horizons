@@ -93,7 +93,7 @@ public class MeshJob
 {
     public long Key;
     public required SectionSnapshot Self;
-    public required SectionSnapshot?[] Neighbors; // W, E, N, S
+    public required SectionSnapshot?[] Neighbors; // W, E, N, S, NW, NE, SW, SE
     public long EstimatedRetainedBytes;
     public long ReadyAtMilliseconds;
 

@@ -2058,6 +2058,175 @@ something a straight ray of the same length could have reached.
 
 **Found:** 2026-08-26, session 57.
 
+### G107 - Post-transform geometry must use one effective coverage view on both sides
+
+**Trigger:** transforming a section transiently for one mesh build while adjacent coverage still
+comes from canonical snapshots.
+
+**Trap:** Session 57's cave pass rebuilt the current section with hidden air filled, but vertical
+face collection read the old `MeshJob.Self` and immutable neighbour snapshots. Every filled column
+therefore saw the cave air that used to be beside it and emitted a wall; multi-column cavities
+became lattices of invented faces and cave culling added 2.9% geometry in game. A harness that
+pre-filled before meshing concealed the ownership split.
+
+**Do:** one operation must own one coherent effective-coverage result. Session 58's
+`LodCaveCull.Prepared` supplies both the rebuilt self and matching immediate-neighbour boundary
+classification; the shipping harness enters through `LodMesher.BuildMesh`. Pin internal and
+cross-section cases. The human-proven result changed the same 1,730 meshes from 88.6M to 66.4M
+opaque vertices instead of 91.1M.
+
+**Found:** 2026-08-26, session 58.
+
+### G108 - A bounded fail-open window cannot prove a large component globally enclosed
+
+**Trigger:** deciding whether an air/fluid component is sealed from a local window whose unknown
+edge is treated as exterior.
+
+**Trap:** a globally sealed cave network that enters two sides of the window is locally
+indistinguishable from a useful through-tunnel into unknown space. Recentring the same window for
+every section does not add knowledge: a component larger than the window can escape every local
+decision. Increasing light reach changes the band but does not prove global enclosure.
+
+**Do:** either retain such components and state the limitation, or classify connectivity across
+section boundaries with explicit unknown-frontier state. Real surface portals must be distinct
+from the boundary of current knowledge. Add retained-by-unknown telemetry before arguing which case
+dominates.
+
+**Found:** 2026-08-26, session 58, after 0.3.115 left large dry underground networks.
+
+### G109 - A one-cell bridge fixture overstates pruning value in volumetric terrain
+
+**Trigger:** choosing a graph-pruning algorithm from a narrow synthetic tunnel and dead branch.
+
+**Trap:** bridge-tree pruning removes a branch only when one graph edge is its unique connection.
+Natural caves are wide: adjacent columns create parallel routes and rooms create loops, so even a
+dead-looking branch often belongs to a non-bridge component and is retained. Contracting all dark
+heights in one X/Z column can create additional conservative shortcuts inside vertically complex
+connected networks. The fixture passes while real-cache and live gain remain nearly unchanged.
+
+**Do:** measure reason/topology distributions in real data and include wide branches, loops,
+stacked cave layers, rooms, and complex mouths in fixtures. A passing minimal topology test proves
+correctness for that shape, not expected value in worldgen.
+
+**Found:** 2026-08-26, session 58. The 0.3.115 refinement added only about 0.3 percentage points in
+the owner's settled scene.
+
+### G110 - Water-filled space is geometry, not air, in the LOD snapshot
+
+**Trigger:** expecting an air-cavity fill to remove flooded caves.
+
+**Trap:** capture reads `BlockLayersAccess.FluidOrSolid`; water is a stored run marked
+`FlagWater`, and the cave occupancy builder treats every run as occupied. A flooded chamber
+therefore contains no dark air for the culler to replace. Partially flooded caves can lose some air
+while water geometry and the terrain faces visible through it remain. Treating water as plain air
+would instead let daylight and connectivity leak through oceans.
+
+**Do:** classify fluid components separately. Keep anything connected to an exposed ocean/lake,
+real opening, or unknown frontier; only a fully enclosed known fluid component is eligible for
+absorption or internal-geometry suppression. Never borrow water as an opaque cave fill.
+
+**Found:** 2026-08-26, session 58.
+
+### G111 - A large fail-open bucket is not the same as a recoverable one
+
+**Trigger:** seeing one conservative rule account for a large share of retained geometry and funding
+a fix aimed at that rule.
+
+**Trap:** Session 59's first global prototype kept 29.5% of estimated subterranean geometry as
+"unknown frontier", which looked like the obvious target. Replacing component-granularity unknown
+handling with pseudo-portals - the stance the shipping rule already takes at its own window wall -
+deleted that verdict entirely and gained **0.2 percentage points**. The geometry moved intact into
+route retention, which rose from 9.3% to 34.2%, because those components were never undecidable
+*because* they touch the frontier: they are colossal networks that also carry many genuine surface
+mouths. Removing one excuse simply handed them to the next rule.
+
+**Do:** attribute retention exactly before funding a fix, and check where a bucket's contents would
+*go* if the rule were relaxed. Run the classification twice - once with the rule, once without - and
+charge the difference, rather than inferring which rule mattered from the size of its share.
+
+**Found:** 2026-08-26, session 59.
+
+### G112 - Keeping every route between entrances keeps deep interior, not passages
+
+**Trigger:** preserving connectivity between cave mouths by retaining the graph structure that joins
+them.
+
+**Trap:** a natural cave system is overwhelmingly one 2-edge-connected blob (G109), so "keep every
+route between two entrances" keeps its entire core, including regions hundreds of blocks from any
+mouth that no sight line could ever cross. Measured over the owner's real cache this held 34.2% of
+estimated subterranean geometry - more than the shipping rule removes in total - while the branch
+peel that was supposed to trim it shed only about 5% of what it examined.
+
+**Do:** bound routes geometrically, not just topologically. Keeping a route span only within a slack
+distance `W` of a shortest mouth-to-mouth path cut route retention to 3.6% and roughly doubled total
+removal to 62.9% at reach 32, with the curve flattening below `W` of about 32 - one light-reach of
+slack. A cycle does not fool a distance test the way it defeats a bridge test. Note the cost: this
+is the one rule in the family that can remove geometry a player could actually see, so it needs
+human visual acceptance, not only a geometry total.
+
+**Found:** 2026-08-26, session 59.
+
+### G113 - Daylight reach is bounded by the local window's margin
+
+**Trigger:** raising the cave rule's light reach to protect deeper terrain, such as the underside of
+a large overhang.
+
+**Trap:** `LodCaveCull` treats its 3x3 window's outer wall as open sky so the unknown fails open,
+which makes that wall a light *source*. The margin is one full section - 64 columns at L0 - so the
+reach must stay under it. At reach 64 wall light arrives at the centre-section boundary with exactly
+zero budget and is rejected only because the flood discards non-positive values; at reach 128 it
+penetrates 64 columns into the centre section and lights all of it. The failure is not visual damage
+- false light keeps geometry - but the saving disappears entirely, which is the same effect Session
+57 measured as the difference between removing 15% and about 30%.
+
+**Do:** treat reach and margin as one coupled constraint. Keep any mesh-time reach at 64 or less at
+L0, and satisfy a larger reach by moving classification out of the window rather than growing it:
+the workspace is three arrays over `(grid + 2*margin)^2 * worldHeight` per mesh thread, so a margin
+that matches a 128-block reach costs about 2.8x the memory on every mesh thread. Sections without a
+classification should simply not be culled. Session 60 measured the accepted surface-only rule on
+the same 40-section sample: reach 64 removed 26.88% of 1,554,740 estimated vertices, while reach 96
+retained 20,276 more (1.30% of baseline) and reach 128 retained 73,996 more (4.76%). The owner chose
+64.
+
+**Found:** 2026-08-26, session 59, when the owner directed reach to expand for overhang safety;
+quantified and closed 2026-08-27, session 60.
+
+### G114 - A long visible tunnel can have no exterior seed inside a local window
+
+**Trigger:** preserving a straight passage only when a surface mouth or exterior seed is present in
+the current mesh job's bounded data window.
+
+**Trap:** the middle section of a long straight tunnel through a mountain contains neither mouth.
+The complete passage is visible from outside, but every local cell looks like part of a sealed
+corridor, so a seed-requiring sight pass plugs the middle. A fixture that puts a mouth inside the
+centre or neighbour section proves only a short tunnel and misses the actual ambiguity.
+
+**Do:** when a solid-free lattice line crosses the complete available window, fail open and retain
+it even if its real mouths are beyond the snapshots. Put both fixture mouths outside the 3x3 window
+so the test exercises the same state as the failing middle section. Record the unavoidable cost: a
+globally sealed, perfectly straight corridor crossing the local window can also survive. Only a
+global classifier can distinguish the two, and the owner accepted the conservative local choice.
+
+**Found:** 2026-08-27, session 60, after version 0.3.118 plugged the owner's intentionally straight
+east-west mountain tunnel; fixed in 0.3.119.
+
+### G115 - An exact sightline is thinner than the visible passage around it
+
+**Trigger:** retaining only cells touched by the mathematical line that proves a tunnel visible.
+
+**Trap:** the open core survives, but a one-block floor hump or nearby wall irregularity can sit
+just outside the ray and be filled into the tunnel. The visibility proof is correct while the
+resulting tunnel shape is visibly wrong.
+
+**Do:** grow a small fixed clearance volume from the proven ray, stop expansion at solid terrain,
+and measure the geometry cost. Never use the halo as an unbounded flood or seed it from ordinary
+daylight, because either change restores hidden networks. Session 60's accepted four-block,
+all-26-direction halo retained about 2,250 estimated vertices on a 1,554,740-vertex real-cache
+sample (0.15%) and had effectively unchanged paired harness wall time.
+
+**Found:** 2026-08-27, session 60. Version 0.3.120's one-block vertical guard was deliberately
+superseded by 0.3.121's four-block all-direction clearance.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

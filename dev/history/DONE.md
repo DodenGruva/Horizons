@@ -2,6 +2,128 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-27 - Surface-only cave culling accepted in 0.3.121; command clarified in 0.3.122
+
+- The owner narrowed the product requirement to geometry visible from the ground surface. Hidden
+  cave connectivity has no value merely because it joins entrances, so route/backbone retention was
+  removed from the runtime decision. The proposed background global graph, masks, global fluid
+  classification, and invalidation machinery were closed as superseded rather than implemented.
+- The shipping rule now combines a terrain-derived 64-block daylight envelope with exact straight
+  surface sight. It makes no sea-level assumption, does not follow bends, and stops sight at solid
+  terrain.
+- Version 0.3.118's first sight pass plugged the middle of a long straight mountain tunnel because
+  both mouths were outside the local 3x3 window. Version 0.3.119 preserves an uninterrupted line
+  crossing the complete window, accepting that a globally sealed straight corridor can also fail
+  open. Recorded as G114.
+- Version 0.3.120 added a one-block vertical guard for uneven tunnel floors. On the owner's
+  direction, 0.3.121 superseded it with a four-block solid-stopped halo through all 26 directions.
+  The final halo cost about 2,250 estimated vertices, 0.15% of a 1,554,740-vertex real-cache sample,
+  with effectively unchanged paired harness wall time. Recorded as G115.
+- The final reach sweep on that sample measured 26.88% removal at 64, 25.58% at 96, and 22.12% at
+  128. Relative to 64, the larger reaches retained 1.30% and 4.76% of baseline geometry. The owner
+  chose 64, closing the last global-plan measurement decision.
+- The owner reported one same scene looked visually identical while increasing from about 350 FPS
+  to about 400 FPS with culling enabled, accepted the tunnel fixes, and directed cave culling to
+  default on. This is qualitative one-machine evidence, not a controlled benchmark.
+- Version 0.3.122 renames the command from `.vhcaves` to `.vhcavecull` with no old-name alias. The
+  no-argument report, `on`/`off` remesh, `VINTAGEHORIZONS_CAVE_CULLING=0` fallback, and client-log
+  retention telemetry remain.
+- Warning-free Release builds of the mod and benchmark project, 5,368 fast assertions, and 1,570
+  documentation checks pass. The verified 14-entry 0.3.122 package was copy-installed with SHA-256
+  `F971FC4643016AC2EB5A07C8702453C2E31C01257425BB826E51B805F05D9800`; no game process was launched.
+- Assist protocol 1, blob format 4, and database schema 6 are unchanged.
+
+## 2026-08-26 - Retention telemetry shipped in 0.3.116, so a surviving cave names its own reason
+
+- Session 58 required that reason telemetry precede any further cave funding: the aggregate
+  `.vhcaves` line could show that caves survived but not which safety rule kept them, and the
+  candidate reasons imply completely different fixes.
+- `LodCaveCull` now carries a pooled per-cell provenance byte beside its light values and tallies
+  every subterranean cell of each window's centre section into six reasons: removed and filled, lit
+  by daylight, backbone between known terminals, backbone with an unknown-territory terminal, no
+  opaque fill material, and unclassified water. Each row reports cells, share, a face-area estimate
+  and cells per section.
+- `.vhcaves` with no argument writes the block to the client log under `caves:` because game chat
+  cannot be copied; the toggle resets the tally beside the existing timing reset.
+- No cull decision changed. The accounting reads the finished classification, walks only the centre
+  section so terrain is not counted nine times, and the single ordering change seeds the same cells
+  to the same values. `CaveCullChecks` grew from 23 to 36 assertions pinning exact counts.
+- Warning-free build, verified and copy-installed 0.3.116 package; SHA-256
+  `AE3291B9CA12A0EC5583A197A284B232630DB75AE287767F12A1046A8A15F7D1`. **Not yet run in game**, and
+  its live cost was never isolated.
+
+## 2026-08-26 - The global cave classifier priced offline, and route tightening found the real limit
+
+- Built `CaveSpanGraph`, an offline whole-cache prototype of the architecture Session 58
+  recommended: maximal vertical air spans as nodes, edges only where adjacent columns' spans overlap
+  in Y, exterior above each captured column, contiguous portal-adjacent spans as one portal
+  identity, portal-only daylight flood, and a separate fluid graph. Measured over the owner's real
+  cache: 4,637 level-0 sections, 27,456,106 air spans, 5,439,699 water spans, 51,310,867 edges.
+- **Iteration 1.** The global rule alone removes 30.8% of estimated subterranean geometry against
+  the shipping local rule's 30.3% - only +5.4 pp - while keeping 29.5% as undecidable. Cause:
+  "unknown" is a property of a whole component, only 0.2% of captured columns sit beside something
+  uncaptured, and the largest of 386,066 components holds 18,466,178 of 27,456,106 spans.
+- **Iteration 2.** Treating every frontier contact as a pseudo-portal, the stance the shipping rule
+  already takes at its own window wall, deleted the undecidable verdict entirely and gained
+  **0.2 pp**: route retention rose 9.3% -> 34.2% as that geometry moved intact into the multi-portal
+  branch. Attribution was made exact by running the flood and peel twice, once from real mouths and
+  once from all terminals, charging the difference to the frontier. Recorded as G111.
+- **Iteration 3.** Bounding a route to spans within slack `W` of a shortest mouth-to-mouth path
+  roughly doubles removal: **62.9% at W=32 k=2, reach 32** (63.8% with the local rule), route
+  retention down to 3.6%, curve flattening below W~=32, and the local/global safety disagreement
+  collapsing 79% from 3,018,736 to about 620,000 cells. Route retention proved to be deep interior
+  hundreds of blocks from any mouth, not passages. Recorded as G112.
+- The sightline/tortuosity variant measured about +0.2 pp and was dropped from the runtime design;
+  its fixtures were kept. Enclosed water is worth 0.4 pp - fluid is 57% of subterranean cells but
+  7.9% of the geometry.
+- Both frontier stances remain selectable and reproduce their whole-cache numbers byte-identically
+  across every refactor, which is what makes the iteration comparisons legitimate. `CaveSpanChecks`
+  stands at 98 assertions; the full fast tier passes 5,278 with zero failures.
+- All figures are harness-measured floors in an upper-bound unit (`faces x 4`, and the flood never
+  charges for climbing). Nothing global has run in game.
+
+## 2026-08-26 - Cave-culling sign defect fixed and human-proven in 0.3.114
+
+- Source-traced Session 57's in-game reversal to inconsistent geometry coverage. `LodCaveCull`
+  rebuilt the current section with selected air filled, while `LodMesher` compared vertical faces
+  with the original current/neighbour snapshots. Filled adjacent cave columns therefore saw old air
+  and manufactured internal and cross-section walls.
+- Added `LodCaveCull.Prepared`, which owns the rebuilt self snapshot and the matching 3x3 boundary
+  classification for one mesh build. Internal comparisons now read the rebuilt self; external side
+  collection folds in effective filled coverage from the immediately adjacent neighbour column.
+- Changed `cavefield --shipping` to exercise `LodMesher.BuildMesh` with culling enabled instead of
+  pre-filling away the integration boundary. Added multi-column and cross-section seam regressions.
+- Human-validated at the same settled 1,730 meshes: 88,606,884 to 66,372,948 opaque vertices
+  (-25.1%) and 1,895.7 to 1,427.7 MiB (-468.0 MiB). The owner reported that it works. This closes
+  Session 57's top-priority sign defect and supersedes the greedy-colour lead as its diagnosis.
+- Warning-free build and verified, copy-installed 0.3.114 package; SHA-256
+  `AED61A89F84528B52FFBC1595C1C4EF77255BD1F873A69C42B364E9BE26A7871`.
+
+## 2026-08-26 - Local coarse/backbone cave refinement measured and bounded in 0.3.115
+
+- On new branch `codex/cave-culling-refinement`, extended the light classifier through L4-L6 with
+  an approximately four-column effective reach and replaced whole-component restoration with a
+  conservative terminal-to-terminal bridge-tree backbone. Added an opaque-only fill safeguard
+  after the first L3 audit found one water fill.
+- The cave suite passes 23 assertions; the complete Release fast tier passes 5,167 and the build is
+  warning-free. Real-cache L4/L5/L6 sampling removed only 1.7%/0.5%/0.3%. No audited coarse fill
+  used water or thin material after the safeguard.
+- Human live result at the same settled 1,713 meshes: 86,884,340 to 64,791,952 opaque vertices
+  (-25.43%) and 1,858.7 to 1,393.7 MiB (-465.0 MiB). This is only roughly 0.3 percentage points
+  beyond the accepted 0.3.114 result and matches the owner's report that the refinement made little
+  apparent difference.
+- First cave-worker cost measurement: 1,713 sections, 44.984 ms mean and 149.648 ms maximum for the
+  complete preparation pass, about 77 seconds aggregate worker CPU. It runs in parallel and cannot
+  be attributed solely to the refinement because 0.3.114 lacked the same timer.
+- Source review of surviving dry/flooded caves established the approach boundary: a recentered
+  3x3 fail-open window cannot prove a large network globally sealed; frontier patches are not real
+  portal identities; wide natural cave topology rarely exposes removable bridges; and water is
+  stored as occupied geometry rather than cavity air. A global cross-section vertical-span graph,
+  real surface portal identities, separate fluid connectivity, conservative coarse masks, and
+  reason telemetry are the recommended next direction. None is implemented or approved.
+- Verified, copy-installed 0.3.115 package; SHA-256
+  `69C6E8FAA2B0D3E2AFCAB3B385FC6E68A4398B507167A890FC425F194FEB9671`. Source remains uncommitted.
+
 ## 2026-08-26 - Aggregate subtree bounds shipped and answered in 0.3.107
 
 - `LodSubtreeHeights` gives every quadtree node the combined vertical extent of the meshes resident

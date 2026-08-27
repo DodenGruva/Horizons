@@ -8,6 +8,102 @@ first.
 
 ## [Unreleased]
 
+## [0.3.122] - 2026-08-27
+
+**Cave culling is now a surface-visibility optimisation, is on by default, and preserves straight
+mountain tunnels.** The owner does not need hidden underground networks preserved merely because
+they connect cave entrances. The runtime rule therefore keeps a 64-block daylight envelope around
+the actual captured terrain surface plus exact unobstructed straight sight from exterior air; it
+does not use sea level, follow bends, or keep unrelated network branches.
+
+Long straight tunnels remain open even when both mouths lie outside a mesh job's 3x3 data window:
+an uninterrupted ray crossing the complete known window fails open. A fixed four-block clearance
+halo extends from a proven ray through all 26 directions and stops at solid terrain, preserving
+uneven floors and the visible tunnel volume without becoming a connectivity flood. On the same
+40-section real-cache sample the final rule changed 1,554,740 estimated vertices to 1,136,824,
+removing 26.88%. The four-block all-direction guard cost about 2,250 estimated vertices, 0.15% of
+the baseline, with effectively unchanged paired harness wall time.
+
+The owner reports that a same scene looked visually identical and rose from about 350 FPS to about
+400 FPS with culling enabled, then accepted the mountain-tunnel and uneven-floor fixes. This is
+qualitative single-machine evidence rather than a controlled benchmark. Reach comparisons kept
+1.30% more baseline geometry at 96 and 4.76% more at 128; the owner chose 64. Cave culling now
+defaults on, with `VINTAGEHORIZONS_CAVE_CULLING=0` and `.vhcavecull off` retaining immediate
+rollback. The in-game command has been renamed from `.vhcaves` to `.vhcavecull`; the old name is
+removed. Warning-free Release builds and 5,368 fast assertions pass. The verified, copy-installed
+0.3.122 package SHA-256 is
+`F971FC4643016AC2EB5A07C8702453C2E31C01257425BB826E51B805F05D9800`.
+
+The previously proposed global span graph, persistent masks, route classifier, separate fluid
+graph, and invalidation machinery were not built. Their offline prototype remains useful evidence:
+it proved that preserving every entrance-to-entrance route retains deep interior, not merely
+visible passages. The plan is closed as superseded by the accepted surface-only rule. Assist
+protocol 1, blob format 4, and database schema 6 are unchanged.
+
+## [0.3.116] - 2026-08-26
+
+**Cave culling can now say why it kept a cave.** A screenshot could show a cavern that survived, but
+nothing could distinguish which safety rule saved it, and the possible reasons imply completely
+different fixes. `LodCaveCull` now tallies every subterranean cell of each classified section into
+one of six reasons: removed and filled, kept lit by daylight, kept on a backbone between terminals
+we hold terrain for, kept on a backbone whose terminal is light invented at the unknown window wall,
+kept because the column has no opaque material to fill with, and water that the air pass never
+classifies at all. Each reason reports cells, share, a face-area estimate, and cells per section.
+
+`.vhcaves` with no argument writes the breakdown to the client log under `caves:`, because chat
+cannot be copied out of the game; the chat reply keeps its one-line summary and points at the log.
+Toggling cave culling resets the tally alongside the existing timing reset.
+
+This changes no culling decision. The accounting reads the finished classification, walks only the
+centre section of each window so terrain is not counted nine times, and the one ordering change it
+required seeds the same cells to the same values. The cave suite grew from 23 to 36 assertions
+pinning exact counts, and the full fast tier passes 5,278. Cave culling remains off by default. The
+verified package SHA-256 is
+`AE3291B9CA12A0EC5583A197A284B232630DB75AE287767F12A1046A8A15F7D1`. This build has not yet been run
+in game.
+
+## [0.3.115] - 2026-08-26
+
+**Cave culling now runs conservatively at every rendered LOD and removes narrow dead branches from
+multi-entrance cave networks, but the measured additional value is marginal.** Coarse levels scale
+the light budget to approximately four represented columns instead of declining at L4-L6. Dark
+cave space is reduced to a conservative passage graph; only bridge-separated branches that lead to
+no light-frontier terminal are filled, while every route between terminals, wide rooms, loops, and
+ambiguous junctions remain. Columns without an opaque material are left unchanged rather than
+being plugged with water or thin cover.
+
+The focused cave suite now passes 23 assertions and the complete fast tier passes 5,167. Real-cache
+sampling found only 1.7%, 0.5%, and 0.3% removable at L4, L5, and L6. In the owner's settled live
+comparison, the same 1,713 meshes changed from 86,884,340 to 64,791,952 opaque vertices and from
+1,858.7 to 1,393.7 MiB with cave culling enabled: 25.43% and 25.02% reductions, only roughly 0.3
+percentage points beyond the accepted 0.3.114 result. The complete cave-preparation pass measured
+44.984 ms mean and 149.648 ms maximum worker time per section; 0.3.114 lacks the same timer, so this
+is current total cost, not the refinement's isolated overhead.
+
+Human review found substantial dry and flooded underground geometry remaining. The local
+3x3-section classifier cannot prove that a large cave crossing its unknown boundary is globally
+sealed; light-expiration patches are not verified surface mouths; wide natural cave branches form
+cycles rather than removable graph bridges; and water is captured as occupied geometry rather than
+air the cavity pass can fill. This refinement is not accepted as the final approach and cave
+culling remains off by default. The verified package SHA-256 is
+`69C6E8FAA2B0D3E2AFCAB3B385FC6E68A4398B507167A890FC425F194FEB9671`.
+
+## [0.3.114] - 2026-08-26
+
+**Cave culling now removes geometry in game instead of adding it.** The culler rebuilt the current
+section with hidden air filled, but vertical face collection compared that post-cull terrain with
+the original current and neighbour snapshots. Adjacent filled columns therefore saw old cave air
+and grew walls through the cavern, reversing the intended saving. One prepared classification now
+supplies the rebuilt current section and matching immediate-neighbour boundary coverage to every
+face decision. The shipping `cavefield` path and focused checks exercise multi-column chambers and
+cross-section seams so the integration disagreement cannot hide behind pre-filled test data again.
+
+The owner accepted the correction in game. At the same settled 1,730 meshes, culling changed
+88,606,884 to 66,372,948 opaque vertices and 1,895.7 to 1,427.7 MiB: about 25.1% fewer vertices and
+468 MiB less live geometry. Cave culling remains opt-in because it changes terrain geometry. The
+verified package SHA-256 is
+`AED61A89F84528B52FFBC1595C1C4EF77255BD1F873A69C42B364E9BE26A7871`.
+
 ## [0.3.113] - 2026-08-26
 
 **Quadtree subtrees are culled by the real height of the terrain under them.** Whole branches of
