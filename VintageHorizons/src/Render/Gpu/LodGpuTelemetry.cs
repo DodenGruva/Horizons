@@ -9,6 +9,7 @@ internal interface ILodGpuTimerApi
     bool TimeElapsedTargetIsFree();
     void BeginTimeElapsed(int queryId);
     void EndTimeElapsed();
+    void RecordTimestamp(int queryId);
     bool TryGetResultNanoseconds(int queryId, out long nanoseconds);
     void DeleteQuery(int queryId);
 }
@@ -25,6 +26,8 @@ internal sealed class LodOpenGlTimerApi : ILodGpuTimerApi
 
     public void BeginTimeElapsed(int queryId) => GL.BeginQuery(QueryTarget.TimeElapsed, queryId);
     public void EndTimeElapsed() => GL.EndQuery(QueryTarget.TimeElapsed);
+    public void RecordTimestamp(int queryId) =>
+        GL.QueryCounter(queryId, QueryCounterTarget.Timestamp);
 
     public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
     {
@@ -170,6 +173,110 @@ internal sealed class LodGpuTimerRing : IDisposable
     }
 }
 
+/// <summary>
+/// A delayed pair of GPU timestamps. Timestamp pairs can sit inside the existing whole-pass
+/// TIME_ELAPSED query, so the live cull dispatch can be isolated without disturbing that
+/// accepted measurement. Results are polled and never waited on.
+/// </summary>
+internal sealed class LodGpuTimestampRing : IDisposable
+{
+    struct Slot
+    {
+        public int BeginQueryId;
+        public int EndQueryId;
+        public bool Pending;
+        public long Epoch;
+    }
+
+    readonly ILodGpuTimerApi api;
+    readonly Slot[] slots;
+    int nextSlot;
+    int activeSlot = -1;
+    long epoch = 1;
+
+    public int UnavailableSlots { get; private set; }
+    public int PendingCount => slots.Count(slot => slot.Pending);
+
+    public LodGpuTimestampRing(ILodGpuTimerApi api, int slotCount = 8)
+    {
+        if (slotCount < 2) throw new ArgumentOutOfRangeException(nameof(slotCount));
+        this.api = api;
+        slots = new Slot[slotCount];
+    }
+
+    public bool TryBegin()
+    {
+        if (activeSlot >= 0) throw new InvalidOperationException("GPU timestamp already active");
+
+        ref Slot slot = ref slots[nextSlot];
+        if (slot.Pending)
+        {
+            UnavailableSlots++;
+            return false;
+        }
+
+        if (slot.BeginQueryId == 0) slot.BeginQueryId = api.CreateQuery();
+        if (slot.EndQueryId == 0) slot.EndQueryId = api.CreateQuery();
+        api.RecordTimestamp(slot.BeginQueryId);
+        activeSlot = nextSlot;
+        return true;
+    }
+
+    public void End() => Finish(keep: true);
+    public void Discard() => Finish(keep: false);
+
+    void Finish(bool keep)
+    {
+        if (activeSlot < 0) return;
+        ref Slot slot = ref slots[activeSlot];
+        api.RecordTimestamp(slot.EndQueryId);
+        slot.Pending = true;
+        slot.Epoch = keep ? epoch : long.MinValue;
+        nextSlot = (activeSlot + 1) % slots.Length;
+        activeSlot = -1;
+    }
+
+    public void Poll(ref LodPhaseCost cost)
+    {
+        for (int i = 0; i < slots.Length; i++)
+        {
+            ref Slot slot = ref slots[i];
+            if (!slot.Pending
+                || !api.TryGetResultNanoseconds(slot.BeginQueryId, out long begin)
+                || !api.TryGetResultNanoseconds(slot.EndQueryId, out long end)) continue;
+
+            slot.Pending = false;
+            if (slot.Epoch == epoch && end >= begin)
+                cost.AddElapsedTicks(LodGpuTimerRing.NanosecondsToStopwatchTicks(end - begin));
+        }
+    }
+
+    public void ResetInterval()
+    {
+        epoch++;
+        UnavailableSlots = 0;
+    }
+
+    public void Dispose()
+    {
+        activeSlot = -1;
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i].BeginQueryId != 0)
+            {
+                try { api.DeleteQuery(slots[i].BeginQueryId); }
+                catch { /* Context teardown must continue. */ }
+            }
+            if (slots[i].EndQueryId != 0)
+            {
+                try { api.DeleteQuery(slots[i].EndQueryId); }
+                catch { /* Context teardown must continue. */ }
+            }
+            slots[i] = default;
+        }
+    }
+}
+
 /// <summary>Phase 0 capability report and optional delayed GPU-pass timers.</summary>
 internal sealed class LodGpuTelemetry : IDisposable
 {
@@ -182,6 +289,9 @@ internal sealed class LodGpuTelemetry : IDisposable
     readonly LodGpuTimerRing hzbTimer;
     readonly LodGpuTimerRing splitHzbTimer;
     readonly LodGpuTimerRing classifyTimer;
+    readonly LodGpuTimestampRing ordinaryCullTimer;
+    readonly LodGpuTimestampRing splitNearCullTimer;
+    readonly LodGpuTimestampRing splitFarCullTimer;
     bool probeAttempted;
     bool timingFailureReported;
 
@@ -215,16 +325,21 @@ internal sealed class LodGpuTelemetry : IDisposable
     /// A single combined number could absorb that entirely and report nothing.
     /// </summary>
     public LodPhaseCost ClassifyGpuCost;
+    public LodPhaseCost OrdinaryCullGpuCost;
+    public LodPhaseCost SplitNearCullGpuCost;
+    public LodPhaseCost SplitFarCullGpuCost;
 
     public int PendingResults =>
         opaqueTimer.PendingCount + splitNearTimer.PendingCount + splitFarTimer.PendingCount
         + waterTimer.PendingCount + hzbTimer.PendingCount + splitHzbTimer.PendingCount
-        + classifyTimer.PendingCount;
+        + classifyTimer.PendingCount + ordinaryCullTimer.PendingCount
+        + splitNearCullTimer.PendingCount + splitFarCullTimer.PendingCount;
     public int UnavailableSlots =>
         opaqueTimer.UnavailableSlots + splitNearTimer.UnavailableSlots
         + splitFarTimer.UnavailableSlots + waterTimer.UnavailableSlots + hzbTimer.UnavailableSlots
-        + splitHzbTimer.UnavailableSlots
-        + classifyTimer.UnavailableSlots;
+        + splitHzbTimer.UnavailableSlots + classifyTimer.UnavailableSlots
+        + ordinaryCullTimer.UnavailableSlots + splitNearCullTimer.UnavailableSlots
+        + splitFarCullTimer.UnavailableSlots;
     public int TargetBusy => opaqueTimer.TargetBusy + splitNearTimer.TargetBusy
         + splitFarTimer.TargetBusy + waterTimer.TargetBusy + hzbTimer.TargetBusy
         + splitHzbTimer.TargetBusy
@@ -249,6 +364,9 @@ internal sealed class LodGpuTelemetry : IDisposable
         hzbTimer = new LodGpuTimerRing(timerApi);
         splitHzbTimer = new LodGpuTimerRing(timerApi);
         classifyTimer = new LodGpuTimerRing(timerApi);
+        ordinaryCullTimer = new LodGpuTimestampRing(timerApi);
+        splitNearCullTimer = new LodGpuTimestampRing(timerApi);
+        splitFarCullTimer = new LodGpuTimestampRing(timerApi);
     }
 
     /// <summary>
@@ -322,6 +440,9 @@ internal sealed class LodGpuTelemetry : IDisposable
             hzbTimer.Poll(ref HzbGpuCost);
             splitHzbTimer.Poll(ref SplitHzbGpuCost);
             classifyTimer.Poll(ref ClassifyGpuCost);
+            ordinaryCullTimer.Poll(ref OrdinaryCullGpuCost);
+            splitNearCullTimer.Poll(ref SplitNearCullGpuCost);
+            splitFarCullTimer.Poll(ref SplitFarCullGpuCost);
         }
         catch (Exception e)
         {
@@ -358,6 +479,11 @@ internal sealed class LodGpuTelemetry : IDisposable
     public bool BeginClassify() => Begin(classifyTimer);
     public void EndClassify() => End(classifyTimer);
 
+    /// <summary>Begins the timestamp pair around one live cull compute dispatch.</summary>
+    public bool BeginCull(LodGpuCullBucket bucket) => Begin(CullTimer(bucket));
+    public void EndCull(LodGpuCullBucket bucket) => End(CullTimer(bucket));
+    public void DiscardCull(LodGpuCullBucket bucket) => Discard(CullTimer(bucket));
+
     public void ResetInterval()
     {
         OpaqueCost.Reset();
@@ -367,6 +493,9 @@ internal sealed class LodGpuTelemetry : IDisposable
         HzbGpuCost.Reset();
         SplitHzbGpuCost.Reset();
         ClassifyGpuCost.Reset();
+        OrdinaryCullGpuCost.Reset();
+        SplitNearCullGpuCost.Reset();
+        SplitFarCullGpuCost.Reset();
         opaqueTimer.ResetInterval();
         splitNearTimer.ResetInterval();
         splitFarTimer.ResetInterval();
@@ -374,6 +503,9 @@ internal sealed class LodGpuTelemetry : IDisposable
         hzbTimer.ResetInterval();
         splitHzbTimer.ResetInterval();
         classifyTimer.ResetInterval();
+        ordinaryCullTimer.ResetInterval();
+        splitNearCullTimer.ResetInterval();
+        splitFarCullTimer.ResetInterval();
     }
 
     void ProbeAndReport()
@@ -456,6 +588,38 @@ internal sealed class LodGpuTelemetry : IDisposable
         catch (Exception e) { DisableTiming(e); }
     }
 
+    LodGpuTimestampRing CullTimer(LodGpuCullBucket bucket) => bucket switch
+    {
+        LodGpuCullBucket.SplitNear => splitNearCullTimer,
+        LodGpuCullBucket.SplitFar => splitFarCullTimer,
+        _ => ordinaryCullTimer,
+    };
+
+    bool Begin(LodGpuTimestampRing timer)
+    {
+        if (!TimingActive) return false;
+        try { return timer.TryBegin(); }
+        catch (Exception e)
+        {
+            DisableTiming(e);
+            return false;
+        }
+    }
+
+    void End(LodGpuTimestampRing timer)
+    {
+        if (!TimingActive) return;
+        try { timer.End(); }
+        catch (Exception e) { DisableTiming(e); }
+    }
+
+    void Discard(LodGpuTimestampRing timer)
+    {
+        if (!TimingActive) return;
+        try { timer.Discard(); }
+        catch (Exception e) { DisableTiming(e); }
+    }
+
     void DisableTiming(Exception e)
     {
         TimingActive = false;
@@ -473,6 +637,9 @@ internal sealed class LodGpuTelemetry : IDisposable
         hzbTimer.Dispose();
         splitHzbTimer.Dispose();
         classifyTimer.Dispose();
+        ordinaryCullTimer.Dispose();
+        splitNearCullTimer.Dispose();
+        splitFarCullTimer.Dispose();
         TimingActive = false;
     }
 }

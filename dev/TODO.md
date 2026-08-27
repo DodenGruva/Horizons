@@ -2,45 +2,20 @@
 
 > Tier 2 companion: open work only. Completed narrative moves to `dev/history/DONE.md`; current conclusions belong in `STATUS.md`.
 
-## Renderer optimisation candidates, ranked and not yet funded
+## Renderer optimisation sweep is closed; one optional subtree A/B remains
 
-Recorded in session 50 at the owner's request. None is started. The ordering is by expected payoff
-against effort, and each is explicitly gated on a measurement rather than on argument.
+Session 61 measured every unfunded candidate before building it. Sixteen-MiB pages saved only two
+of 76 observed batches while increasing committed cluster-arena memory from 200 to 368 MiB. The
+camera-relative command/record/box stream is 116 bytes per command and peaked at about 239 KiB per
+frame, below 100 MiB/s even around 400 FPS. Direct GPU timestamp pairs then measured split-far cull
+dispatch at 25 us p95 and p99, with 108 us as the largest interval maximum. Larger pages, a
+region-anchored record rewrite, and two-tier cluster culling are therefore rejected on measured
+payoff. Narrative and exact route figures are in `dev/history/DONE.md` and Session 61.
 
-**Note on diagnostics.** The staging switches are retired and the measurement surfaces are not:
-every stage keeps an environment override, and the live cull telemetry, GPU stage timings,
-section-height counters, distance bands and the offline `HzbField` harness all survive. Session 53
-verified against source that no retired command is needed by anything below. The one exception is
-item 1, which should get a temporary live toggle of its own - new instrumentation for new work,
-retired once the bounds are accepted.
-
-**1. Aggregate vertical bounds for quadtree subtrees - DONE and ANSWERED, not pending.** Built in
-0.3.107 and measured in game. It works and it is marginal, for a structural reason worth keeping:
-at a leaf the aggregate box CONTAINS the per-section box shipped in 0.3.58, so it can only reject a
-subset of what that test already rejects, and three of five measured views rejected only
-single-mesh nodes. The walk it speeds up costs 44.3 us of a roughly 2000 us frame, so 2% was the
-entire ceiling and nobody checked that before the work started (G103). Kept because it is free.
-Narrative in `dev/history/DONE.md`; the one live obligation is a controlled
-`VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` A/B in one settled view, which has never been run.
-
-**2. Try 16 MiB arena pages.** Page size, not region shape, was the proven lever for batch counts:
-8 MiB gave 3.7-4.6x and 32 MiB gave 10.6-11.5x, but 32 MiB pages are only about 49% live against
-71% at 8 MiB, so the ceiling must grow faster than the page. 16 MiB is documented as untested and
-is exposed as `VINTAGEHORIZONS_GPU_ARENA_PAGE_MB`. This is a measurement run with no code change.
-
-**3. Measure per-frame command/record/box upload volume before optimising it.** Every frame both
-buckets re-upload their full command, record and box buffers, because section records are
-camera-relative and rebuilt from scratch; clusters multiply commands up to sixteen-fold per section.
-That may be immaterial or may be around a megabyte a frame at 400 FPS - nobody has looked. If it
-measures material, the structural answer is region-anchored records with the camera offset moved to
-a per-frame uniform, which would let most of those buffers upload once instead of every frame. Do
-not build that without the number first.
-
-**4. Two-tier cluster culling.** Every far section currently pays sixteen cluster tests of up to 81
-texel fetches each, even where the whole-section box would settle the question in one. A
-hierarchical test - whole box first, clusters only when the result is neither clearly hidden nor
-clearly visible - would cut cull work substantially. Parked: the cull dispatch has never been shown
-to cost anything material, so this needs a GPU timing figure before it is worth the complexity.
+The only surviving obligation from this candidate list is a controlled
+`VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` A/B in one settled view. It is optional confirmation of
+an already answered feature whose complete theoretical ceiling was about 2% of frame time; do not
+mistake it for a funded optimisation.
 
 **Explicitly not recommended, with reasons, so they are not re-proposed:**
 
@@ -55,6 +30,21 @@ to cost anything material, so this needs a GPU timing figure before it is worth 
 - **No finer-than-4x4 clusters, no GPU-owned LOD selection, no water batching.** Each is a
   measured-branch decision the plan already gates correctly, and nothing measured so far justifies
   any of them.
+
+## Replace the vanilla horizon fog wall with an original implementation
+
+All owner visual testing of Vintage Horizons so far used a third-party mod that suppressed
+Vintage Story's fog wall at the end of its render distance and the associated smoothing circle.
+The present visual acceptance evidence therefore does **not** cover Vintage Horizons running with
+those vanilla horizon effects active.
+
+**Owed:** implement our own suppression of the vanilla distance fog wall and smoothing circle so
+they do not conceal or conflict with the extended terrain horizon. This must be a clean, original
+implementation based on our own investigation of Vintage Story's behavior and supported interfaces.
+Do **not** inspect, copy, translate, adapt, or otherwise use code from the third-party mod. Preserve
+ordinary atmospheric effects that are not part of the render-distance wall unless the owner later
+chooses a broader fog policy, and restore vanilla behavior cleanly whenever Vintage Horizons is
+disabled, deferred, or unloaded.
 
 ## Cached terrain lighting: the sky band is the only untested part left
 
@@ -79,7 +69,7 @@ is a wiring bug rather than a transcription slip. The `sky` correction above is 
 part of that body a human has not accepted yet - if it changes, both variants change with
 it, which is the point of the arrangement.
 
-## Batched terrain drawing has drawn frames; its A/B has not been run
+## Batched terrain drawing is established; its legacy-occlusion A/B has not been run
 
 Phase 3 of `dev/plans/PLAN_GPU_DRIVEN_TERRAIN_RENDERER.md` is complete in source and, since
 0.3.69/0.3.70, has been played. Opaque cached terrain draws from the regional arenas with one
@@ -91,11 +81,11 @@ multi-draw per page set instead of one call per section, behind `.vhgpu on` and
 sessions. The measured draw-call collapse from session 39 stands: 87-182 opaque submissions
 per frame become 8-19 multi-draw batches on the frozen route.
 
-**Still owed:** the comparison the phase exists for. Batching suspends the delayed occlusion
-queries, which were worth 170 to 500 FPS on a hill view in session 34, so the honest A/B is
-batching-plus-culling against the established path with occlusion queries - not batching
-against itself. Nothing has run that, which is why the switches are saved rather than
-defaulted on.
+**Still owed:** an honest comparison against the former path. Batching suspends the delayed
+occlusion queries, which were worth 170 to 500 FPS on a hill view in session 34, so the useful A/B is
+the product-default batching-plus-cluster-culling path against the established per-section path with
+occlusion queries - not batching against itself. Nothing has run that comparison; the current
+default was accepted from the complete renderer's broader evidence, not from this isolated A/B.
 
 ## Phase 7: packed format and regional-memory policy complete
 
@@ -166,21 +156,12 @@ between real depth and the exact clear value; the guard inspected outside the re
 hole lay inside it; and the HZB reduction reads and writes disjoint, explicitly clamped mip levels,
 so the same-texel feedback condition for a barrier has never been established.
 
-## Re-mesh: warm-up is the only large mesh cost left, and nobody has looked at it
+## Change-locality has one cheap cold/moving verification left
 
-The change-locality fix and the withdrawal of this section's old headline claim are recorded
-in `dev/history/DONE.md` and session 40. Short version: mesh rebuilds per content change fell
-from 5.00 to 2.00-2.03, measured over three runs; and the "90 MB every 15 seconds at a
-standstill" symptom this section used to lead with was a warm-up measurement recorded as a
-steady-state one. G62 and G63 carry the two durable lessons.
-
-**What is still open.** Warm-up is now the only large mesh cost in the profile: about
-**237 MiB per 15 seconds for the first two and a half minutes** after joining, while 781
-meshes are built for 3,291 cached sections. Nobody has asked whether that period is smooth.
-It is the obvious candidate for the join-time stutter recorded further down, and the two
-should be investigated together rather than separately.
-
-**Also open, and cheap:** the one-edge-per-change result comes only from a frozen, warm
+The owner reports that join-time warm-up is smooth after the loading-protocol rebuild, so the old
+237-MiB-per-15-seconds burst remains sizing evidence rather than an open player-facing stutter.
+Change-locality itself still has one cheap evidence gap: the one-edge-per-change result comes only
+from a frozen, warm
 profile, which produces no first-time captures. A cold or moving route should show two edges
 per change and a smaller saving; `ChangeLocalityChecks` pins both cases, but neither has been
 run in game.
@@ -189,85 +170,6 @@ run in game.
 the same withdrawn inference and has been fixed, with the consequence spelled out there:
 arena retirement and reclamation must be sized for a burst during load rather than a
 sustained trickle, and settled play does not exercise that path enough to validate it.
-
-## The micro-hitches: dozens per second, and current instrumentation cannot see them
-
-The owner reports (2026-08-22, from earlier playtesting) consistent micro-hitches on his
-frame-time graph occurring **dozens of times per second**, and wants them gone; a fully
-smooth mod is the stated end goal. This is a distinct symptom from the several-seconds-apart
-spikes recorded below.
-
-Nothing yet attributes them. What is known:
-
-- The stationary sandbox runs show real frame-time instability: `fps_avg` 386 against
-  `fps_1pct_low` 195, i.e. **the worst 1% of frames take about twice the average**
-  (`frame_ms_avg` 2.59 vs `frame_ms_1pct_low` 5.12), in every one of the six views and in
-  all three runs.
-- **The existing hitch counters cannot see this.** `Over25Ms`/`Over50Ms`/`Over100Ms` are
-  the only hitch thresholds, and at 400 FPS a whole frame is 2.5 ms. A 426 us mesh upload
-  is a 17% frame-time spike and is counted by nothing. The per-phase p95/p99/max
-  microsecond histograms are the only instrument with the right resolution.
-- **Mesh upload is no longer the leading suspect, and the section above is why.** In
-  settled steady state a standing camera does about **three mesh uploads per 15 seconds**,
-  several intervals doing none at all - not the ~10/s previously assumed, which came from
-  the warm-up period. Three uploads of 100-426 us in fifteen seconds cannot produce dozens
-  of hitches per second. It remains a candidate under movement, where capture and meshing
-  are genuinely busy, but not while standing still - and the owner's graph shows the
-  hitches while standing still too.
-- Ruled out for the stationary case: garbage collection (about 0.7 gen0 per second), and
-  now re-mesh and upload work as well.
-- **Still unattributed, and now the largest unexplained per-frame cost:** the quadtree
-  walk at 95 us average and 393 us max per frame, and the readiness shadow at 27.8 us
-  average and 710 us max, both from the 2026-08-22 stationary run. At 2.4 ms per frame a
-  single 710 us readiness spike is 30% of a frame. These run every frame and their maxima
-  are the right order of magnitude for the reported symptom, unlike mesh upload, which is
-  too rare.
-
-**The instrument now exists (0.3.55), and it has never been read.** `LodFrameTimeline`
-measures three things per frame and reports them on the periodic `frame timeline:` line:
-the interval between consecutive render frames, this mod's share of that frame, and how far
-the interval ran over its own moving average.
-
-Two design points that matter when reading it. The excess-over-baseline histogram exists
-because the shared per-phase histogram's fine 25 us buckets stop at 1 ms, so a 2.5 ms frame
-interval is quantised to 250 us and could not resolve a 400 us hitch at all; the excess is
-small by construction and lands in the fine buckets. And spikes are judged against a moving
-average rather than a fixed threshold, so the same rule means the same thing at 400 FPS and
-at 60, and a world load is excluded rather than counted.
-
-**What to read first:** `SlowFrames` against `SlowFramesWithSlowMod`. If frames stand out
-but our own callback was ordinary during them, the hitches are not ours and the next session
-belongs somewhere other than our phase costs. That is the question that has been unanswered
-since the symptom was first reported, and one ordinary session of play now answers it.
-
-If they ARE ours, the per-phase p95/p99/max lines beside it already point at the phase - the
-quadtree walk and the readiness shadow are the standing suspects, at 95 us average / 393 us
-max and 27.8 us average / 710 us max respectively. Then run
-`bench/routes/moving-rotation.txt` for the moving case, where mesh upload is still a live
-candidate.
-
-## Validate the periodic-stutter changes in game
-
-Source audit found that ordinary dirty activity could admit six save snapshots every game
-tick and write each row independently, while several unrelated whole-collection sweeps
-landed on fixed frame/tick intervals. The implementation is complete: 30-second bounded RAM
-checkpoints and one SQLite transaction, incremental seasonal sampling, rolling GPU/CPU
-eviction, capped render-context queries, a 30-second server-manifest scan, and worker-owned
-singleplayer sibling-cache blob reads. Build and 1,555 fast assertions pass.
-
-Still owed is human/runtime evidence. Compare an ordinary moving session with the prior
-build and specifically report:
-
-- whether the several-times-per-second tiny spikes are gone or reduced;
-- whether the larger three-to-six-second spikes remain;
-- whether a new burst appears around the 30-second checkpoint;
-- whether seasonal colour changes remain visually smooth; and
-- whether turning around after long travel shows delayed mesh recovery or excess RAM.
-
-If a periodic spike remains, capture phase telemetry before changing more cadence. The
-readiness tracker/mask still has owning-thread game queries and a once-per-second authority
-resync; GPU uploads and live registry publication also must remain on their owning threads.
-Do not attribute an unmeasured residual to disk merely because its interval is regular.
 
 ## The mask default is settled; what remains is coverage, not the decision
 

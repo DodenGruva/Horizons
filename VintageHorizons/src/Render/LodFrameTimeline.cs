@@ -54,6 +54,10 @@ public sealed class LodFrameTimeline
     double averageIntervalUs;
     double averageModUs;
     double pendingIntervalUs;
+    double pendingIntervalModUs;
+    double pendingIntervalModAverageUs;
+    double previousFrameModUs;
+    double previousFrameModAverageUs;
 
     public LodPhaseCost IntervalCost;
     public LodPhaseCost ModCost;
@@ -107,6 +111,11 @@ public sealed class LodFrameTimeline
 
         IntervalCost.AddElapsedTicks(elapsed);
         pendingIntervalUs = us;
+        // This interval ends at the current Begin, so the callback inside it is the one
+        // that completed after the PREVIOUS Begin. Capture that pairing now; using the
+        // callback that follows this Begin shifts attribution one frame late.
+        pendingIntervalModUs = previousFrameModUs;
+        pendingIntervalModAverageUs = previousFrameModAverageUs;
         return timestamp;
     }
 
@@ -120,18 +129,25 @@ public sealed class LodFrameTimeline
         ModCost.AddElapsedTicks(elapsed);
 
         double intervalUs = pendingIntervalUs;
+        double intervalModUs = pendingIntervalModUs;
+        double intervalModAverageUs = pendingIntervalModAverageUs;
         pendingIntervalUs = 0;
-        if (intervalUs <= 0) return;
+        pendingIntervalModUs = 0;
+        pendingIntervalModAverageUs = 0;
 
         double modUs = elapsed * 1_000_000.0 / Stopwatch.Frequency;
         double modAverage = averageModUs;
+        previousFrameModUs = modUs;
+        previousFrameModAverageUs = modAverage;
         averageModUs = modAverage == 0
             ? modUs
             : modAverage + (modUs - modAverage) * AverageWeight;
+        if (intervalUs <= 0) return;
+
         if (intervalUs > WorstIntervalUs)
         {
             WorstIntervalUs = intervalUs;
-            WorstIntervalModUs = modUs;
+            WorstIntervalModUs = intervalModUs;
         }
 
         // Compared against the average as it stood BEFORE this frame, so a spike is judged
@@ -150,11 +166,14 @@ public sealed class LodFrameTimeline
 
         SlowFrames++;
 
-        // Our share is judged on exactly the same terms - same moving average, same
-        // factor - so the two answers cannot disagree merely because they used different
-        // rules. The mod average is maintained here rather than read from ModCost, which
-        // is reset at every report and would make the first frames after one look elevated.
-        if (modAverage > 0 && modUs >= modAverage * SpikeFactor) SlowFramesWithSlowMod++;
+        // Our correctly paired share is judged on exactly the same terms - same moving
+        // average, same factor - so the two answers cannot disagree merely because they
+        // used different rules. The average is retained separately from ModCost because
+        // that histogram resets at every report.
+        if (intervalModAverageUs > 0 && intervalModUs >= intervalModAverageUs * SpikeFactor)
+        {
+            SlowFramesWithSlowMod++;
+        }
     }
 
     /// <summary>
@@ -177,7 +196,7 @@ public sealed class LodFrameTimeline
             + $"over baseline p95 {ExcessCost.P95Us:0}us, p99 {ExcessCost.P99Us:0}us, "
             + $"max {ExcessCost.MaxUs:0}us | "
             + $"our callback p50 {ModCost.P50Us:0}us, p99 {ModCost.P99Us:0}us, max {ModCost.MaxUs:0}us | "
-            + $"worst frame {WorstIntervalUs:0}us, of which ours {WorstIntervalModUs:0}us | {share}";
+            + $"worst frame {WorstIntervalUs:0}us, preceding callback ours {WorstIntervalModUs:0}us | {share}";
     }
 
     public void Reset()

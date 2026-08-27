@@ -1489,6 +1489,20 @@ public class VintageHorizonsModSystem : ModSystem
                     waterGpu.P95Us, waterGpu.P99Us, waterGpu.MaxUs, waterGpu.Calls,
                     renderer.GpuTimerPendingResults, renderer.GpuTimerUnavailableSlots,
                     renderer.GpuTimerTargetBusy, renderer.GpuTimingActive ? "active" : "inactive");
+
+                LodPhaseCost ordinaryCullGpu = renderer.GpuOrdinaryCullCost;
+                LodPhaseCost splitNearCullGpu = renderer.GpuSplitNearCullCost;
+                LodPhaseCost splitFarCullGpu = renderer.GpuSplitFarCullCost;
+                Mod.Logger.Notification(
+                    "  delayed GPU cull p95/p99/max us: ordinary {0:0}/{1:0}/{2:0} over {3} samples | "
+                    + "split near {4:0}/{5:0}/{6:0} over {7} | "
+                    + "split far {8:0}/{9:0}/{10:0} over {11}",
+                    ordinaryCullGpu.P95Us, ordinaryCullGpu.P99Us, ordinaryCullGpu.MaxUs,
+                    ordinaryCullGpu.Calls,
+                    splitNearCullGpu.P95Us, splitNearCullGpu.P99Us, splitNearCullGpu.MaxUs,
+                    splitNearCullGpu.Calls,
+                    splitFarCullGpu.P95Us, splitFarCullGpu.P99Us, splitFarCullGpu.MaxUs,
+                    splitFarCullGpu.Calls);
             }
 
             // Collections since the last report, beside the phase maxima, because the

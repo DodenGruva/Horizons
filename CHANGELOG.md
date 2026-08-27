@@ -8,6 +8,31 @@ first.
 
 ## [Unreleased]
 
+## [0.3.124] - 2026-08-27
+
+**The remaining renderer optimization ideas have been measured before implementation and rejected
+where their ceilings are too small.** A fresh six-view comparison found that 16-MiB cluster-arena
+pages reduced observed batches only from 76 to 74 while increasing final committed memory from 200
+to 368 MiB; mean frame time changed only 2.3433 to 2.3300 ms. Eight-MiB pages remain the product
+choice. The command, record, and cull-box stream peaks near 239 KiB per frame, so the proposed
+region-anchored record rewrite is not funded.
+
+GPU statistics now isolate the live ordinary, split-near, and split-far cull compute dispatches
+with nonblocking timestamp pairs, reported in the client log and captured by the Windows benchmark
+scenario proof. On the owner's RX 9070 XT and frozen BodanBoys route, split-far culling measured 25
+us at both p95 and p99, with 108 us as the largest interval maximum and zero timer-ring skips or
+target conflicts. Two-tier whole-section/cluster culling is rejected because even removing the
+existing dispatch entirely would save only about 1% of the 2.3717-ms average frame.
+
+Version 0.3.123 also corrected frame-timeline attribution: a begin-to-begin frame interval is now
+paired with the callback that preceded it, not the following callback. The owner's tiny sawtooth
+pattern reproduced with all mods disabled, so it is not attributed to Vintage Horizons. The owner
+also retired 30-second stutter and join-time warm-up verification after extensive smooth testing.
+Warning-free builds and 5,381 fast assertions pass. The verified 14-entry 0.3.124 package contains
+no PDB and was copy-installed with SHA-256
+`484F058D54BDD92408C52C9BA4A4EEDE2411653C1587EC80F948DDFAFF592867`. Assist protocol 1, blob
+format 4, and database schema 6 are unchanged.
+
 ## [0.3.122] - 2026-08-27
 
 **Cave culling is now a surface-visibility optimisation, is on by default, and preserves straight

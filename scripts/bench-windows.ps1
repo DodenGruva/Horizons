@@ -693,6 +693,35 @@ function Get-ClientGpuRenderRecord {
         }
     }
 
+    $cullTimerPattern =
+        'delayed GPU cull p95/p99/max us: ordinary ' +
+        '(?<ordinaryP95>\d+)/(?<ordinaryP99>\d+)/(?<ordinaryMax>\d+) ' +
+        'over (?<ordinarySamples>\d+) samples \| ' +
+        'split near (?<splitNearP95>\d+)/(?<splitNearP99>\d+)/(?<splitNearMax>\d+) ' +
+        'over (?<splitNearSamples>\d+) \| ' +
+        'split far (?<splitFarP95>\d+)/(?<splitFarP99>\d+)/(?<splitFarMax>\d+) ' +
+        'over (?<splitFarSamples>\d+)'
+    $cullTimerSamples = @()
+    foreach ($line in $lines) {
+        $match = [regex]::Match($line, $cullTimerPattern)
+        if (-not $match.Success) { continue }
+        $cullTimerSamples += [ordered]@{
+            line = $line
+            ordinaryCullP95Microseconds = [int64]$match.Groups['ordinaryP95'].Value
+            ordinaryCullP99Microseconds = [int64]$match.Groups['ordinaryP99'].Value
+            ordinaryCullMaxMicroseconds = [int64]$match.Groups['ordinaryMax'].Value
+            ordinaryCullSamples = [int64]$match.Groups['ordinarySamples'].Value
+            splitNearCullP95Microseconds = [int64]$match.Groups['splitNearP95'].Value
+            splitNearCullP99Microseconds = [int64]$match.Groups['splitNearP99'].Value
+            splitNearCullMaxMicroseconds = [int64]$match.Groups['splitNearMax'].Value
+            splitNearCullSamples = [int64]$match.Groups['splitNearSamples'].Value
+            splitFarCullP95Microseconds = [int64]$match.Groups['splitFarP95'].Value
+            splitFarCullP99Microseconds = [int64]$match.Groups['splitFarP99'].Value
+            splitFarCullMaxMicroseconds = [int64]$match.Groups['splitFarMax'].Value
+            splitFarCullSamples = [int64]$match.Groups['splitFarSamples'].Value
+        }
+    }
+
     $uploadPattern =
         'render gpu calls p95/p99/max us: upload (?<uploadP95>\d+)/(?<uploadP99>\d+)/(?<uploadMax>\d+) \| ' +
         'dispose (?<disposeP95>\d+)/(?<disposeP99>\d+)/(?<disposeMax>\d+)'
@@ -783,13 +812,15 @@ function Get-ClientGpuRenderRecord {
         }
     }
 
-    if ((-not $probeLine) -and $timerSamples.Count -eq 0 -and $drawSamples.Count -eq 0 -and
+    if ((-not $probeLine) -and $timerSamples.Count -eq 0 -and
+        $cullTimerSamples.Count -eq 0 -and $drawSamples.Count -eq 0 -and
         $uploadSamples.Count -eq 0 -and $arenaSamples.Count -eq 0) {
         return $null
     }
     return [ordered]@{
         probeLine = $probeLine
         timerSamples = $timerSamples
+        cullTimerSamples = $cullTimerSamples
         uploadSamples = $uploadSamples
         arenaSamples = $arenaSamples
         drawSamples = $drawSamples

@@ -3,12 +3,12 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-27
-**Mod version:** `0.3.122`, built, verified, and copy-installed; the development line remains 0.3.x
+**Mod version:** `0.3.124`, built, verified, benchmarked, and copy-installed; the development line remains 0.3.x
 (`0.2.1` is the public released version; 0.4.0 remains a preserved local rollback artifact from the
 GPU-renderer milestone).
 **Active branch:** `codex/global-cave-classifier`, based on
-`efd713bc65918285412720a92d07d2301046f329`; the owner authorized committing the accumulated
-0.3.114-0.3.122 cave work at Session 60 close.
+`efd713bc65918285412720a92d07d2301046f329`; Session 60's accumulated cave work was committed as
+`2a1310f`, and the uncommitted 0.3.123-0.3.124 performance closure follows it.
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `73` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -37,14 +37,24 @@ GPU-renderer milestone).
 > are no longer open work. The plan is retained as a superseded measurement record in
 > [dev/plans/PLAN_GLOBAL_CAVE_CLASSIFIER.md](dev/plans/PLAN_GLOBAL_CAVE_CLASSIFIER.md).
 
+> **Current performance-investigation state.** The repeating tiny sawtooth was reproduced with no
+> mods installed, so it is not assigned to Vintage Horizons. Version 0.3.123 still corrected a real
+> frame-timeline attribution defect. The owner has retired the unobserved 30-second stutter and now-
+> smooth join warm-up. Session 61 measured and rejected the three remaining unfunded renderer ideas:
+> 16 MiB pages saved 2 of 76 batches while committed arena memory rose from 200 to 368 MiB; the
+> camera-relative command stream peaked near 239 KiB/frame; and split-far culling measured 25 us at
+> p95/p99. Eight-MiB pages remain selected, and neither a record-layout rewrite nor two-tier culling
+> is funded. The remaining renderer work is coverage, one honest batching-versus-established-
+> occlusion A/B, and an optional subtree-height A/B.
+
 ## 1. Repository state
 
 `origin` points to the user's fork at `https://github.com/DodenGruva/Horizons`. The supplied
 source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
 `d86abe02d74f483abd68dc173903182f86ac2fb4`. The current cave branch is
-`codex/global-cave-classifier`, based on `efd713bc...` and carrying the accumulated 0.3.114-0.3.122
-cave source, tests, measurements, and documentation until the owner-authorized Session 60 commit.
+`codex/global-cave-classifier`, based on `efd713bc...`; the accumulated 0.3.114-0.3.122 cave work is
+committed as `2a1310f`, with the 0.3.123-0.3.124 performance work currently uncommitted.
 The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
@@ -71,7 +81,7 @@ The visual result counts; the performance number is provisional. Version 0.3.91 
 between active presets preserve the filled arenas and adds an effective-path report. Only moving to
 or from `off` now triggers the documented mirror fill/release.
 
-**Cache startup and camera-independent refinement are complete; Phase 9 hardening is the top priority.**
+**Cache startup and camera-independent refinement are complete; Phase 9 coverage remains open.**
 The packed-memory slice is now closed. A controlled expanded/packed/packed/expanded matrix with
 clusters pinned off measured 2.4392 ms expanded and 2.4367 ms packed, a -0.10% delta below repeat
 variation. Version 0.3.105 retains exactly the selected expanded, whole-packed, or clustered-packed
@@ -1000,9 +1010,9 @@ a documented evidence limit, not future work. The paired packed route and select
 memory policy are complete in 0.3.105. What remains is primary-machine coverage of MSAA/SSAO
 changes, resize/fullscreen, shader reload, world/dimension changes, long sessions,
 large caches, multiplayer and competing-LOD-mod deferral; allocation pressure; and representative
-forced-legacy coverage. Only after that is deliberately closed should
-a new renderer optimisation be funded. Ranked candidates - subtree vertical bounds first - are in
-`dev/TODO.md`.
+forced-legacy coverage. The unfunded page-size, upload-layout, and two-tier-culling candidates have
+now been measured and rejected rather than built. One optional subtree-height A/B remains, with a
+complete theoretical ceiling around 2% of frame time.
 
 Version 0.3.104 began that work with one-shot, test-only injections for arena setup, fast terrain
 shaders, the private depth copy, and indirect drawing. All four completed the isolated six-viewpoint
@@ -1020,6 +1030,10 @@ changes only the player command name to `.vhcavecull`; it is built, verified, an
 session close and was not launched by the assistant. The preserved 0.4.0 zip remains a rollback
 artifact.
 
+Session 61 added 0.3.123 and 0.3.124: it corrected frame attribution, closed the external
+micro-sawtooth and retired stutter reports, measured all three unfunded renderer candidates, and
+copy-installed the timestamp-instrumented 0.3.124 build.
+
 **Session 57 in brief.** Aggregate subtree vertical bounds shipped and were closed as answered
 rather than pending: they work, and at a leaf the aggregate contains the per-section box shipped in
 0.3.58, so it can only reject a subset of what that already rejects. The walk it speeds up is 44.3
@@ -1030,22 +1044,26 @@ its original sign defect was fixed in Session 58 and the accepted surface-only r
 in the banner above. The approximately 350-to-400 FPS report belongs to Session 60's later accepted
 build, not to Session 57.
 
-0b. **Play normally once and read the `frame timeline:` line.** It is the first instrument
-that can see the reported micro-hitches at all, and `SlowFrames` against
-`SlowFramesWithSlowMod` says whether they are this mod's doing before another session is
-spent on our own phase costs.
+1. **Run the honest batching A/B.** Compare the product-default batched, clustered path against the
+established per-section path with delayed exact-geometry occlusion. The comparison must retain each
+path's real culling behavior; batching against itself would not answer the product question.
 
-0. Look at the far dissolve band - the edge where cached terrain fades into sky - at dusk
+2. **Optionally confirm subtree-height culling once.** Run one settled-view
+`VINTAGEHORIZONS_SUBTREE_HEIGHT_CULLING=0` A/B. This is confirmation of an already bounded, low-cost
+feature, not a funded optimisation.
+
+3. Look at the far dissolve band - the edge where cached terrain fades into sky - at dusk
 and at night, flipping `.vhlight sky`. It is the only part of the lighting work nobody has
 seen, and it is identical in full daylight so midday shows nothing. While in 0.3.52, also
 confirm no distant section looks stale or seamed: change-locality narrowing now skips
 neighbour rebuilds it judges unnecessary, and a wrong judgement would show exactly there.
 
-1. Playtest and instrument the periodic-stutter changes: compare the recurring tiny spikes
-and the reported 3-6-second spikes, watch for a new 30-second checkpoint burst, and verify
-seasonal transitions, turn-around behavior, mesh residency, and RAM residency. If a tail
-remains, capture phase telemetry before moving more owning-thread atomic work.
-2. Measure what direction-dependent renderer cost remains after delayed exact-geometry
+The earlier periodic-stutter and join-warm-up tasks are closed by owner observation. The tiny
+sawtooth also occurs with no mods installed; 0.3.123's corrected attribution remains useful if a
+distinct Vintage Horizons symptom appears later.
+
+The historical renderer programme below records how the current path was reached; its old phase
+gates are not new TODO items. Measure what direction-dependent renderer cost remains after delayed exact-geometry
 occlusion before selecting regional buffers, multi-draw, or instancing. Repeat a controlled
 alternating 0.3.37 comparison in settled and streaming views, quantify the final edge guard,
 and cover other drivers, multiplayer, vertical look transitions, caves/structures, teleports
@@ -1115,8 +1133,10 @@ against a 90% requirement. Frame rates matched the shadow-off run in all six vie
 size is the lever, not region shape: the same route at 8 MiB pages gave only 3.7x-4.6x,
 because a batch is one page set and an 8 MiB page held about four drawn sections against
 about eleven at 32 MiB. Larger pages pack less densely (71% of committed bytes live at
-8 MiB against 49% at 32 MiB), so the ceiling must grow faster than the page size; 16 MiB is
-untested. **This counts submissions removed, not frame time saved**; G52 applies and the
+8 MiB against 49% at 32 MiB), so the ceiling must grow faster than the page size. Session 61
+tested 16 MiB against the current clustered route: observed batches moved only from 76 to 74 while
+committed arena memory rose from 200 to 368 MiB and utilization fell from 34.7% to 18.9%. Eight MiB
+therefore remains selected. **This counts submissions removed, not frame time saved**; G52 applies and the
 performance verdict remains owner-run. An earlier 6x-8x figure from the same route is
 withdrawn: it was taken over about a third of the world by an instrument that could not see
 its own misses (G60), and coverage is now reported beside every result.
@@ -1155,11 +1175,13 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ## 8. Verification evidence
 
-The Session 60 close passes warning-free Release builds of both the mod and benchmark project,
-5,368 fast assertions, and 1,570 documentation checks. The 0.3.122 zip has 14 entries, contains the
-licence and no PDB, reports the matching manifest version, and is copy-installed with identical
-SHA-256 `F971FC4643016AC2EB5A07C8702453C2E31C01257425BB826E51B805F05D9800`. The assistant did not
-launch the game; smoke and install-matrix tiers were not rerun because both start Vintage Story.
+The Session 61 close passes warning-free Release and Debug mod builds, a warning-free Debug
+benchmark build, 5,381 fast assertions, and 1,575 documentation checks. The approved isolated six-view benchmark completed with
+zero settle timeouts, zero renderer fallbacks, and zero timer-ring saturation. The 0.3.124 zip has 14
+entries, contains the licence and no PDB, reports the matching manifest version, and is copy-installed
+with identical SHA-256
+`484F058D54BDD92408C52C9BA4A4EEDE2411653C1587EC80F948DDFAFF592867`. The assistant launched the
+game only through the approved isolated benchmark; smoke and install-matrix tiers were not rerun.
 
 ### Source-traced
 
@@ -1443,8 +1465,9 @@ launch the game; smoke and install-matrix tiers were not rerun because both star
   is retired. Version 0.3.105 retains only the selected regional form. The measured roughly 89%
   reduction applies to duplicate regional live bytes, not total-process memory; the legacy renderer
   remains the complete fallback.
-- The frame timeline and the join stall line are source- and harness-tested only. Neither
-  has been read against a real client.
+- The corrected frame timeline is source- and harness-tested. The owner's no-mod comparison assigns
+  the repeating micro-sawtooth to the game or system rather than this mod; it does not prove that
+  every future frame-time symptom is external.
 - The join anomaly has one sample. Five joins of 2,183-3,291 cached sections reach their
   first hundred meshes in 2.3-9.1 s; one of 5,143 took 60.2 s with nothing built after 30
   seconds and every queue empty. Both cache databases were decoded and both hold a complete
@@ -1455,14 +1478,12 @@ launch the game; smoke and install-matrix tiers were not rerun because both star
 - The change-locality measurement comes only from a frozen, warm profile, where every
   change touched exactly one section edge. A cold or moving route should produce
   first-time captures, two edges per change and a smaller saving; neither has been run.
-- Warm-up is now the only large mesh cost measured - about 237 MiB per 15 seconds for the
-  first two and a half minutes after joining - and nobody has assessed whether it is
-  smooth. It is the untested candidate for the join-time stutter recorded elsewhere.
-
-- No game process has run since the persistence checkpoint, sibling-cache blob-reader,
-  rolling seasonal/eviction, or delayed-query cap changes. Their effect on the reported
-  several-times-per-second and 3-6-second lag spikes remains unmeasured, as does any new
-  30-second checkpoint burst.
+- Warm-up remains the largest measured mesh-upload burst - about 237 MiB per 15 seconds for the
+  first two and a half minutes after joining - but the owner now reports that the rebuilt loading
+  protocol feels smooth. That closes the player-facing join-stutter task without turning the old
+  burst into a controlled performance comparison.
+- The owner has not observed a 30-second stutter in extensive testing and retired that report. This
+  is human negative evidence, not proof that every persistence or seasonal path is spike-free.
 - One brief human playtest reported a noticeable subjective improvement after off-thread foreign decode; it was not a controlled or thorough comparison.
 - No person has watched the clean-cache frontier, warm-join, completed-sweep,
   completed-generation, or saturated-assist routes in motion; long join/sweep/assist

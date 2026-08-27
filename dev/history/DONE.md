@@ -2,6 +2,38 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-27 - Stutter debt and unfunded renderer candidates closed in 0.3.123-0.3.124
+
+- The owner's tiny sawtooth frame-time pattern reproduced with every mod disabled. Vintage
+  Horizons is therefore not its cause. The existing `LodFrameTimeline` already had sub-millisecond
+  bins, but review found one real attribution flaw: interval N was paired with callback N rather
+  than the callback that preceded it. Version 0.3.123 carries the corrected pairing and reports
+  "preceding callback ours"; it changes no rendering behavior.
+- The owner reports no 30-second stutter in extensive ordinary testing and smooth join-time warm-up
+  after the loading-protocol rebuild. Both runtime-verification debts are retired on human evidence.
+  The old 237-MiB warm-up burst remains arena/load-sizing evidence, not an open smoothness symptom.
+- A fresh six-view BodanBoys comparison rejected 16-MiB cluster-arena pages. Against 8 MiB, mean
+  frame time changed 2.3433 to 2.3300 ms (+0.58% FPS, within repeat noise), observed batches changed
+  only 76 to 74, and final live/committed bytes changed 69.42/200 MiB to 69.39/368 MiB. The two
+  fewer pages do not justify 84% more committed memory or utilization falling 34.7% to 18.9%.
+- Command, section-record, and cull-box layouts total 116 bytes per clustered command. The busiest
+  observed frame carried 2,107 commands, about 239 KiB per frame and under 100 MiB/s around 400 FPS.
+  The proposed region-anchored record rewrite is not funded.
+- Version 0.3.124 adds nonblocking GPU timestamp pairs directly around ordinary, split-near, and
+  split-far compute dispatches. They can run inside the existing whole-pass TIME_ELAPSED query,
+  never wait for results, discard abandoned dispatches, and are captured by the Windows benchmark
+  scenario proof.
+- The six-view 0.3.124 route produced thousands of valid samples per interval with zero ring-full
+  skips or target conflicts. Split-far culling measured 25 us at both p95 and p99 in every settled
+  interval; the largest interval maximum was 108 us. Even deleting the pass would save only about
+  1% of the route's 2.3717-ms average frame, and the proposed two-tier test could save only part of
+  it while adding its own whole-section work. Two-tier cluster culling is rejected.
+- Warning-free Release and Debug builds pass, along with 5,381 fast assertions and 1,575
+  documentation checks. The verified
+  14-entry 0.3.124 package contains no PDB and was copy-installed with matching SHA-256
+  `484F058D54BDD92408C52C9BA4A4EEDE2411653C1587EC80F948DDFAFF592867`. Assist protocol 1, blob
+  format 4, and database schema 6 are unchanged.
+
 ## 2026-08-27 - Surface-only cave culling accepted in 0.3.121; command clarified in 0.3.122
 
 - The owner narrowed the product requirement to geometry visible from the ground surface. Hidden

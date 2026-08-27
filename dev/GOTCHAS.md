@@ -2227,6 +2227,24 @@ sample (0.15%) and had effectively unchanged paired harness wall time.
 **Found:** 2026-08-27, session 60. Version 0.3.120's one-block vertical guard was deliberately
 superseded by 0.3.121's four-block all-direction clearance.
 
+### G116 - PowerShell archive inputs can flatten a mod's asset tree
+
+**Trigger:** replacing `scripts/package.sh` on a Windows host without Bash by recursively
+enumerating files and passing their full paths individually to `Compress-Archive`.
+
+**Trap:** the resulting zip can contain the correct files and root DLL while flattening
+`assets/vintagehorizons/shaders/...` into root-level filenames. Its entry count and manifest look
+plausible, but Vintage Story cannot resolve the shader assets. Installing it would turn a packaging
+substitution into a broken playable artifact.
+
+**Do:** archive from the assembled mod directory as a directory tree (without a wrapping folder),
+then inspect the zip before installation. Require the DLL and manifest at the root, shader entries
+under their exact `assets/vintagehorizons/...` paths, the licence present, no PDB, and matching
+source/destination hashes. Session 61 caught and replaced the flattened 0.3.124 candidate before it
+left `dist/`.
+
+**Found:** 2026-08-27, session 61.
+
 ## Reversals and disproved claims
 
 ### R1 — Compression and SQLite writes do not belong on the render/game thread

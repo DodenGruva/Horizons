@@ -46,6 +46,7 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
     const int FramesBetweenTelemetrySamples = 30;
 
     readonly Action<string> warn;
+    readonly LodGpuTelemetry? gpuTelemetry;
     readonly ILodGlStateApi stateApi = new LodOpenGlStateApi();
     int program;
 
@@ -76,7 +77,11 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
     readonly LodGpuCullStatistics[] telemetryStatistics =
         [new(), new(), new()];
 
-    public LodGpuCullPass(Action<string> warn) => this.warn = warn;
+    public LodGpuCullPass(Action<string> warn, LodGpuTelemetry? gpuTelemetry = null)
+    {
+        this.warn = warn;
+        this.gpuTelemetry = gpuTelemetry;
+    }
 
     public bool Available => program != 0 && !disabled;
 
@@ -191,7 +196,21 @@ internal sealed class LodGpuCullPass : ILodGpuCullDispatch, IDisposable
             GL.Uniform1(uniformOcclusionDepthBias, occlusionDepthBias);
             GL.Uniform1(uniformTelemetryEnabled, telemetrySlot >= 0 ? 1 : 0);
 
-            GL.DispatchCompute(GroupsFor(count), 1, 1);
+            bool timing = gpuTelemetry?.BeginCull(bucket) ?? false;
+            bool dispatched = false;
+            try
+            {
+                GL.DispatchCompute(GroupsFor(count), 1, 1);
+                dispatched = true;
+            }
+            finally
+            {
+                if (timing)
+                {
+                    if (dispatched) gpuTelemetry!.EndCull(bucket);
+                    else gpuTelemetry!.DiscardCull(bucket);
+                }
+            }
 
             ErrorCode error = GL.GetError();
             if (error != ErrorCode.NoError) return Disable("culling raised " + error);

@@ -185,6 +185,9 @@ public class LodTerrainRenderer : IRenderer
     /// in fetch count; a combined figure could hide that completely.
     /// </summary>
     public LodPhaseCost GpuClassifyCost => gpuTelemetry.ClassifyGpuCost;
+    public LodPhaseCost GpuOrdinaryCullCost => gpuTelemetry.OrdinaryCullGpuCost;
+    public LodPhaseCost GpuSplitNearCullCost => gpuTelemetry.SplitNearCullGpuCost;
+    public LodPhaseCost GpuSplitFarCullCost => gpuTelemetry.SplitFarCullGpuCost;
     public LodPhaseCost GpuWaterCost => gpuTelemetry.WaterCost;
     public int GpuTimerPendingResults => gpuTelemetry.PendingResults;
     public int GpuTimerUnavailableSlots => gpuTelemetry.UnavailableSlots;
@@ -3252,7 +3255,7 @@ public class LodTerrainRenderer : IRenderer
             packedDrawer?.Dispose();
             cullPass?.Dispose();
             cullPass = new LodGpuCullPass(
-                message => capi.Logger.Warning(message));
+                message => capi.Logger.Warning(message), gpuTelemetry);
             indirectDrawer = new LodGpuIndirectDrawer(
                 new LodGpuOpenGlDrawBackend(message => capi.Logger.Warning("{0}", message)),
                 message => capi.Logger.Warning("{0}", message));

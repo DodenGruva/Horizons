@@ -73,7 +73,9 @@ public static class PhaseCostChecks
         var timeline = new LodFrameTimeline();
         long now = 1_000_000;
 
-        // One frame at `intervalUs`, of which `modUs` is spent inside the mod.
+        // Start the next frame after `intervalUs`, then spend `modUs` in that new frame's
+        // callback. The interval therefore pairs with the PREVIOUS call's `modUs`, which
+        // is the temporal relationship production has to preserve.
         void Frame(double intervalUs, double modUs)
         {
             now += TicksForUs(intervalUs);
@@ -110,16 +112,24 @@ public static class PhaseCostChecks
         c.True(timeline.ExcessCost.MaxUs >= 7_000,
             "and the excess histogram carries how far over baseline it ran");
 
-        // One where our own callback is what took the time.
+        // A slow callback happens after this interval begins, so it must not be blamed for
+        // the interval that preceded it.
         Frame(10_000, 4_000);
         c.Eq(2, timeline.SlowFrames, "the second spike is counted");
-        c.Eq(1, timeline.SlowFramesWithSlowMod, "and this one is ours");
+        c.Eq(0, timeline.SlowFramesWithSlowMod,
+            "a callback is not blamed for the interval that ended before it began");
+
+        // It belongs to the following interval instead.
+        Frame(10_000, 200);
+        c.Eq(3, timeline.SlowFrames, "the following slow interval is counted");
+        c.Eq(1, timeline.SlowFramesWithSlowMod,
+            "and is paired with the elevated callback that actually preceded it");
 
         // A world load is not a hitch. It must neither be counted nor drag the average up,
         // which would hide real spikes for the next several hundred frames.
         double averageBefore = timeline.AverageIntervalUs;
         Frame(2_000_000, 500);
-        c.Eq(2, timeline.SlowFrames, "a two-second gap is not a frame spike");
+        c.Eq(3, timeline.SlowFrames, "a two-second gap is not a frame spike");
         c.Eq(averageBefore, timeline.AverageIntervalUs,
             "and does not move the moving average at all");
 

@@ -12,6 +12,7 @@ public static class GpuRendererChecks
         RenderPathLifecycle(c);
         GlStateOwnership(c);
         DelayedTimerRing(c);
+        DelayedTimestampRing(c);
         BenchmarkWiring(c);
         FailureInjectionPolicy(c);
         DiscardedTimingNeverReachesTheTotal(c);
@@ -99,6 +100,8 @@ public static class GpuRendererChecks
             && runner.Contains("gpuFailure = if ($GpuFailure)", StringComparison.Ordinal)
             && runner.Contains("splitNearP95Microseconds", StringComparison.Ordinal)
             && runner.Contains("splitFarP95Microseconds", StringComparison.Ordinal)
+            && runner.Contains("cullTimerSamples", StringComparison.Ordinal)
+            && runner.Contains("splitFarCullP95Microseconds", StringComparison.Ordinal)
             && runner.Contains("uploadP95Microseconds", StringComparison.Ordinal)
             && runner.Contains("vertexLiveMiB", StringComparison.Ordinal)
             && runner.Contains("packedLiveMiB", StringComparison.Ordinal)
@@ -459,6 +462,42 @@ public static class GpuRendererChecks
         c.Eq(1, ring.TargetBusy, "time-query target conflicts are observable");
     }
 
+    static void DelayedTimestampRing(Check c)
+    {
+        var api = new FakeGpuTimestampApi();
+        using var ring = new LodGpuTimestampRing(api, slotCount: 2);
+        var cost = new LodPhaseCost();
+
+        api.NextTimestamp = 1_000_000;
+        c.True(ring.TryBegin(), "an empty timestamp-pair slot begins inside another timer");
+        api.NextTimestamp = 1_125_000;
+        ring.End();
+        c.Eq(1, ring.PendingCount, "ending a timestamp pair publishes one pending result");
+
+        ring.Poll(ref cost);
+        c.Eq(0L, cost.Calls, "an unavailable timestamp pair is not consumed");
+        api.ResultsAvailable = true;
+        ring.Poll(ref cost);
+        c.Eq(1L, cost.Calls, "an available timestamp pair becomes one sample");
+        c.True(cost.MaxUs >= 124 && cost.MaxUs <= 126,
+            "the timestamp difference, not either absolute timestamp, enters the histogram");
+
+        api.NextTimestamp = 2_000_000;
+        c.True(ring.TryBegin(), "a timestamp slot begins for a discarded dispatch");
+        api.NextTimestamp = 2_001_000;
+        ring.Discard();
+        ring.Poll(ref cost);
+        c.Eq(1L, cost.Calls, "a dispatch that never ran cannot dilute live cull timing");
+
+        api.ResultsAvailable = false;
+        c.True(ring.TryBegin(), "the first pair can be pending");
+        ring.End();
+        c.True(ring.TryBegin(), "the second pair can be pending");
+        ring.End();
+        c.False(ring.TryBegin(), "a full timestamp ring skips timing instead of waiting");
+        c.Eq(1, ring.UnavailableSlots, "timestamp ring-full skips are observable");
+    }
+
     static LodGpuCapabilityFacts FullCapabilities(
         bool entryPointsValidated, bool computeValidated) => new(
         "test vendor", "test renderer", "4.6", "4.60", 4, 6,
@@ -496,6 +535,7 @@ public static class GpuRendererChecks
         public bool TimeElapsedTargetIsFree() => TargetFree;
         public void BeginTimeElapsed(int queryId) { }
         public void EndTimeElapsed() { }
+        public void RecordTimestamp(int queryId) { }
 
         public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
         {
@@ -517,6 +557,27 @@ public static class GpuRendererChecks
         {
             foreach (int id in results.Keys.ToArray()) results[id] = (true, nanoseconds);
         }
+    }
+
+    sealed class FakeGpuTimestampApi : ILodGpuTimerApi
+    {
+        readonly Dictionary<int, long> results = new();
+        int nextId = 1;
+
+        public long NextTimestamp { get; set; }
+        public bool ResultsAvailable { get; set; }
+
+        public int CreateQuery() => nextId++;
+        public bool TimeElapsedTargetIsFree() => true;
+        public void BeginTimeElapsed(int queryId) { }
+        public void EndTimeElapsed() { }
+        public void RecordTimestamp(int queryId) => results[queryId] = NextTimestamp;
+        public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
+        {
+            nanoseconds = ResultsAvailable ? results[queryId] : 0;
+            return ResultsAvailable;
+        }
+        public void DeleteQuery(int queryId) => results.Remove(queryId);
     }
 
     sealed class FakeRenderPath : ILodRenderPath
@@ -697,6 +758,7 @@ public static class GpuRendererChecks
         public bool TimeElapsedTargetIsFree() => true;
         public void BeginTimeElapsed(int queryId) { }
         public void EndTimeElapsed() { }
+        public void RecordTimestamp(int queryId) { }
 
         public bool TryGetResultNanoseconds(int queryId, out long nanoseconds)
         {
