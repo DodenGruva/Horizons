@@ -8,64 +8,50 @@ using Vintagestory.Client.NoObf;
 namespace VintageHorizons.Render;
 
 /// <summary>
-/// Rewrites two engine-owned render values without changing client settings, ambient
-/// modifiers, shader assets, draw range or chunk streaming.
+/// Moves only vanilla terrain's visual edge fade beyond terrain the engine can submit,
+/// without changing client settings, atmosphere, shader assets, draw range or streaming.
 ///
 /// Vintage Story exposes the ambient inputs but no event between a vanilla renderer's
-/// shader activation and draw. Three narrow hooks avoid the per-draw Uniform hot path:
-/// one runs after the once-per-frame ambient blend, one after shader activation, and one
-/// catches the liquid-depth program's explicit late distance upload. They survive shader
-/// reloads because the methods belong to the stable program classes, not their GL objects.
+/// shader activation and draw. A shader-activation hook avoids the per-uniform hot path,
+/// and a second hook catches the liquid-depth program's explicit late distance upload.
+/// They survive shader reloads because the methods belong to the stable program classes,
+/// not their GL objects. Each terrain pass fails open independently.
 /// </summary>
 internal sealed class VanillaHorizonEffects : IDisposable
 {
-    const string HarmonyId = "vintagehorizons.horizoneffects";
-
-    // Read the game's declared default once. Current base density may later be raised by
-    // another system; policy removes no more than this original clear-air contribution.
-    static readonly float VanillaBaseFogDensity =
-        AmbientModifier.DefaultAmbient.FogDensity.Value;
+    internal const string HarmonyId = "vintagehorizons.horizoneffects";
 
     static VanillaHorizonEffects? active;
 
     readonly ICoreClientAPI capi;
-    readonly Func<float> farTerrainDistance;
     readonly Harmony harmony = new(HarmonyId);
     readonly List<MethodBase> patchedMethods = new();
+    readonly HashSet<string> failedPasses = new(StringComparer.Ordinal);
+    ILogger? logger;
     bool installed;
 
-    internal VanillaHorizonEffects(ICoreClientAPI capi, Func<float> farTerrainDistance)
+    internal VanillaHorizonEffects(ICoreClientAPI capi)
     {
         this.capi = capi;
-        this.farTerrainDistance = farTerrainDistance;
     }
+
+    internal IReadOnlyList<MethodBase> PatchedMethods => patchedMethods;
+    internal bool PassFailed(string passName) => failedPasses.Contains(passName);
 
     internal bool Install(ILogger logger)
     {
         if (installed) return true;
+        this.logger = logger;
 
-        MethodInfo? ambientUpdate = AccessTools.Method(
-            typeof(AmbientManager), nameof(AmbientManager.UpdateAmbient),
-            new[] { typeof(float) });
         MethodInfo? shaderUse = AccessTools.Method(
             typeof(ShaderProgramBase), nameof(ShaderProgramBase.Use));
         MethodInfo? liquidDistance = AccessTools.PropertySetter(
             typeof(ShaderProgramChunkliquiddepth),
             nameof(ShaderProgramChunkliquiddepth.ViewDistance));
-        MethodInfo? afterAmbient = AccessTools.Method(
-            typeof(VanillaHorizonEffects), nameof(AfterAmbientUpdate));
         MethodInfo? afterUse = AccessTools.Method(
             typeof(VanillaHorizonEffects), nameof(AfterShaderUse));
         MethodInfo? beforeLiquidDistance = AccessTools.Method(
             typeof(VanillaHorizonEffects), nameof(BeforeLiquidDistance));
-
-        if (ambientUpdate == null || shaderUse == null || liquidDistance == null
-            || afterAmbient == null || afterUse == null || beforeLiquidDistance == null)
-        {
-            logger.Error(
-                "Vintage Horizons could not find the horizon-effect hooks; vanilla horizon effects remain active.");
-            return false;
-        }
 
         if (Interlocked.CompareExchange(ref active, this, null) != null)
         {
@@ -74,97 +60,141 @@ internal sealed class VanillaHorizonEffects : IDisposable
             return false;
         }
 
+        TryInstallHook(shaderUse, afterUse, postfix: true, "terrain shader activation");
+        TryInstallHook(
+            liquidDistance, beforeLiquidDistance, postfix: false,
+            "liquid-depth distance upload");
+
+        if (patchedMethods.Count == 0)
+        {
+            Interlocked.CompareExchange(ref active, null, this);
+            logger.Error(
+                "Vintage Horizons could not install terrain-wall suppression; vanilla behavior remains active.");
+            return false;
+        }
+
+        installed = true;
+        logger.Notification(
+            "Vanilla terrain render-threshold wall suppressed; atmospheric and non-terrain fades remain unchanged");
+        return true;
+    }
+
+    void TryInstallHook(
+        MethodInfo? target, MethodInfo? patch, bool postfix, string description)
+    {
+        if (target == null || patch == null)
+        {
+            logger?.Error(
+                "Vintage Horizons could not find the {0} hook; that pass keeps vanilla behavior.",
+                description);
+            return;
+        }
+
         try
         {
-            harmony.Patch(ambientUpdate, postfix: new HarmonyMethod(afterAmbient));
-            patchedMethods.Add(ambientUpdate);
-            harmony.Patch(shaderUse, postfix: new HarmonyMethod(afterUse));
-            patchedMethods.Add(shaderUse);
-            harmony.Patch(liquidDistance, prefix: new HarmonyMethod(beforeLiquidDistance));
-            patchedMethods.Add(liquidDistance);
-            installed = true;
-            logger.Notification(
-                "Vanilla render-distance fog and smoothing fade suppressed; weather and local fog remain active");
-            return true;
+            var harmonyMethod = new HarmonyMethod(patch);
+            if (postfix) harmony.Patch(target, postfix: harmonyMethod);
+            else harmony.Patch(target, prefix: harmonyMethod);
+            patchedMethods.Add(target);
         }
         catch (Exception e)
         {
-            Interlocked.CompareExchange(ref active, null, this);
             try
             {
-                UnpatchInstalledMethods();
+                // Harmony patching is expected to be atomic, but exact-ID cleanup keeps a
+                // partially applied target from escaping this independently failing seam.
+                harmony.Unpatch(target, HarmonyPatchType.All, HarmonyId);
             }
-            catch (Exception cleanupError)
+            catch
             {
-                // Active is already null, so even a structural hook that Harmony could
-                // not remove is inert. Keep the original install failure as the useful
-                // diagnosis, but make the cleanup limitation visible too.
-                logger.Error(
-                    "Vintage Horizons horizon-hook cleanup was refused but remains inactive: {0}",
-                    cleanupError.Message);
             }
-            logger.Error(
-                "Vintage Horizons could not install horizon suppression; vanilla behavior remains active: {0}",
-                e.Message);
-            return false;
+            logger?.Error(
+                "Vintage Horizons could not install the {0} hook; that pass keeps vanilla behavior: {1}",
+                description, e.Message);
         }
-    }
-
-    static void AfterAmbientUpdate(AmbientManager __instance)
-    {
-        VanillaHorizonEffects? owner = Volatile.Read(ref active);
-        owner?.RemoveVanillaBaseFog(__instance);
-    }
-
-    void RemoveVanillaBaseFog(AmbientManager ambient)
-    {
-        float retainedBaseShare = 1f;
-        foreach (KeyValuePair<string, AmbientModifier> entry in ambient.CurrentModifiers)
-        {
-            retainedBaseShare = VanillaHorizonPolicy.RetainBaseFog(
-                retainedBaseShare, entry.Value.FogDensity.Weight);
-        }
-
-        ambient.BlendedFogDensity = VanillaHorizonPolicy.DensityWithoutVanillaBase(
-            ambient.BlendedFogDensity,
-            ambient.Base.FogDensity.Value,
-            VanillaBaseFogDensity,
-            retainedBaseShare);
     }
 
     static void AfterShaderUse(ShaderProgramBase __instance)
     {
         VanillaHorizonEffects? owner = Volatile.Read(ref active);
-        owner?.RemoveVanillaDistanceFade(__instance);
+        owner?.TryMoveTerrainFade(__instance);
     }
 
-    void RemoveVanillaDistanceFade(ShaderProgramBase program)
+    internal void TryMoveTerrainFade(ShaderProgramBase program)
     {
-        if (!VanillaHorizonPolicy.UsesVanillaDistanceFade(program.PassName)
-            || !program.HasUniform(VanillaHorizonPolicy.ViewDistanceUniform))
+        string? passName = program.PassName;
+        if (passName == null || !VanillaHorizonPolicy.UsesVanillaDistanceFade(passName)
+            || failedPasses.Contains(passName))
         {
             return;
         }
 
-        float configuredDistance = capi.Settings.Int["viewDistance"];
-        program.Uniform(
-            VanillaHorizonPolicy.ViewDistanceUniform,
-            VanillaHorizonPolicy.DistanceWithoutFade(
-                configuredDistance, farTerrainDistance()));
+        try
+        {
+            if (!program.HasUniform(VanillaHorizonPolicy.ViewDistanceUniform))
+            {
+                FailPass(passName, "the active shader variant has no viewDistance uniform");
+                return;
+            }
+
+            float configuredDistance = capi.Settings.Int["viewDistance"];
+            if (!VanillaHorizonPolicy.TryDistanceBeyondDrawableTerrain(
+                    configuredDistance, out float replacement))
+            {
+                FailPass(passName, "the configured view distance is invalid");
+                return;
+            }
+
+            program.Uniform(VanillaHorizonPolicy.ViewDistanceUniform, replacement);
+        }
+        catch (Exception e)
+        {
+            FailPass(passName, e.Message);
+        }
     }
 
     static void BeforeLiquidDistance(
         ShaderProgramChunkliquiddepth __instance, ref float value)
     {
         VanillaHorizonEffects? owner = Volatile.Read(ref active);
-        if (owner == null
-            || !VanillaHorizonPolicy.UsesVanillaDistanceFade(__instance.PassName))
+        string? passName = __instance.PassName;
+        if (owner == null || passName == null || passName != "chunkliquiddepth"
+            || owner.failedPasses.Contains(passName))
         {
             return;
         }
 
-        value = VanillaHorizonPolicy.DistanceWithoutFade(
-            value, owner.farTerrainDistance());
+        try
+        {
+            if (!VanillaHorizonPolicy.TryDistanceBeyondDrawableTerrain(
+                    value, out float replacement))
+            {
+                owner.FailPass(passName, "the liquid-depth view distance is invalid");
+                return;
+            }
+
+            value = replacement;
+        }
+        catch (Exception e)
+        {
+            owner.FailPass(passName, e.Message);
+        }
+    }
+
+    void FailPass(string passName, string reason)
+    {
+        if (!failedPasses.Add(passName)) return;
+
+        try
+        {
+            logger?.Error(
+                "Vintage Horizons left terrain pass '{0}' unchanged after its wall-suppression override failed: {1}",
+                passName, reason);
+        }
+        catch
+        {
+            // A diagnostic failure must not turn a fail-open shader callback into a render failure.
+        }
     }
 
     public void Dispose()
@@ -174,7 +204,24 @@ internal sealed class VanillaHorizonEffects : IDisposable
         Interlocked.CompareExchange(ref active, null, this);
 
         if (!installed) return;
-        UnpatchInstalledMethods();
+        try
+        {
+            UnpatchInstalledMethods();
+        }
+        catch (Exception cleanupError)
+        {
+            // Active is already null, so even a structural hook Harmony could not remove
+            // is inert. Do not let unusual engine-thread teardown skip later cleanup.
+            try
+            {
+                logger?.Error(
+                    "Vintage Horizons terrain-wall hook cleanup was refused but remains inactive: {0}",
+                    cleanupError.Message);
+            }
+            catch
+            {
+            }
+        }
         installed = false;
     }
 

@@ -41,6 +41,8 @@ public static class StaticAssetChecks
             "VintageHorizonsModSystem.cs"));
         string effects = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
             "Render", "VanillaHorizonEffects.cs"));
+        string policy = File.ReadAllText(Path.Combine(root, "VintageHorizons", "src",
+            "Render", "VanillaHorizonPolicy.cs"));
 
         int deferral = mod.IndexOf("if (deferringTo != null)", StringComparison.Ordinal);
         int install = mod.IndexOf("new VanillaHorizonEffects", StringComparison.Ordinal);
@@ -48,16 +50,32 @@ public static class StaticAssetChecks
             "horizon suppression installs only after the competing-LOD deferral return");
         c.True(mod.Contains("horizonEffects?.Dispose()", StringComparison.Ordinal),
             "mod disposal disables and removes horizon suppression");
-        c.True(effects.Contains("nameof(AmbientManager.UpdateAmbient)", StringComparison.Ordinal),
-            "base fog is removed once after the engine's ambient blend");
         c.True(effects.Contains("nameof(ShaderProgramBase.Use)", StringComparison.Ordinal),
             "distance fade is changed once when a vanilla shader becomes active");
         c.False(effects.Contains("nameof(ShaderProgramBase.Uniform)", StringComparison.Ordinal),
             "the per-uniform hot path is not patched");
+        foreach (string forbidden in new[]
+        {
+            "AmbientManager", "AmbientModifier", "BlendedFogDensity",
+            "DensityWithoutVanillaBase", "RetainBaseFog",
+        })
+        {
+            c.False((effects + policy).Contains(forbidden, StringComparison.Ordinal),
+                "production horizon-effects source contains no " + forbidden + " policy");
+        }
         c.True(effects.Contains("HarmonyPatchType.All, HarmonyId", StringComparison.Ordinal),
             "unload removes only Vintage Horizons' own hooks");
         c.False(effects.Contains("viewDistanceLod0", StringComparison.Ordinal),
             "vanilla terrain's independent LOD transition distance is untouched");
+
+        int dispose = effects.IndexOf("public void Dispose()", StringComparison.Ordinal);
+        int inert = dispose < 0 ? -1 : effects.IndexOf(
+            "Interlocked.CompareExchange(ref active, null, this)", dispose,
+            StringComparison.Ordinal);
+        int unpatch = dispose < 0 ? -1 : effects.IndexOf(
+            "UnpatchInstalledMethods()", dispose, StringComparison.Ordinal);
+        c.True(dispose >= 0 && inert > dispose && unpatch > inert,
+            "teardown makes terrain-wall callbacks inert before structural unpatching");
     }
 
     static void CaveCullingDefaultsOn(Check c)

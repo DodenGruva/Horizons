@@ -8,6 +8,37 @@ first.
 
 ## [Unreleased]
 
+## [0.3.127] - 2026-08-27
+
+**The horizon correction now removes only vanilla terrain's pale render-threshold wall and leaves
+all atmospheric haze unchanged.** This supersedes 0.3.125's over-broad clear-air subtraction. The
+ambient-manager hook and all fog-density arithmetic are gone; Vintage Horizons no longer writes
+ambient, base, blended, weather, underwater, lava, local, cloud, server, or other environmental fog
+state.
+
+A fresh clean-room audit of the installed official Vintage Story 1.22.7 renderer narrowed the
+distance policy to its five terrain programs: opaque blocks, topsoil, transparent blocks, liquid,
+and liquid depth. General objects, instanced content, entities, sky, and Vintage Horizons terrain
+keep their own vanilla or mod-owned distance behavior. The replacement distance is the smallest
+safe whole-block value derived from the official terrain range boundary, outer chunk vertex,
+third-person camera offset, and earliest terrain-shader fade; it does not change saved view
+distance, culling, streaming, `viewDistanceLod0`, or distant-cache selection.
+
+Two low-frequency hooks remain, avoiding the general uniform hot path. Missing targets or uniforms,
+invalid values, shader variants, callback exceptions, reload incompatibility, deferral, and
+disposal all fail open. Failures are isolated and diagnosed once per terrain pass, and teardown
+makes callbacks inert before removing only Vintage Horizons' hooks.
+
+Version 0.3.126 was an unplayed intermediate package superseded when final fail-open hardening
+changed the binary. Warning-free Release and Debug builds, 5,450 fast assertions, and 1,585
+documentation checks pass. The
+verified 14-entry 0.3.127 package contains no PDB or game dependency, its DLL matches the Release
+output, and the copy-installed archive has matching SHA-256
+`5FBEFFCF790B743100A958EA80ED82E9E3C6FA0D02085C6A37B9B61D1A83B886`. The owner played the final
+build and accepted both required outcomes: the terrain-threshold radius is gone and vanilla
+atmospheric haze looks unchanged. Assist protocol 1, blob format 4, and database schema 6 are
+unchanged.
+
 ## [0.3.125] - 2026-08-27
 
 **Vintage Horizons now removes Vintage Story's vanilla render-distance fog wall and radial

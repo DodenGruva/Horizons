@@ -43,6 +43,9 @@
     <Reference Include="VintagestoryLib">
       <HintPath>$(GamePath)/VintagestoryLib.dll</HintPath>
     </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(GamePath)/Lib/0Harmony.dll</HintPath>
+    </Reference>
     <Reference Include="Microsoft.Data.Sqlite">
       <HintPath>$(GamePath)/Lib/Microsoft.Data.Sqlite.dll</HintPath>
     </Reference>

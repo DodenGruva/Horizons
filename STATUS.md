@@ -3,11 +3,12 @@
 > Tier 2: current state, regenerated as a coherent document at session close. Durable design lives in `dev/ARCHITECTURE.md`; open work lives in `dev/TODO.md`.
 
 **Status date:** 2026-08-27
-**Mod version:** `0.3.125`, built, verified, copy-installed, and human-accepted; the development line remains 0.3.x
+**Mod version:** `0.3.127`, built, verified, copy-installed, and human-accepted; the development
+line remains 0.3.x
 (`0.2.1` is the public released version; 0.4.0 remains a preserved local rollback artifact from the
 GPU-renderer milestone).
-**Active branch:** `codex/fog-removal`, based on Session 61 commit `3ea5ba4`; the 0.3.125 horizon
-work follows it and is being committed at Session 62 close.
+**Active branch:** `codex/fog-removal` at Session 62 commit `c88154f`; the Session 63-64 corrective
+work follows it and is uncommitted at documentation close.
 **Target:** Vintage Story 1.22.5+, .NET 10
 **Source files:** `75` C# files under `VintageHorizons/src`
 **Assist protocol:** `1`
@@ -46,17 +47,19 @@ work follows it and is being committed at Session 62 close.
 > is funded. The remaining renderer work is coverage, one honest batching-versus-established-
 > occlusion A/B, and an optional subtree-height A/B.
 
-> **Current horizon-effects state.** Version 0.3.125 independently removes Vintage Story's default
-> clear-air distance veil and its radial render-distance smoothing circle. Only the propagated
-> default base fog contribution is subtracted after ambient blending; weather, underwater, lava,
-> flat-fog, fog-sphere, cloud, and server modifiers remain authoritative. Only the eight official
-> shader programs that explicitly use `viewDistance` receive a farther visual fade distance. The
-> saved view distance, terrain streaming/culling, and `viewDistanceLod0` do not change. Hooks use
-> low-frequency ambient-update, shader-activation, and liquid-depth setter seams, fail open, and
-> become inert before exact-ID unpatching. The owner played 0.3.125 and reported that it looked
-> great, accepting the ordinary clear-horizon appearance. The modifier-preservation, shader-reload,
-> competing-LOD deferral, and unload matrix remains source- and harness-tested rather than separately
-> human-played.
+> **Current horizon-effects state.** Version 0.3.127 removes only the pale circular fade at vanilla
+> terrain's render threshold. The 0.3.125 ambient-manager hook and all fog-density arithmetic are
+> gone, so clear air, weather, altitude, underwater, lava, local, cloud, server, and every other
+> vanilla atmospheric contribution remain untouched.
+>
+> A clean-room audit of official Vintage Story 1.22.7 assets and renderer call sites narrowed the
+> policy to five terrain programs: opaque, topsoil, transparent, liquid, and liquid-depth. General
+> objects, instanced content, entities, sky, and Vintage Horizons terrain keep their own distance
+> behavior. The replacement distance is derived from the engine's real terrain range, chunk and
+> camera slack, and earliest terrain fade; it changes no setting, culling, streaming,
+> `viewDistanceLod0`, or distant-cache selection. Two low-frequency hooks fail open per pass and
+> become inert before exact-ID removal. The owner played 0.3.127 and accepted both required results:
+> the terrain radius is absent and vanilla atmosphere still looks right.
 
 ## 1. Repository state
 
@@ -65,7 +68,8 @@ source was code-equivalent to fork commit `27e5e6a`. Published `master` and
 `render-overhaul` both begin this work at commit
 `d86abe02d74f483abd68dc173903182f86ac2fb4`. The current branch is `codex/fog-removal`, created
 from `3ea5ba4` after Session 61's 0.3.123-0.3.124 performance closure was committed. Session 62's
-0.3.125 horizon-effects work follows on that branch.
+0.3.125 horizon-effects work is commit `c88154f`; Sessions 63-64 correct its product scope in the
+current worktree.
 The work now comprises the Phase 0 telemetry/capability slice, Phase 1's legacy-only renderer
 boundary, Phase 2's regional arenas, Phase 3 complete and played (batched multi-draw behind
 `.vhindirect`), **Phase 3b complete and human-played** (real per-pass section bounds, 0.3.58),
@@ -379,12 +383,12 @@ effect on the reported tiny or three-to-six-second spikes.
 
 Current rendering edits world-anchor cached-terrain noise, remove the near-transition
 geometry sink, and replace the old outer cutoff with ownership the mod can actually prove.
-Version 0.3.125 also removes the engine's clear-air horizon veil and explicit radial smoothing
-fade through a narrow compatibility layer. It does not mutate saved view distance or engine
-visibility, and it leaves weather/local fog modifiers and `viewDistanceLod0` intact. The owner has
-accepted the ordinary clear-horizon appearance; the broader atmospheric/lifecycle matrix remains
-source- and harness-tested only. G117 records why final-density zeroing, view-distance mutation,
-shader copying, and general uniform interception are rejected.
+Version 0.3.127 also moves only the five official terrain programs' radial threshold fade beyond
+the terrain the engine can draw. The ambient result is never modified, and general objects,
+instances, entities, sky, saved view distance, engine visibility, distant-cache selection, and
+`viewDistanceLod0` remain untouched. The owner accepted both the missing terrain radius and
+unchanged vanilla atmosphere. G117-G118 record why atmospheric mutation, broad shader matching,
+view-distance mutation, shader copying, and general uniform interception are rejected.
 
 Two mechanisms exist. **Since 0.3.17 the default is per-cell ownership**: one marker per
 32x32x32 vanilla chunk decides each fragment, and a cached section whose every cell is owned
@@ -1057,6 +1061,18 @@ implementation based only on installed official Vintage Story 1.22.7 behavior. T
 the clear-horizon appearance. The completed item moved from TODO to completion history; atmospheric
 modifier and lifecycle preservation remain explicit source/harness coverage limits.
 
+Session 63 supersedes only the product conclusion, not 0.3.125's history. The owner rejects removal
+of clear-air haze and requires exact vanilla atmosphere plus terrain-threshold-wall suppression
+only. The correction is reopened for 0.3.126 under a strict clean-room plan; no implementation or
+artifact changed in Session 63.
+
+Session 64 completes that correction in 0.3.127. A clean-room official-engine audit narrowed the
+eight visual-fade search matches to five terrain passes, removed the ambient hook and arithmetic,
+derived the minimum safe distance from official culling/chunk/camera/shader bounds, and added
+per-pass fail-open handling. Version 0.3.126 was an unplayed intermediate package; final hardening
+required a new 0.3.127 identity. The owner played 0.3.127 and accepted the absent terrain radius and
+unchanged atmosphere.
+
 **Session 57 in brief.** Aggregate subtree vertical bounds shipped and were closed as answered
 rather than pending: they work, and at a leaf the aggregate contains the per-section box shipped in
 0.3.58, so it can only reject a subset of what that already rejects. The walk it speeds up is 44.3
@@ -1198,15 +1214,16 @@ Detailed tasks and human decisions are in `dev/TODO.md`.
 
 ## 8. Verification evidence
 
-The Session 62 close passes warning-free Release and Debug mod builds, 5,425 fast assertions, and
-1,580 documentation checks, including 37 focused horizon-effect assertions that install and remove
-the real Harmony hooks in process without launching the game. The 0.3.125 zip has 14 entries, preserves the asset paths,
-contains the licence and no PDB, reports the matching manifest version, and is copy-installed with
-identical SHA-256
-`C84DBA0CDB035B7B7B8ADA68D9A16CE4FBFC4832E1AADCAC76679CF5A625E3B1`. Its packaged DLL matches the
+The Session 64 close passes warning-free Release and Debug mod builds, 5,450 fast assertions, and
+1,585 documentation checks, including 57 focused terrain-wall assertions that install and remove
+the real Harmony hooks in process without launching the game. The 0.3.127 zip has 14 entries, preserves the asset paths,
+contains the licence and no PDB or game dependency, reports the matching manifest version, and is
+copy-installed with identical SHA-256
+`5FBEFFCF790B743100A958EA80ED82E9E3C6FA0D02085C6A37B9B61D1A83B886`. Its packaged DLL matches the
 warning-free Release output. The assistant did not launch the game; the owner played the artifact
-and accepted its ordinary clear-horizon appearance. The weather/underwater/lava/local-fog,
-shader-reload, competing-LOD deferral, and unload matrix was not separately human-played.
+and accepted both the absent terrain-threshold radius and visually unchanged vanilla atmosphere.
+Underwater/lava, shader reload, competing-LOD deferral, unusual shader variants, multiplayer, and
+unload remain source/harness or ordinary compatibility coverage rather than separate playtests.
 
 ### Source-traced
 
@@ -1258,9 +1275,21 @@ shader-reload, competing-LOD deferral, and unload matrix was not separately huma
   the post-upload callback is internal; and the unload path removes the chunk without a
   public client event. Supported public shader wrappers expose 2D/cube binding rather than
   a portable integer 3D texture update path.
+- Official 1.22.7 terrain renderer call sites use `chunkopaque`, `chunktopsoil`,
+  `chunktransparent`, `chunkliquid`, and `chunkliquiddepth`; the visually similar `standard`,
+  `instanced`, and `entityanimated` fades are outside terrain ownership. Terrain mesh-centre range
+  is `sqrt(viewDistance^2 + 400)`, the official third-person maximum is ten blocks, and the first
+  terrain distance expression can change liquid output at 72.5% of its uploaded distance.
 
 ### Harness-tested
 
+- Terrain-wall policy contains exactly five terrain passes and rejects general, instanced, entity,
+  sky, Vintage Horizons, unknown, and case-mismatched programs. Invalid or unrepresentable values
+  preserve their original input. Real Harmony installation contains only shader activation and the
+  liquid-depth late setter, has no ambient hook, and removes its exact owner without an OpenGL
+  context. Missing uniforms and injected callback failures disable and diagnose only their own pass;
+  static checks pin deferral order, inert-before-unpatch teardown, no ambient source path,
+  `viewDistanceLod0` exclusion, and absence of a general uniform-dispatch patch.
 - Phase 9's four guarded 0.3.104 failure injections are game-backed on the primary AMD system.
   Arena, shader, depth-copy and draw each completed the frozen six-viewpoint `bodanboys` route with
   zero settle timeouts. Arena refused its first setup with visible legacy unchanged and recovered on
@@ -1383,6 +1412,13 @@ shader-reload, competing-LOD deferral, and unload matrix was not separately huma
 
 ### Human-tested
 
+- **The owner played 0.3.127 on 2026-08-27 and accepted the terrain-only horizon correction.** The
+  pale circular wall at vanilla terrain's render threshold is gone, Vintage Horizons terrain remains
+  visible through that boundary, and vanilla atmospheric haze still looks right. This is qualitative
+  acceptance on the owner's machine and tested conditions, not a performance measurement or broad
+  compatibility matrix. Version 0.3.125's earlier pleasing picture does not accept its rejected
+  ambient subtraction; 0.3.127 is the corrected product behavior.
+
 - **The owner played 0.4.0 (as 0.3.103) on 2026-08-25 and accepted it.** He reports that everything
   looks visually correct and that performance is a large improvement. This is the acceptance of the
   GPU terrain renderer as the default path: the first build drawing cached terrain through it
@@ -1459,6 +1495,13 @@ shader-reload, competing-LOD deferral, and unload matrix was not separately huma
 
 ### Not yet established
 
+- The accepted 0.3.127 horizon correction has not been separately observed underwater, in lava,
+  through shader reload, under competing-LOD deferral, in multiplayer, on another driver, or with an
+  incompatible official shader variant. Source and harness checks establish that these paths cannot
+  mutate ambient fog and fail open per terrain pass, but that is not a visual playtest of each case.
+- No isolated frame-time cost belongs to terrain-wall suppression. The implementation removes the
+  ambient hook, uses two low-frequency seams, and avoids the general uniform-dispatch path, but no
+  performance effect is claimed.
 - **Every Phase 8 suppression and FPS figure predates the 0.3.101 mapping fix**, which strictly
   widens the sampled rectangle and therefore reduces what culling hides. The ridge result - 80.5%
   of far commands, 77.1% of indices, about 340 to 460 FPS - and the `25.0%` sampling-width figure

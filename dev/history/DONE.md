@@ -2,6 +2,31 @@
 
 > Tier 3: append-only completion history moved out of `dev/TODO.md`. Released player-visible behavior also belongs in `CHANGELOG.md`.
 
+## 2026-08-27 - Terrain-only horizon wall correction accepted in 0.3.127
+
+- Corrected 0.3.125's over-broad product behavior. The ambient-manager patch, default clear-air
+  lookup, fog blend arithmetic, and fog-density mutation were removed completely. All vanilla
+  atmospheric haze is now untouched.
+- A fresh clean-room audit of installed official Vintage Story 1.22.7 assets and renderer call sites
+  narrowed the eight shader search matches to five actual terrain passes: `chunkopaque`,
+  `chunktopsoil`, `chunktransparent`, `chunkliquid`, and `chunkliquiddepth`. General objects,
+  instances, entities, sky, and Vintage Horizons terrain retain their own distance behavior.
+- The replacement is the smallest safe whole-block shader distance derived from
+  `sqrt(viewDistance^2 + 400)`, half a 32-block chunk diagonal, the official ten-block third-person
+  maximum plus sub-block rounding, and the earliest terrain fade at 72.5%. It is independent of
+  distant-cache reach and changes no saved setting, culling, streaming, or `viewDistanceLod0`.
+- Shader activation and the liquid-depth late setter remain the only hooks. Missing targets,
+  uniforms, invalid values, callbacks, or variants fail open per terrain pass and diagnose once;
+  teardown becomes inert before exact-ID unpatching. The general uniform path remains unpatched.
+- 0.3.126 was packaged before final invalid-value and partial-install hardening, so G57 required
+  0.3.127. The intermediate zip remains an unplayed rollback artifact rather than being overwritten.
+- Warning-free Release and Debug builds, 5,450 fast assertions, and 1,585 documentation checks pass.
+  The verified 14-entry
+  0.3.127 archive was copy-installed with matching SHA-256
+  `5FBEFFCF790B743100A958EA80ED82E9E3C6FA0D02085C6A37B9B61D1A83B886`. The owner played it and
+  accepted both the absent terrain-threshold radius and visually unchanged vanilla atmosphere.
+  Assist protocol 1, blob format 4, and database schema 6 are unchanged.
+
 ## 2026-08-27 - Vanilla horizon fog wall and smoothing circle removed in 0.3.125
 
 - Investigation used only Vintage Horizons and installed official Vintage Story 1.22.7 assemblies

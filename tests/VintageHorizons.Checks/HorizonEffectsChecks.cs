@@ -1,4 +1,5 @@
 using System.Reflection;
+using HarmonyLib;
 using VintageHorizons.Render;
 using Vintagestory.API.Common;
 using Vintagestory.Client.NoObf;
@@ -13,29 +14,60 @@ public static class HorizonEffectsChecks
         HookTargets(c);
         HookInstallation(c);
         FadeDistance(c);
-        FogContribution(c);
+        PerPassFailureIsolation(c);
     }
 
     static void HookInstallation(Check c)
     {
-        ILogger logger = DispatchProxy.Create<ILogger, SilentProxy>();
-        var effects = new VanillaHorizonEffects(null!, () => 3000);
+        ILogger logger = DispatchProxy.Create<ILogger, RecordingProxy>();
+        var effects = new VanillaHorizonEffects(null!);
         bool installed = false;
 
         c.NoThrow(() => installed = effects.Install(logger),
-            "the three hooks install against the current game assembly without an OpenGL context");
+            "the two terrain-wall hooks install against the current game assembly without an OpenGL context");
         c.True(installed,
-            "Harmony accepts the ambient postfix, shader-use postfix and liquid-distance prefix");
+            "Harmony accepts the shader-use postfix and liquid-distance prefix");
+        c.Eq(2, effects.PatchedMethods.Count,
+            "the installed hook set contains exactly the two terrain-distance seams");
+        c.True(effects.PatchedMethods.Any(method =>
+                method.DeclaringType == typeof(ShaderProgramBase)
+                && method.Name == nameof(ShaderProgramBase.Use)),
+            "the hook set contains shader activation");
+        c.True(effects.PatchedMethods.Any(method =>
+                method == typeof(ShaderProgramChunkliquiddepth).GetProperty(
+                    nameof(ShaderProgramChunkliquiddepth.ViewDistance))?.SetMethod),
+            "the hook set contains the liquid-depth late distance upload");
+        c.False(effects.PatchedMethods.Any(method =>
+                method.DeclaringType?.Name.Contains("Ambient", StringComparison.Ordinal) == true),
+            "the actual hook set contains no ambient update patch");
+
+        foreach (MethodBase method in effects.PatchedMethods)
+        {
+            c.True(Harmony.GetPatchInfo(method)?.Owners.Contains(
+                    VanillaHorizonEffects.HarmonyId) == true,
+                method.Name + " is owned by the exact Vintage Horizons Harmony id");
+        }
+
+        MethodBase[] hooked = effects.PatchedMethods.ToArray();
         c.NoThrow(effects.Dispose,
             "the exact Vintage Horizons hooks remove cleanly");
+        foreach (MethodBase method in hooked)
+        {
+            c.False(Harmony.GetPatchInfo(method)?.Owners.Contains(
+                    VanillaHorizonEffects.HarmonyId) == true,
+                method.Name + " no longer has the Vintage Horizons owner after disposal");
+        }
         c.NoThrow(effects.Dispose,
             "hook disposal is idempotent");
     }
 
-    public class SilentProxy : DispatchProxy
+    public class RecordingProxy : DispatchProxy
     {
+        public int Errors;
+
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
+            if (targetMethod?.Name == nameof(ILogger.Error)) Errors++;
             if (targetMethod?.ReturnType == typeof(void) || targetMethod == null) return null;
             return targetMethod.ReturnType.IsValueType
                 ? Activator.CreateInstance(targetMethod.ReturnType)
@@ -45,9 +77,6 @@ public static class HorizonEffectsChecks
 
     static void HookTargets(Check c)
     {
-        c.True(typeof(AmbientManager).GetMethod(
-                nameof(AmbientManager.UpdateAmbient), new[] { typeof(float) }) != null,
-            "the installed engine exposes the once-per-frame ambient hook");
         c.True(typeof(ShaderProgramBase).GetMethod(nameof(ShaderProgramBase.Use)) != null,
             "the installed engine exposes the shader-activation hook");
         c.True(typeof(ShaderProgramChunkliquiddepth).GetProperty(
@@ -57,28 +86,29 @@ public static class HorizonEffectsChecks
 
     static void ProgramAllowlist(Check c)
     {
-        string[] fadedPrograms =
+        string[] terrainWallPrograms =
         {
             "chunkopaque",
             "chunktopsoil",
             "chunktransparent",
             "chunkliquid",
             "chunkliquiddepth",
-            "standard",
-            "instanced",
-            "entityanimated",
         };
 
-        foreach (string pass in fadedPrograms)
+        foreach (string pass in terrainWallPrograms)
         {
             c.True(VanillaHorizonPolicy.UsesVanillaDistanceFade(pass),
-                pass + " has its vanilla radial fade suppressed");
+                pass + " has its terrain-edge fade moved beyond the drawable boundary");
         }
 
-        foreach (string pass in new[] { "lodterrain", "lodterrainpacked", "sky", "particlescube", "" })
+        foreach (string pass in new[]
+        {
+            "standard", "instanced", "entityanimated", "lodterrain",
+            "lodterrainpacked", "sky", "particlescube", "",
+        })
         {
             c.False(VanillaHorizonPolicy.UsesVanillaDistanceFade(pass),
-                pass + " keeps its own view-distance meaning");
+                pass + " retains its vanilla distance behavior");
         }
 
         c.False(VanillaHorizonPolicy.UsesVanillaDistanceFade(null),
@@ -89,57 +119,79 @@ public static class HorizonEffectsChecks
 
     static void FadeDistance(Check c)
     {
-        c.Near(3000, VanillaHorizonPolicy.DistanceWithoutFade(256, 3000), 0.001,
-            "cached-terrain reach pushes the vanilla fade beyond the visible horizon");
-        c.Near(1024, VanillaHorizonPolicy.DistanceWithoutFade(256, 500), 0.001,
-            "the fallback multiplier removes the fade even before cached reach grows");
-        c.Near(128, VanillaHorizonPolicy.DistanceWithoutFade(32, float.NaN), 0.001,
-            "invalid cached reach leaves the bounded configured-distance fallback");
-        c.Near(256, VanillaHorizonPolicy.DistanceWithoutFade(64, -1), 0.001,
-            "negative cached reach cannot shrink the fallback");
-        c.Eq(0f, VanillaHorizonPolicy.DistanceWithoutFade(0, 3000),
-            "an invalid zero configured distance fails open");
+        foreach (float configured in new[] { 32f, 64f, 256f, 1024f, 32768f })
+        {
+            float replacement =
+                VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(configured);
+            double lastDrawableVertex = Math.Sqrt(
+                    configured * configured + VanillaHorizonPolicy.RangePaddingSquared)
+                + VanillaHorizonPolicy.HalfChunkDiagonal
+                + VanillaHorizonPolicy.CameraPositionSlack;
+
+            c.True(replacement * VanillaHorizonPolicy.EarliestTerrainFadeRatio
+                    > lastDrawableVertex,
+                $"{configured:0}-block view distance keeps every terrain fade beyond the last drawable vertex");
+            c.True((replacement - 1f) * VanillaHorizonPolicy.EarliestTerrainFadeRatio
+                    <= lastDrawableVertex,
+                $"{configured:0}-block view distance uses the smallest safe whole-block replacement");
+        }
+
+        c.Eq(0f, VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(0),
+            "zero distance preserves the original value");
+        c.Eq(-1f, VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(-1),
+            "negative distance preserves the original value");
+        c.True(float.IsNaN(VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(float.NaN)),
+            "NaN distance preserves the original value");
         c.True(float.IsPositiveInfinity(
-                VanillaHorizonPolicy.DistanceWithoutFade(float.PositiveInfinity, 3000)),
-            "a non-finite configured distance passes through unchanged");
+                VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(float.PositiveInfinity)),
+            "infinite distance preserves the original value");
+        c.Eq(float.MaxValue,
+            VanillaHorizonPolicy.DistanceBeyondDrawableTerrain(float.MaxValue),
+            "an unrepresentable replacement preserves the original finite value");
+        c.False(VanillaHorizonPolicy.TryDistanceBeyondDrawableTerrain(
+                float.NaN, out float invalidReplacement),
+            "invalid input is reported to the adapter for one-time diagnosis");
+        c.True(float.IsNaN(invalidReplacement),
+            "reported invalid input still preserves its original value");
     }
 
-    static void FogContribution(Check c)
+    static void PerPassFailureIsolation(Check c)
     {
-        const float vanilla = 0.00125f;
+        ILogger logger = DispatchProxy.Create<ILogger, RecordingProxy>();
+        var recorder = (RecordingProxy)logger;
+        var effects = new VanillaHorizonEffects(null!);
+        c.True(effects.Install(logger),
+            "failure-isolation fixture installs the real hooks");
 
-        c.Near(0, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                vanilla, vanilla, vanilla, 1), 1e-8,
-            "clear-air vanilla density is removed exactly");
+        var missingUniform = new ShaderProgramChunkopaque { PassName = "chunkopaque" };
+        c.NoThrow(() => effects.TryMoveTerrainFade(missingUniform),
+            "a missing terrain uniform fails open without escaping the render callback");
+        c.True(effects.PassFailed("chunkopaque"),
+            "the incompatible terrain pass is disabled");
+        c.False(effects.PassFailed("chunktransparent"),
+            "a missing opaque pass does not disable transparent terrain");
+        int firstWarningCount = recorder.Errors;
+        c.NoThrow(() => effects.TryMoveTerrainFade(missingUniform),
+            "a disabled pass remains a no-op on later activations");
+        c.Eq(firstWarningCount, recorder.Errors,
+            "an incompatible pass is diagnosed only once");
 
-        // Engine blend for a half-weight 0.07 underwater modifier:
-        // 0.5^2 * 0.07 + 0.5^2 * 0.00125 = 0.0178125.
-        float retained = VanillaHorizonPolicy.RetainBaseFog(1, 0.5f);
-        c.Near(0.25, retained, 1e-8,
-            "a half-weight modifier retains one quarter of the base contribution");
-        c.Near(0.0175, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                0.0178125f, vanilla, vanilla, retained), 1e-7,
-            "underwater density remains after only the propagated clear-air share is removed");
+        var failingUpload = new ShaderProgramChunktopsoil { PassName = "chunktopsoil" };
+        failingUpload.uniformLocations[VanillaHorizonPolicy.ViewDistanceUniform] = 0;
+        c.NoThrow(() => effects.TryMoveTerrainFade(failingUpload),
+            "a pass-specific callback failure preserves vanilla behavior without escaping");
+        c.True(effects.PassFailed("chunktopsoil"),
+            "the failing topsoil pass is disabled independently");
+        c.False(effects.PassFailed("chunkliquid"),
+            "a topsoil failure cannot affect the liquid terrain pass");
 
-        retained = VanillaHorizonPolicy.RetainBaseFog(retained, 0.25f);
-        c.Near(0.140625, retained, 1e-8,
-            "stacked modifier retention follows the engine's ordered squared weights");
+        var generalObject = new ShaderProgramStandard { PassName = "standard" };
+        generalObject.uniformLocations[VanillaHorizonPolicy.ViewDistanceUniform] = 0;
+        c.NoThrow(() => effects.TryMoveTerrainFade(generalObject),
+            "a general-object shader is rejected before any settings or GL access");
+        c.False(effects.PassFailed("standard"),
+            "a rejected non-terrain pass never enters failure state");
 
-        c.Near(0.00875, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                0.01f, 0.01f, vanilla, 1), 1e-8,
-            "a deliberate base increase above vanilla remains");
-        c.Near(0.0095, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                0.01f, 0.0005f, vanilla, 1), 1e-8,
-            "a lower current base removes no more density than it contributes");
-        c.Near(0.02, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                0.02f, vanilla, vanilla, 0), 1e-8,
-            "a full-weight atmospheric modifier owns the result completely");
-        c.Near(0, VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                0.0002f, vanilla, vanilla, 1), 1e-8,
-            "subtraction clamps rather than creating negative fog");
-        c.True(float.IsNaN(VanillaHorizonPolicy.DensityWithoutVanillaBase(
-                float.NaN, vanilla, vanilla, 1)),
-            "invalid engine fog fails open rather than inventing a replacement");
+        effects.Dispose();
     }
-
 }

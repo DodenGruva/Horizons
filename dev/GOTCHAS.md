@@ -2245,24 +2245,47 @@ left `dist/`.
 
 **Found:** 2026-08-27, session 61.
 
-### G117 - The vanilla horizon wall and smoothing circle are separate hot-path-sensitive effects
+### G117 - A shared distance uniform does not make every shader part of the terrain wall
 
 **Trigger:** removing Vintage Story's render-distance fog wall for extended terrain.
 
-**Trap:** the visible wall is not one renderer or one value. Official 1.22.7 combines a default
-clear-air contribution inside the blended ambient fog density with radial `viewDistance` fades in
-eight vertex programs. Zeroing final fog density also erases weather, underwater, lava, flat-fog,
-fog-sphere, cloud, and server modifiers. Raising the client view distance changes streaming and
-culling. Patching every `ShaderProgramBase.Uniform` upload catches the fade but inserts Harmony into
-a high-frequency path, while copying engine shaders creates brittle versioned assets.
+**Trap:** an official asset search finds radial `viewDistance` expressions in eight vertex programs,
+but only five belong to the terrain renderer. `standard`, `instanced`, and `entityanimated` control
+general objects, instanced content, and entities; moving their fades changes behavior outside the
+terrain wall. The terrain programs are `chunkopaque`, `chunktopsoil`, `chunktransparent`,
+`chunkliquid`, and `chunkliquiddepth`. Their earliest distance effect begins at 72.5% of the
+uploaded distance. Raising the saved client view distance changes streaming and culling, patching
+every `ShaderProgramBase.Uniform` upload inserts Harmony into a high-frequency path, and copying
+engine shaders creates brittle versioned assets.
 
-**Do:** remove only the propagated default base contribution after `AmbientManager` completes its
-blend. Rewrite `viewDistance` at low-frequency shader activation, plus the liquid-depth program's
-explicit late setter, through an exact allowlist. Leave the saved setting, engine visibility range,
-all fog modifiers, and `viewDistanceLod0` alone. Fail open when targets or values are unavailable,
-make hooks inert before exact-ID unpatching, and verify reload/deferral/disposal lifetimes.
+**Do:** intersect shader evidence with the official renderer call sites, then use an exact
+terrain-only allowlist. Rewrite `viewDistance` at low-frequency shader activation plus the
+liquid-depth program's explicit late setter. Derive the replacement from the real cull radius,
+outer chunk vertex, camera offset, and earliest terrain-fade ratio; do not tie it to distant-cache
+reach. Leave atmosphere, the saved setting, engine visibility range, general/entity fades, and
+`viewDistanceLod0` alone. Fail open per pass, diagnose once, make hooks inert before exact-ID
+unpatching, and verify reload/deferral/disposal lifetimes.
 
-**Found:** 2026-08-27, session 62.
+**Found:** 2026-08-27, session 62; corrected and narrowed by sessions 63-64.
+
+### G118 - A terrain-threshold wall is not atmospheric fog
+
+**Trigger:** a request to remove a distant "fog wall" or white render-radius circle.
+
+**Trap:** the phrase describes the visible symptom, not permission to change every fog-like effect.
+Ordinary clear-air haze and weather atmosphere are intentional world rendering. A terrain-edge fade
+can produce a pale circular boundary at the draw threshold without making ambient haze itself a
+defect. Removing both may look pleasing in one scene while silently changing the product beyond the
+owner's request.
+
+**Do:** write the product boundary before touching source. Preserve the complete ambient result
+unchanged and independently identify only the official terrain-threshold mechanism. Verify the
+missing radius and unchanged atmosphere as two separate acceptance claims. If a broader effect was
+already shipped, preserve its release history but reopen a correction rather than retroactively
+calling the broader behavior accepted.
+
+**Found:** 2026-08-27, session 63, when the owner rejected 0.3.125's disclosed clear-air haze
+subtraction. Corrected and human-accepted in 0.3.127, session 64.
 
 ## Reversals and disproved claims
 

@@ -195,9 +195,10 @@ public class VintageHorizonsModSystem : ModSystem
         };
 
         // Install only after the competing-LOD return above. The adapter changes no
-        // ambient modifier or client setting: it rewrites the two engine render values while this
-        // active renderer exists, then unpatches cleanly on unload.
-        horizonEffects = new VanillaHorizonEffects(capi, () => renderer.EffectiveFarDistance);
+        // atmosphere, client setting, culling or streaming state: it moves only vanilla
+        // terrain's visual edge fade while this renderer exists, then becomes inert and
+        // removes its exact hooks on unload.
+        horizonEffects = new VanillaHorizonEffects(capi);
         if (!horizonEffects.Install(Mod.Logger))
         {
             horizonEffects.Dispose();
